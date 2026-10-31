@@ -30,10 +30,16 @@ eventos útiles, silencio cuando corresponde y respuestas fundamentadas.
 -   Confirmar paquetes disponibles y campos necesarios.
 -   Definir cómo se ejecutará el modelo local y cómo se invocará desde
     la aplicación.
--   Definir una primera interfaz: logs/terminal o pequeña interfaz
-    local.
--   Crear configuración externa para puerto UDP, modelo, logging y
-    parámetros.
+-   Primera interfaz definida: consola. La GUI queda planificada para
+    una fase posterior (Fase 8).
+-   Definir las dos topologías de despliegue (mismo PC y red local) y
+    qué se configura en cada una.
+-   Definir desde el inicio una interfaz estable entre el núcleo y la
+    consola, para no acoplar la lógica a la presentación.
+-   Adoptar la convención «sin textos codificados»: mensajes visibles
+    mediante claves y catálogo, aunque al inicio exista un solo idioma.
+-   Crear configuración externa para dirección y puerto de escucha,
+    filtro de IP de origen, endpoint del modelo, logging y parámetros.
 
 ### Entregables
 
@@ -41,11 +47,16 @@ eventos útiles, silencio cuando corresponde y respuestas fundamentadas.
 -   Documento de arquitectura y decisiones técnicas.
 -   Aplicación mínima que abre el receptor UDP.
 -   Registro de paquetes recibidos y errores.
+-   Guía de configuración para ambas topologías: ajustes de telemetría
+    del juego (IP de destino, puerto, formato, frecuencia) y regla de
+    firewall en el PC de la aplicación.
 
 ### Criterio de salida
 
 Se reciben paquetes de una sesión real y se confirma que el parser
-reconoce los tipos de paquete requeridos.
+reconoce los tipos de paquete requeridos, tanto con el juego y la
+aplicación en el mismo PC como con la aplicación en otro PC de la red
+local.
 
 ------------------------------------------------------------------------
 
@@ -61,6 +72,9 @@ reconoce los tipos de paquete requeridos.
 -   Detectar cambios de vuelta y de sesión.
 -   Gestionar paquetes perdidos, duplicados y datos obsoletos.
 -   Guardar una primera captura de telemetría.
+-   Registrar la IP de origen, aplicar el filtro de orígenes y mostrar
+    en la consola el estado de conexión con diagnóstico de ausencia de
+    datos.
 
 ### Entregables
 
@@ -76,6 +90,8 @@ reconoce los tipos de paquete requeridos.
 -   Paquetes inválidos o incompletos.
 -   Cambio de sesión y reinicio.
 -   Continuidad del estado pese a paquetes perdidos.
+-   Recepción en loopback y desde otro PC de la red local, incluyendo
+    filtro de origen y puerto ocupado.
 
 ### Criterio de salida
 
@@ -121,6 +137,9 @@ dentro de tolerancias definidas y no presentan saltos injustificados.
 -   Implementar reproducción de sesiones grabadas.
 -   Permitir pausar, acelerar y repetir una sesión.
 -   Asociar cada reproducción con la versión del parser y configuración.
+-   Añadir un modo de reemisión por UDP hacia una dirección y puerto
+    configurables, para probar el receptor y el despliegue en red local
+    sin abrir el juego.
 
 ### Entregables
 
@@ -252,7 +271,8 @@ estratégicos.
 
 ### Trabajo
 
--   Añadir entrada de texto.
+-   Añadir entrada de texto en la consola, a través de la interfaz del
+    núcleo.
 -   Implementar Intent Router.
 -   Crear herramientas/funciones internas:
     -   `get_race_state`
@@ -288,7 +308,7 @@ mediciones, estimaciones y recomendaciones.
 
 ------------------------------------------------------------------------
 
-## Fase 8 --- Comunicación de voz e interfaz
+## Fase 8 --- Comunicación de voz e interfaz gráfica
 
 ### Trabajo
 
@@ -297,14 +317,20 @@ mediciones, estimaciones y recomendaciones.
 -   Añadir push-to-talk o activación por voz.
 -   Definir cómo se interrumpen o encolan mensajes.
 -   Añadir control de volumen, idioma y velocidad.
--   Mostrar estado de conexión, eventos y estrategia en una interfaz
-    sencilla.
+-   Crear una GUI sencilla que consuma la misma interfaz del núcleo
+    que la consola (estado de conexión, carrera, eventos, estrategia,
+    avisos y entrada de preguntas).
+-   Decidir la tecnología de la GUI (escritorio, web local u overlay) y
+    si podrá ejecutarse en un PC distinto al del núcleo; en ese caso,
+    definir el acceso por red de forma explícita y segura.
+-   Evaluar el uso de voz o segunda pantalla cuando la aplicación corre
+    en otro PC, donde escribir durante la conducción no es práctico.
 
 ### Entregables
 
 -   Entrada por voz.
 -   Salida hablada.
--   Interfaz mínima de carrera.
+-   Interfaz gráfica mínima de carrera.
 -   Gestión de interrupciones.
 
 ### Criterio de salida
@@ -349,6 +375,47 @@ métricas, estrategia, gestor de eventos o modelo.
 
 ------------------------------------------------------------------------
 
+## Fase 10 --- Localización (futuro): inglés y español
+
+Fase posterior al MVP. La preparación (claves de mensaje, catálogos,
+registros neutros al idioma) se hace desde la Fase 0 para que esta fase
+no requiera refactorizar el núcleo.
+
+### Trabajo
+
+-   Crear catálogos de mensajes en inglés y español, con idioma de
+    respaldo.
+-   Separar los ajustes de idioma de interfaz, comunicación del agente,
+    entrada del piloto y voz.
+-   Versionar prompts por idioma y definir un glosario de terminología
+    de carrera por idioma.
+-   Extender el router de intenciones para preguntas en ambos idiomas.
+-   Añadir al validador la comprobación del idioma de la respuesta.
+-   Localizar el formato de números y unidades en la presentación.
+-   Adaptar los motores de voz (STT/TTS) a ambos idiomas, si la Fase 8
+    ya está implementada.
+
+### Pruebas
+
+-   Detección de claves faltantes y uso del idioma de respaldo.
+-   Mismo evento en inglés y español con las mismas cifras.
+-   Preguntas equivalentes del piloto en ambos idiomas con la misma
+    intención detectada.
+-   Reproducir una misma sesión grabada en ambos idiomas.
+
+### Entregables
+
+-   Catálogos en inglés y español.
+-   Prompts y glosarios versionados por idioma.
+-   Suite de evaluación de respuestas por idioma.
+
+### Criterio de salida
+
+El piloto puede usar la aplicación completa en inglés o en español sin
+diferencias en datos, recomendaciones ni cifras.
+
+------------------------------------------------------------------------
+
 ## Orden recomendado del MVP
 
 Para evitar dispersión, el primer MVP debería incluir solamente:
@@ -361,49 +428,43 @@ Para evitar dispersión, el primer MVP debería incluir solamente:
 6.  Event Gate con silencio por defecto.
 7.  LLM local para explicar un evento.
 8.  Preguntas de texto sobre estado y estrategia.
+9.  Interfaz de consola como única interfaz del MVP.
+10. Ejecución en el mismo PC del juego o en otro PC de la red local,
+    cambiando solo la configuración.
 
-Dejar voz, overlay sofisticado, optimización avanzada y predicción
-aprendida para iteraciones posteriores.
+Dejar voz, GUI, overlay sofisticado, localización completa,
+optimización avanzada y predicción aprendida para iteraciones
+posteriores. Aun así, mantener desde el MVP la interfaz estable del
+núcleo y las claves de mensaje para no bloquear esas extensiones.
 
 ## Riesgos y mitigaciones
 
-  -----------------------------------------------------------------------
-  Riesgo                              Mitigación
-  ----------------------------------- -----------------------------------
-  El parser interpreta mal una        Validar contra la especificación y
-  versión del protocolo               usar fixtures de paquetes reales.
-
-  Métricas ruidosas provocan          Ventanas, filtros, calidad de datos
-  recomendaciones erróneas            y pruebas con replay.
-
-  El motor estima mal la degradación  Empezar con modelos simples y medir
-                                      error por compuesto/circuito.
-
-  El agente habla demasiado           Event Gate determinista, cooldown,
-                                      persistencia y deduplicación.
-
-  El LLM inventa datos                Contextos estructurados, funciones
-                                      de consulta y validador de
-                                      respuestas.
-
-  El LLM tarda demasiado              Llamadas asíncronas, colas acotadas
-                                      y mensajes críticos priorizados.
-
-  Una respuesta queda obsoleta        Validar timestamps y cancelar o
-  mientras se genera                  descartar generaciones antiguas.
-
-  El alcance crece demasiado          Mantener el MVP centrado en
-                                      estrategia de parada y consultas
-                                      básicas.
-  -----------------------------------------------------------------------
+| Riesgo | Mitigación |
+| --- | --- |
+| El parser interpreta mal una versión del protocolo | Validar contra la especificación y usar fixtures de paquetes reales. |
+| Métricas ruidosas provocan recomendaciones erróneas | Ventanas, filtros, calidad de datos y pruebas con replay. |
+| El motor estima mal la degradación | Empezar con modelos simples y medir error por compuesto/circuito. |
+| El agente habla demasiado | Event Gate determinista, cooldown, persistencia y deduplicación. |
+| El LLM inventa datos | Contextos estructurados, funciones de consulta y validador de respuestas. |
+| El LLM tarda demasiado | Llamadas asíncronas, colas acotadas y mensajes críticos priorizados. |
+| Una respuesta queda obsoleta mientras se genera | Validar timestamps y cancelar o descartar generaciones antiguas. |
+| El alcance crece demasiado | Mantener el MVP centrado en estrategia de parada y consultas básicas. |
+| La telemetría no llega al PC de la red local (IP, firewall, Wi-Fi) | Diagnóstico en el estado de conexión, guía de configuración, filtro de origen opcional, pruebas con reemisión UDP y red cableada recomendada. |
+| La aplicación y el LLM compiten con el juego por CPU/GPU en el mismo PC | Medir el impacto en el juego, endpoint del LLM configurable hacia otra máquina y modelos más ligeros. |
+| La lógica se acopla a la consola y dificulta la futura GUI | Interfaz estable del núcleo, adaptadores sin lógica y pruebas del núcleo sin interfaz. |
+| Textos y prompts codificados dificultan la localización | Claves de mensaje, catálogos por idioma, registros neutros al idioma y pruebas de i18n desde el inicio. |
+| La aplicación queda expuesta en la red local sin control | Loopback por defecto, apertura explícita, filtro de IP de origen y API/GUI remota desactivadas por defecto. |
 
 ## Primer sprint sugerido
 
 Un sprint inicial razonable podría terminar con una demo sin LLM:
 
 -   La aplicación recibe telemetría UDP.
--   Muestra vuelta, posición, combustible, compuesto y datos básicos del
-    coche.
+-   Muestra por consola vuelta, posición, combustible, compuesto y
+    datos básicos del coche.
+-   Funciona con el juego y la aplicación en el mismo PC y con la
+    aplicación en otro PC de la red local, cambiando solo la
+    configuración.
 -   Calcula una tendencia simple de ritmo.
 -   Registra la sesión.
 -   Puede reproducir la captura.

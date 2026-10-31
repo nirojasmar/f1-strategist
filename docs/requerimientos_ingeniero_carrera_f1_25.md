@@ -16,6 +16,12 @@ La aplicación debe funcionar localmente y permitir cambiar o evaluar
 modelos de lenguaje sin acoplar la lógica estratégica a un proveedor o
 modelo concreto.
 
+Por «localmente» se entiende que la aplicación puede ejecutarse en el
+mismo PC donde corre el juego o en otro PC de la red local conectado a
+él (ver RF-11), sin depender de servicios en la nube. La primera
+interfaz será la consola; se prevé una interfaz gráfica (RF-12) y, más
+adelante, localización a inglés y español (RF-13).
+
 ## 2. Principios de diseño
 
 1.  **Arquitectura híbrida:** cálculos, reglas, estado y simulaciones
@@ -34,6 +40,15 @@ modelo concreto.
     recomendación.
 7.  **Tolerancia a datos incompletos:** identificar datos ausentes,
     obsoletos o inválidos y evitar conclusiones no justificadas.
+8.  **Despliegue flexible:** el mismo núcleo debe poder ejecutarse en el
+    PC del juego o en otro PC de la red local, cambiando solo la
+    configuración.
+9.  **Núcleo independiente de la interfaz:** la lógica no depende de la
+    consola. La consola es la primera interfaz y la futura GUI debe
+    consumir el mismo núcleo sin reescribirlo.
+10. **Preparado para localización:** ningún texto visible para el
+    usuario ni prompt debe estar codificado dentro de la lógica, aunque
+    la localización completa llegue después.
 
 ## 3. Usuarios y escenarios principales
 
@@ -54,6 +69,11 @@ durante la sesión.
     continuar.
 -   El sistema registra la sesión para depurar, reproducir y evaluar
     recomendaciones.
+-   El piloto ejecuta la aplicación en el mismo PC del juego o en un
+    segundo PC de la red local (por ejemplo, un portátil junto al
+    simulador) y obtiene el mismo comportamiento funcional.
+-   El piloto usa la aplicación desde la consola y, en el futuro, desde
+    una interfaz gráfica, y en inglés o español.
 
 ## 4. Requerimientos funcionales
 
@@ -133,7 +153,8 @@ confianza cuando sea relevante.
 -   Evitar mensajes repetitivos como «vas bien, sigue así» si no
     contienen información accionable.
 -   Priorizar avisos críticos sobre mensajes informativos.
--   Permitir configurar longitud, tono, idioma y nivel de interrupción.
+-   Permitir configurar longitud, tono, idioma (ver RF-13) y nivel de
+    interrupción.
 -   No retrasar una respuesta explícitamente solicitada por el piloto
     debido al cooldown de avisos espontáneos.
 
@@ -193,10 +214,96 @@ confianza cuando sea relevante.
 -   Permitir desactivar temporalmente la comunicación del agente sin
     detener la captura.
 
+### RF-11 --- Despliegue en el mismo PC o en la red local
+
+-   Soportar dos topologías con el mismo código y el mismo
+    comportamiento funcional:
+    1.  **Local:** el juego y la aplicación se ejecutan en el mismo PC.
+    2.  **Red local:** el juego se ejecuta en un PC y la aplicación en
+        otro PC conectado a la misma red local.
+-   Cambiar de topología debe requerir solo configuración (dirección y
+    puerto de escucha, filtros, endpoint del LLM), no ramas de código ni
+    builds distintos.
+-   Dirección de escucha por defecto: solo loopback (`127.0.0.1`). Para
+    recibir desde otro PC, el usuario debe indicar explícitamente la
+    interfaz de red o `0.0.0.0`.
+-   Permitir un filtro opcional de IP de origen para aceptar paquetes
+    solo del PC del juego.
+-   Documentar la configuración necesaria en cada caso: en el juego (IP
+    de destino de la telemetría, puerto, formato y frecuencia de envío)
+    y en el PC de la aplicación (regla de firewall para el puerto UDP).
+-   Mostrar en el estado de conexión (RF-10) la dirección y el puerto de
+    escucha, la IP de origen de los paquetes, la antigüedad de la última
+    muestra y los contadores de paquetes válidos, inválidos y perdidos.
+-   Cuando no lleguen datos, orientar el diagnóstico con causas
+    probables (IP de destino incorrecta en el juego, firewall, puerto
+    ocupado, telemetría desactivada en el juego).
+-   Tolerar la latencia, el jitter y la pérdida de paquetes propios de
+    una red local usando el manejo ya definido en RF-01. Se recomienda
+    conexión cableada en el PC de la aplicación.
+-   No depender de relojes sincronizados entre PCs: la recepción se
+    marca con el reloj del PC de la aplicación y el orden se apoya en el
+    tiempo de sesión del juego.
+-   Permitir que el endpoint del LLM sea local o esté en otra máquina de
+    la red local, por ejemplo, para evitar que el modelo compita por
+    CPU/GPU con el juego cuando ambos corren en el mismo PC.
+-   Cuando la aplicación corra en un PC distinto, la entrada y la salida
+    del piloto ocurren en ese PC. La entrada de texto durante la
+    conducción es poco práctica, por lo que esta topología aumenta el
+    valor de la voz (Fase 8) o de una segunda pantalla.
+
+### RF-12 --- Interfaz de usuario: consola primero, GUI después
+
+-   La primera versión se ejecuta en consola (CLI o TUI) y cubre:
+    estado de conexión y sesión, avisos del agente, entrada de preguntas
+    por texto, logs y configuración básica.
+-   El núcleo expone una interfaz estable y documentada (comandos,
+    consultas y flujo de eventos/mensajes) independiente de la
+    presentación. La consola es un adaptador sobre esa interfaz y no
+    contiene lógica estratégica.
+-   El núcleo debe poder ejecutarse sin interfaz gráfica.
+-   Se espera crear una GUI en una etapa posterior. Debe consumir la
+    misma interfaz del núcleo y mostrar, como mínimo: estado de
+    conexión, estado de carrera, eventos, estrategia actual, avisos y
+    entrada de preguntas.
+-   Los mensajes del agente se generan como estructura validable
+    (RF-08) y cada interfaz decide cómo presentarlos (texto en consola,
+    panel en GUI, voz).
+-   Una interfaz no debe poder bloquear la recepción ni el registro de
+    telemetría.
+
+### RF-13 --- Localización (futuro, posterior al MVP)
+
+-   Idiomas mínimos: **inglés y español**, con diseño extensible a otros
+    idiomas.
+-   Distinguir cuatro ámbitos de idioma, configurables por separado:
+    1.  Interfaz (textos, menús, mensajes de sistema).
+    2.  Comunicación del agente (avisos y respuestas generadas).
+    3.  Entrada del piloto (el router de intenciones debe entender
+        preguntas en ambos idiomas).
+    4.  Voz (reconocimiento y síntesis), cuando exista.
+-   Los textos visibles para el usuario se guardan en catálogos por
+    idioma con un idioma de respaldo definido; no se codifican en la
+    lógica.
+-   Los prompts del LLM se versionan por idioma, y el Response Validator
+    comprueba que la respuesta esté en el idioma esperado.
+-   Mantener un glosario de terminología de carrera por idioma (por
+    ejemplo, pit/box, undercut, stint) para respuestas consistentes.
+-   Formatear números, unidades y decimales solo en la capa de
+    presentación. Los datos internos, eventos, logs y registros de
+    sesión usan códigos e identificadores neutros al idioma, de modo que
+    una sesión grabada pueda reproducirse en cualquier idioma.
+-   El mismo evento debe producir mensajes equivalentes, con las mismas
+    cifras, en ambos idiomas.
+-   Aunque la implementación completa sea posterior, la preparación
+    (sin textos codificados, claves de mensaje, `language` en el
+    contexto) se aplica desde el inicio para evitar refactorizaciones
+    costosas.
+
 ## 5. Requerimientos no funcionales
 
 -   **Local-first:** la funcionalidad principal debe operar en el equipo
-    del usuario.
+    del usuario o en su red local, sin depender de servicios externos.
 -   **Baja latencia:** el procesamiento de telemetría no debe esperar a
     que termine una generación del LLM.
 -   **Aislamiento:** una demora o caída del LLM no debe detener la
@@ -212,7 +319,19 @@ confianza cuando sea relevante.
 -   **Explicabilidad:** cada recomendación debe poder relacionarse con
     datos, supuestos y reglas concretas.
 -   **Seguridad:** escuchar únicamente en interfaces/puertos
-    configurados y no exponer servicios locales innecesariamente.
+    configurados y no exponer servicios locales innecesariamente. Por
+    defecto solo se escucha en loopback; abrir la aplicación a la red
+    local debe ser una decisión explícita. La telemetría UDP no tiene
+    autenticación, por lo que se asume una red local de confianza y se
+    ofrece filtro de IP de origen. Cualquier API o GUI remota futura debe
+    estar desactivada por defecto.
+-   **Portabilidad de despliegue:** el mismo artefacto debe funcionar en
+    ambas topologías (RF-11). Los sistemas operativos soportados en el
+    PC de la aplicación deben definirse y documentarse.
+-   **Desacoplamiento de interfaz:** poder añadir o reemplazar
+    interfaces (consola, GUI, voz) sin modificar el núcleo (RF-12).
+-   **Internacionalización:** textos, prompts y formatos preparados para
+    varios idiomas (RF-13).
 
 ## 6. Reglas de comportamiento esenciales
 
@@ -239,6 +358,10 @@ confianza cuando sea relevante.
 -   Reconocimiento y síntesis de voz en la primera iteración.
 -   Modelos de estrategia entrenados con grandes datasets antes de
     disponer de una línea base funcional.
+-   Interfaz gráfica en la primera iteración (se parte de la consola).
+-   Localización completa y más idiomas además de inglés y español; en
+    la primera iteración solo se deja la arquitectura preparada.
+-   Acceso remoto fuera de la red local (internet, VPN o nube).
 
 ## 8. Criterios de aceptación iniciales
 
@@ -259,15 +382,35 @@ confianza cuando sea relevante.
 -   Una comparación de estrategias muestra alternativas, estimaciones y
     supuestos.
 -   Los logs permiten explicar por qué se generó una recomendación.
+-   La aplicación recibe y procesa telemetría tanto con el juego y la
+    aplicación en el mismo PC como con la aplicación en otro PC de la
+    red local, cambiando solo la configuración.
+-   El estado de conexión muestra la IP de origen y la antigüedad de la
+    última muestra, y ayuda a diagnosticar la ausencia de datos.
+-   El núcleo funciona sin GUI, y la consola cubre estado, avisos y
+    preguntas del piloto.
+-   Cuando exista la localización: el mismo evento produce mensajes
+    equivalentes en inglés y español con las mismas cifras.
 
 ## 9. Decisiones pendientes
 
 -   Lenguaje y framework definitivos.
 -   Runtime y formato del modelo local.
--   Interfaz de piloto: consola, aplicación de escritorio, overlay o
-    voz.
+-   Interfaz de piloto: la consola queda definida para la primera
+    iteración; falta decidir la tecnología de la futura GUI (escritorio,
+    web local u overlay) y la voz.
 -   Frecuencia de muestreo y paquetes concretos que se procesarán.
 -   Estrategia de almacenamiento de sesiones.
 -   Fórmulas iniciales de degradación y simulación de paradas.
 -   Umbrales y prioridades iniciales, que deberán calibrarse mediante
     pruebas.
+-   Mecanismo de comunicación entre el núcleo y las interfaces (llamadas
+    en proceso, API local o bus de eventos) y si la GUI podrá ejecutarse
+    en un PC distinto al del núcleo.
+-   Sistemas operativos soportados en el PC de la aplicación.
+-   Envío dirigido (unicast) o broadcast desde el juego, y política de
+    filtrado por IP de origen.
+-   Ubicación recomendada del LLM (PC del juego o PC de la red local)
+    según la carga medida.
+-   Estrategia de i18n: formato de catálogos, idioma por defecto,
+    cambio de idioma en caliente y glosario por idioma.
