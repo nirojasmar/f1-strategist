@@ -26,7 +26,9 @@ eventos útiles, silencio cuando corresponde y respuestas fundamentadas.
 
 -   Crear la estructura inicial del repositorio con el stack acordado
     (Python 3.12+, `uv`, `pyproject.toml`, `ruff`, `pyright`, `pytest`) y
-    CI en GitHub Actions.
+    CI en GitHub Actions sobre Windows y Linux.
+-   Obtener la especificación UDP oficial de F1 25 (2026 Season Pack) y
+    fijar el formato UDP del juego (2025 o 2024) que se procesará.
 -   Revisar la especificación UDP correspondiente a F1 25 y la
     configuración del juego.
 -   Confirmar paquetes disponibles y campos necesarios.
@@ -486,6 +488,7 @@ núcleo y las claves de mensaje para no bloquear esas extensiones.
 | El receptor UDP sobre `asyncio` se comporta mal en el sistema operativo objetivo | Probarlo en la Fase 1 y, si falla, usar un hilo con socket bloqueante y una cola. |
 | La GUI y el núcleo se desincronizan | Esquema versionado, tipos generados, pruebas de contrato y de reconexión. |
 | La GUI es demasiado compleja para usarla durante la carrera | Pocos datos grandes en carrera, voz como canal principal y segunda pantalla en lugar de overlay. |
+| El 2026 Season Pack cambia la especificación UDP respecto a F1 25 | Basar el parser en la especificación del Season Pack, guardar versión de juego y de paquete en cada captura y avisar ante formatos no soportados. |
 
 ## Primer sprint sugerido
 

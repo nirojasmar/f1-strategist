@@ -678,12 +678,12 @@ registra como decisión en el documento de requerimientos.
 
 | Componente | Elección | Notas |
 | --- | --- | --- |
-| Lenguaje y entorno | Python 3.12+, `uv`, `pyproject.toml` | `ruff` para lint y formato, `pyright` para tipos, CI en GitHub Actions |
+| Lenguaje y entorno | Python 3.12+, `uv`, `pyproject.toml` | `ruff` para lint y formato, `pyright` para tipos, CI en GitHub Actions sobre Windows y Linux |
 | Concurrencia | `asyncio` y colas acotadas | Alternativa para el receptor: hilo con socket bloqueante y cola |
 | Parser UDP | Propio (`struct` o `ctypes`) tras una interfaz | Validado con capturas reales |
 | Modelos y configuración | `pydantic` v2 y TOML | Valida también `AgentResponse` y exporta JSON Schema |
 | Métricas | Python y `numpy` | `polars` o `pandas` solo para análisis offline (Fase 9) |
-| Captura y replay | Captura binaria cruda (timestamp, longitud, payload) | Permite reprocesar con parsers nuevos |
+| Captura y replay | Captura binaria cruda (timestamp, longitud, payload) | Permite reprocesar con parsers nuevos; formato `.f1cap` v1 en `src/f1_strategist/capture.py` |
 | Datos derivados | SQLite | Métricas, eventos, consultas y llamadas al LLM; Parquet opcional después |
 | LLM | Cliente HTTP a una API compatible con OpenAI | Adaptador intercambiable (LM Studio, llama.cpp u otro runtime) |
 | Consola | `Rich` y `prompt_toolkit` | `Textual` si se quieren paneles |
@@ -693,16 +693,22 @@ registra como decisión en el documento de requerimientos.
 
 ### 8.2 Notas
 
--   **Parser.** En la búsqueda realizada para este documento, la única
-    librería mantenida para F1 25 fue `F1Game.UDP` (.NET). No se
-    identificó un parser en Python verificado para F1 25 (las demás
-    librerías encontradas eran de juegos anteriores), por lo que el parser
-    es propio, contra la especificación oficial. La librería .NET sirve
-    como referencia para contrastar layouts. Conviene repetir esta
-    búsqueda antes de la Fase 1.
+-   **Parser.** En la búsqueda realizada para este documento se
+    encontraron al menos dos librerías con soporte para F1 25:
+    `F1Game.UDP` (.NET) y un parser en TypeScript
+    (`@deltazeroproduction/f1-udp-parser`). No se identificó un parser en
+    Python verificado, por lo que el parser es propio, contra la
+    especificación oficial. Ambas librerías sirven como referencia para
+    contrastar layouts, pero ninguna garantiza cubrir los cambios del
+    2026 Season Pack: manda la especificación oficial. Conviene repetir
+    esta búsqueda antes de la Fase 1.
 -   **Despliegue.** Al inicio la aplicación se ejecuta de forma nativa,
     sin Docker, para no añadir una capa de red más al diagnóstico de IP y
     firewall. El empaquetado para el segundo PC se decide después.
+-   **Sistemas operativos.** Windows y Linux (Ubuntu/Mint) son objetivos
+    de primera clase: rutas con `pathlib`, sin dependencias específicas
+    del sistema operativo y pruebas de CI en ambos. Las reglas de
+    firewall de cada uno se documentan en el README.
 -   **LLM.** La salida estructurada se valida siempre con `pydantic`,
     y con JSON Schema si el runtime lo soporta. Medir la latencia de
     primer token y total con el juego en ejecución; si el juego y el
@@ -720,12 +726,15 @@ registra como decisión en el documento de requerimientos.
 -   Frecuencia de cálculo de estrategia.
 -   Algoritmos y supuestos para degradación, tráfico y tiempo de parada.
 -   Política de cancelación de generaciones obsoletas.
--   Formato exacto de la captura binaria y esquema de SQLite.
+-   Esquema de SQLite. El formato de captura binaria `.f1cap` v1 ya está
+    definido en el código.
 -   Framework del front-end de la GUI, herramienta de generación de tipos
     y si se empaqueta como app de escritorio.
--   Si el receptor UDP usa `asyncio` o un hilo dedicado, según pruebas en
-    el sistema operativo objetivo.
--   Sistemas operativos soportados para la aplicación.
+-   Si el receptor UDP se mantiene como hilo dedicado (primera
+    implementación) o pasa a `asyncio`, según mediciones en Windows y
+    Linux.
+-   Formato UDP que se procesará (2025 o 2024) y cambios de la
+    especificación del 2026 Season Pack respecto a la de F1 25.
 -   Envío dirigido o broadcast desde el juego y política de filtrado por
     IP de origen.
 -   Gestión del token de acceso de la API cuando se abra a la red local.

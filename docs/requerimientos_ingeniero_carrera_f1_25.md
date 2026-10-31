@@ -348,8 +348,8 @@ confianza cuando sea relevante.
     ofrece filtro de IP de origen. Cualquier API o GUI remota futura debe
     estar desactivada por defecto.
 -   **Portabilidad de despliegue:** el mismo artefacto debe funcionar en
-    ambas topologías (RF-11). Los sistemas operativos soportados en el
-    PC de la aplicación deben definirse y documentarse.
+    ambas topologías (RF-11) y en Windows y Linux (Ubuntu/Mint) en el
+    PC de la aplicación. El juego objetivo es F1 25 (2026 Season Pack).
 -   **Desacoplamiento de interfaz:** poder añadir o reemplazar
     interfaces (consola, GUI, voz) sin modificar el núcleo (RF-12).
 -   **Internacionalización:** textos, prompts y formatos preparados para
@@ -435,6 +435,9 @@ El detalle del stack está en el outline técnico, sección 8.
     SQLite para métricas, eventos y llamadas al LLM.
 -   **i18n:** catálogos `gettext` y `Babel` para formatos; prompts y
     glosarios versionados por idioma.
+-   **Juego objetivo:** F1 25 (2026 Season Pack).
+-   **Sistemas operativos de la aplicación:** Windows y Linux
+    (Ubuntu/Mint). La integración continua ejecuta las pruebas en ambos.
 
 ## 10. Decisiones pendientes
 
@@ -442,15 +445,18 @@ El detalle del stack está en el outline técnico, sección 8.
     integración ya está decidido).
 -   Voz: motores de reconocimiento y síntesis, y salida de audio.
 -   Frecuencia de muestreo y paquetes concretos que se procesarán.
--   Formato exacto de la captura binaria y esquema de SQLite.
+-   Esquema de SQLite. El formato de captura binaria `.f1cap` v1 ya está
+    definido en el código (`src/f1_strategist/capture.py`).
 -   Framework del front-end de la GUI, herramienta de generación de tipos
     y si se empaqueta como app de escritorio.
--   Si el receptor UDP usa `asyncio` o un hilo dedicado, según pruebas en
-    el sistema operativo objetivo.
+-   Si el receptor UDP se mantiene como hilo dedicado (primera
+    implementación) o pasa a `asyncio`, según mediciones en Windows y
+    Linux.
 -   Fórmulas iniciales de degradación y simulación de paradas.
 -   Umbrales y prioridades iniciales, que deberán calibrarse mediante
     pruebas.
--   Sistemas operativos soportados en el PC de la aplicación.
+-   Formato UDP que se procesará (2025 o 2024) y cambios de la
+    especificación del 2026 Season Pack respecto a la de F1 25.
 -   Envío dirigido (unicast) o broadcast desde el juego, y política de
     filtrado por IP de origen.
 -   Ubicación recomendada del LLM (PC del juego o PC de la red local)
