@@ -1,0 +1,17 @@
+# Copia este archivo como config.toml y ajústalo. Úsalo con:
+#   f1-strategist run --config config.toml
+
+[telemetry]
+# "127.0.0.1": solo recibe del mismo PC (juego y aplicación en el mismo equipo).
+# "0.0.0.0" o la IP de la interfaz LAN: recibe desde otro PC de la red local.
+listen_address = "127.0.0.1"
+# Debe coincidir con el puerto configurado en la telemetría UDP del juego.
+listen_port = 20777
+# Opcional: aceptar paquetes solo de estas IP (por ejemplo, la del PC del juego).
+allowed_sources = []
+# Segundos sin datos antes de mostrar el diagnóstico.
+no_data_warning_s = 3.0
+
+[capture]
+enabled = true
+directory = "captures"
