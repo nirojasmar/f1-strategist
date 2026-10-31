@@ -150,9 +150,60 @@ estable del núcleo.
     eventos, cambios de estado de conexión y errores.
 
 La interfaz del núcleo debe ser la misma para la consola y la futura GUI.
-Si más adelante la GUI se ejecuta en un PC distinto al del núcleo, esa
-interfaz deberá exponerse por red de forma explícita y con control de
-acceso (decisión pendiente, sección 8).
+La consola arranca como adaptador en proceso sobre esa interfaz; la GUI
+la usa a través de una API local (sección 2.3). Si la GUI se ejecuta en un
+PC distinto al del núcleo, la API se expone por red de forma explícita y
+con token de acceso.
+
+### 2.3 API local y contrato con la GUI
+
+Ruta acordada para la GUI: una interfaz web local conectada al núcleo
+por una API local. La consola no necesita el servidor; la API se añade
+cuando llegue la GUI.
+
+``` text
+[Navegador o app de escritorio (futuro)]
+      |  WebSocket: estado, eventos, mensajes del agente
+      |  HTTP: comandos y consultas
+      v
+[API local (FastAPI)] --> [Interfaz del núcleo] --> [Núcleo]
+```
+
+Reglas del contrato:
+
+-   **Esquema versionado.** Los mensajes se definen con modelos
+    `pydantic`, se exportan como JSON Schema y los tipos de TypeScript de
+    la GUI se generan desde ese esquema. La versión del contrato se
+    comprueba al conectar y una incompatibilidad se informa de forma
+    explícita.
+-   **Snapshot más cambios.** Al conectarse o reconectarse, la GUI
+    recibe el estado completo y después cambios incrementales con número
+    de secuencia (`seq`). Si detecta un hueco, pide un snapshot nuevo.
+-   **Frecuencia limitada.** El estado resumido se envía a un máximo de
+    10 a 20 Hz. Los eventos y mensajes del agente se envían al
+    producirse. Si un cliente es lento, se descartan estados
+    intermedios, nunca eventos ni mensajes.
+-   **Sin lógica en la GUI.** Toda decisión y cálculo vive en el núcleo.
+    La GUI presenta y envía comandos.
+-   **Seguridad.** La API escucha en loopback por defecto. Abrirla a la
+    red local requiere activación explícita y un token de acceso.
+-   **Desacople.** Abrir, cerrar o reiniciar la GUI no afecta a la
+    captura, el registro ni el agente.
+
+Ejemplo ilustrativo de mensaje (los campos finales se definirán en la
+implementación):
+
+``` json
+{
+  "v": 1,
+  "type": "state_delta",
+  "seq": 1042,
+  "session_time_s": 1832.4,
+  "data": {
+    "player": { "fuel_margin_laps": 0.8, "tyre_age_laps": 12 }
+  }
+}
+```
 
 ## 3. Componentes
 
@@ -428,9 +479,26 @@ Responsabilidades:
 -   Estado del LLM y control para silenciar al agente sin detener la
     captura.
 
-**GUI (futura).** Consume la misma interfaz del núcleo. La tecnología
-(escritorio, web local u overlay) está por decidir. Debe poder añadirse
-sin modificar el pipeline.
+**GUI (futura).** Interfaz web local que consume la API del núcleo (2.3).
+Debe poder añadirse sin modificar el pipeline. La ruta prevista tiene tres
+pasos, cada uno reutiliza el anterior:
+
+1.  **Dashboard mínimo** sobre la API local: estado de conexión, carrera,
+    eventos, estrategia, avisos y entrada de preguntas.
+2.  **Pulido visual y diseño para carrera:** pocos datos grandes y
+    legibles durante la conducción; paneles detallados para antes y
+    después de la sesión.
+3.  **Empaquetado de escritorio (opcional):** Tauri o Electron con el
+    núcleo como proceso auxiliar.
+
+Notas de diseño:
+
+-   Durante la conducción casi no se mira un panel complejo. La voz sigue
+    siendo el canal principal.
+-   Una segunda pantalla o una tablet en la red local es la opción
+    preferida para la GUI en carrera.
+-   Un overlay sobre el juego solo es viable si el juego corre en
+    ventana sin bordes. No se inyectará nada en el proceso del juego.
 
 Si la aplicación se ejecuta en un PC distinto al del juego, la
 interfaz del piloto vive en ese PC. Para uso durante la conducción se
@@ -505,6 +573,10 @@ localizable con sus parámetros).
 parámetros, el idioma y el texto renderizado. Los formatos internos no
 dependen del idioma.
 
+Los modelos que cruzan la API local (snapshot, cambios, mensajes del
+agente, comandos) se definen con `pydantic`, llevan versión de contrato y
+se exportan como JSON Schema (sección 2.3).
+
 ### Ejemplo de snapshot estratégico
 
 ``` json
@@ -564,6 +636,12 @@ métricas implementados.
     máquina.
 -   Ninguna interfaz (consola o GUI) debe bloquear el receptor; la
     comunicación con el núcleo es asíncrona y con colas acotadas.
+-   Limitar la frecuencia de los estados enviados a la GUI y aplicar
+    conflación con clientes lentos: se descartan estados intermedios,
+    nunca eventos ni mensajes del agente.
+-   El receptor puede ser una tarea `asyncio` o un hilo con socket
+    bloqueante que alimente una cola. Medir ambas opciones en el sistema
+    operativo objetivo y parsear solo los tipos de paquete necesarios.
 
 ## 7. Pruebas
 
@@ -584,23 +662,71 @@ métricas implementados.
 -   Pruebas de i18n: claves faltantes, idioma de respaldo, mismas cifras
     en inglés y español, validación del idioma de respuesta y preguntas
     del piloto en ambos idiomas.
+-   Pruebas de contrato: el esquema exportado coincide con los modelos,
+    los tipos de la GUI se regeneran sin diferencias y una versión
+    incompatible se rechaza con un mensaje claro.
+-   Pruebas de reconexión de la GUI: snapshot inicial, cambios con `seq`,
+    detección de huecos y cliente lento.
 
-## 8. Decisiones técnicas por resolver
+## 8. Stack tecnológico
 
--   Lenguaje principal y modelo de concurrencia.
--   Biblioteca/parser UDP y compatibilidad con la versión del juego.
--   Runtime del LLM local y protocolo de integración.
--   Formato de almacenamiento de sesiones.
--   Interfaz de usuario y salida de audio.
+Stack acordado para la primera versión. Prioriza iteración rápida,
+integración sencilla con el LLM y pruebas con replay. Cualquier cambio se
+registra como decisión en el documento de requerimientos.
+
+### 8.1 Resumen
+
+| Componente | Elección | Notas |
+| --- | --- | --- |
+| Lenguaje y entorno | Python 3.12+, `uv`, `pyproject.toml` | `ruff` para lint y formato, `pyright` para tipos, CI en GitHub Actions |
+| Concurrencia | `asyncio` y colas acotadas | Alternativa para el receptor: hilo con socket bloqueante y cola |
+| Parser UDP | Propio (`struct` o `ctypes`) tras una interfaz | Validado con capturas reales |
+| Modelos y configuración | `pydantic` v2 y TOML | Valida también `AgentResponse` y exporta JSON Schema |
+| Métricas | Python y `numpy` | `polars` o `pandas` solo para análisis offline (Fase 9) |
+| Captura y replay | Captura binaria cruda (timestamp, longitud, payload) | Permite reprocesar con parsers nuevos |
+| Datos derivados | SQLite | Métricas, eventos, consultas y llamadas al LLM; Parquet opcional después |
+| LLM | Cliente HTTP a una API compatible con OpenAI | Adaptador intercambiable (LM Studio, llama.cpp u otro runtime) |
+| Consola | `Rich` y `prompt_toolkit` | `Textual` si se quieren paneles |
+| API local y GUI futura | FastAPI (HTTP y WebSocket) y front web local | React o Svelte, con tipos de TypeScript generados desde JSON Schema; empaquetado opcional con Tauri o Electron |
+| i18n | `gettext` y `Babel` | Prompts y glosarios en archivos versionados por idioma |
+| Pruebas | `pytest`, `pytest-asyncio`, `hypothesis` | Replays como pruebas de regresión |
+
+### 8.2 Notas
+
+-   **Parser.** En la búsqueda realizada para este documento, la única
+    librería mantenida para F1 25 fue `F1Game.UDP` (.NET). No se
+    identificó un parser en Python verificado para F1 25 (las demás
+    librerías encontradas eran de juegos anteriores), por lo que el parser
+    es propio, contra la especificación oficial. La librería .NET sirve
+    como referencia para contrastar layouts. Conviene repetir esta
+    búsqueda antes de la Fase 1.
+-   **Despliegue.** Al inicio la aplicación se ejecuta de forma nativa,
+    sin Docker, para no añadir una capa de red más al diagnóstico de IP y
+    firewall. El empaquetado para el segundo PC se decide después.
+-   **LLM.** La salida estructurada se valida siempre con `pydantic`,
+    y con JSON Schema si el runtime lo soporta. Medir la latencia de
+    primer token y total con el juego en ejecución; si el juego y el
+    modelo comparten GPU, compiten por VRAM (ver RF-11).
+-   **Cuándo reconsiderar.** C#/.NET si el objetivo principal pasa a ser
+    un overlay o una GUI de escritorio nativa (hay parser para F1 25);
+    una extensión en Rust si el parser resulta demasiado lento;
+    TypeScript si se prefiere un solo lenguaje para núcleo y GUI web.
+
+## 9. Decisiones técnicas por resolver
+
+-   Modelo local concreto y parámetros de generación (el protocolo de
+    integración ya está decidido).
+-   Salida de audio y motores de voz (reconocimiento y síntesis).
 -   Frecuencia de cálculo de estrategia.
 -   Algoritmos y supuestos para degradación, tráfico y tiempo de parada.
 -   Política de cancelación de generaciones obsoletas.
--   Mecanismo de comunicación núcleo-interfaz (en proceso, API local o
-    bus de eventos) y si la GUI podrá estar en un PC distinto al núcleo;
-    en ese caso, el modelo de autenticación y exposición por red.
--   Tecnología de la GUI (escritorio, web local u overlay).
+-   Formato exacto de la captura binaria y esquema de SQLite.
+-   Framework del front-end de la GUI, herramienta de generación de tipos
+    y si se empaqueta como app de escritorio.
+-   Si el receptor UDP usa `asyncio` o un hilo dedicado, según pruebas en
+    el sistema operativo objetivo.
 -   Sistemas operativos soportados para la aplicación.
 -   Envío dirigido o broadcast desde el juego y política de filtrado por
     IP de origen.
--   Formato de los catálogos de i18n, idioma por defecto y cambio de
-    idioma en caliente.
+-   Gestión del token de acceso de la API cuando se abra a la red local.
+-   Idioma por defecto y cambio de idioma en caliente.

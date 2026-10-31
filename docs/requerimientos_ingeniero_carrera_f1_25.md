@@ -262,10 +262,32 @@ confianza cuando sea relevante.
     presentación. La consola es un adaptador sobre esa interfaz y no
     contiene lógica estratégica.
 -   El núcleo debe poder ejecutarse sin interfaz gráfica.
--   Se espera crear una GUI en una etapa posterior. Debe consumir la
-    misma interfaz del núcleo y mostrar, como mínimo: estado de
-    conexión, estado de carrera, eventos, estrategia actual, avisos y
-    entrada de preguntas.
+-   Se espera crear una GUI en una etapa posterior. La ruta acordada es
+    una interfaz web local que se conecta al núcleo mediante una API
+    local (HTTP y WebSocket); el núcleo no depende de ella. Debe
+    consumir la misma interfaz que la consola y mostrar, como mínimo:
+    estado de conexión, estado de carrera, eventos, estrategia actual,
+    avisos y entrada de preguntas.
+-   El contrato de la API es versionado y se publica como esquema (por
+    ejemplo, JSON Schema). Los tipos de la GUI se generan a partir de ese
+    esquema para que ambos lados no se desincronicen.
+-   Al conectarse o reconectarse, la GUI recibe el estado completo
+    (snapshot) y después cambios incrementales con número de secuencia.
+    Abrir o cerrar la GUI no debe afectar al núcleo.
+-   La GUI recibe estados resumidos a una frecuencia limitada (del orden
+    de 10 a 20 Hz), no cada paquete de telemetría.
+-   La API escucha solo en loopback por defecto. Abrirla a la red local
+    (por ejemplo, para usar una tablet o un segundo PC como pantalla)
+    requiere activación explícita y un token de acceso.
+-   Durante la carrera, la GUI prioriza pocos datos grandes y legibles;
+    los paneles detallados se reservan para antes y después de la
+    sesión. La voz sigue siendo el canal principal durante la
+    conducción.
+-   Un overlay sobre el juego es una opción posterior, sujeta a que el
+    juego corra en ventana sin bordes. No se inyectará nada en el proceso
+    del juego; se prefiere una segunda pantalla.
+-   El empaquetado como app de escritorio (por ejemplo, con Tauri o
+    Electron) es opcional y posterior.
 -   Los mensajes del agente se generan como estructura validable
     (RF-08) y cada interfaz decide cómo presentarlos (texto en consola,
     panel en GUI, voz).
@@ -392,25 +414,46 @@ confianza cuando sea relevante.
 -   Cuando exista la localización: el mismo evento produce mensajes
     equivalentes en inglés y español con las mismas cifras.
 
-## 9. Decisiones pendientes
+## 9. Decisiones tomadas
 
--   Lenguaje y framework definitivos.
--   Runtime y formato del modelo local.
--   Interfaz de piloto: la consola queda definida para la primera
-    iteración; falta decidir la tecnología de la futura GUI (escritorio,
-    web local u overlay) y la voz.
+El detalle del stack está en el outline técnico, sección 8.
+
+-   **Lenguaje y concurrencia:** Python 3.12+ con `asyncio` y colas
+    acotadas. Si el receptor UDP asíncrono da problemas en el sistema
+    operativo objetivo, se usa un hilo con socket bloqueante que alimente
+    una cola.
+-   **Parser UDP:** propio, detrás de una interfaz y validado con
+    capturas reales.
+-   **Integración del LLM:** API HTTP compatible con OpenAI mediante un
+    adaptador intercambiable.
+-   **Interfaces:** consola primero; después una GUI web local conectada
+    por API local (HTTP y WebSocket); empaquetado de escritorio opcional.
+-   **Comunicación núcleo-interfaces:** API local con contrato versionado
+    (snapshot y cambios incrementales). La apertura a la red local es
+    explícita y con token.
+-   **Almacenamiento de sesiones:** captura binaria cruda para replay y
+    SQLite para métricas, eventos y llamadas al LLM.
+-   **i18n:** catálogos `gettext` y `Babel` para formatos; prompts y
+    glosarios versionados por idioma.
+
+## 10. Decisiones pendientes
+
+-   Modelo local concreto y parámetros de generación (el protocolo de
+    integración ya está decidido).
+-   Voz: motores de reconocimiento y síntesis, y salida de audio.
 -   Frecuencia de muestreo y paquetes concretos que se procesarán.
--   Estrategia de almacenamiento de sesiones.
+-   Formato exacto de la captura binaria y esquema de SQLite.
+-   Framework del front-end de la GUI, herramienta de generación de tipos
+    y si se empaqueta como app de escritorio.
+-   Si el receptor UDP usa `asyncio` o un hilo dedicado, según pruebas en
+    el sistema operativo objetivo.
 -   Fórmulas iniciales de degradación y simulación de paradas.
 -   Umbrales y prioridades iniciales, que deberán calibrarse mediante
     pruebas.
--   Mecanismo de comunicación entre el núcleo y las interfaces (llamadas
-    en proceso, API local o bus de eventos) y si la GUI podrá ejecutarse
-    en un PC distinto al del núcleo.
 -   Sistemas operativos soportados en el PC de la aplicación.
 -   Envío dirigido (unicast) o broadcast desde el juego, y política de
     filtrado por IP de origen.
 -   Ubicación recomendada del LLM (PC del juego o PC de la red local)
     según la carga medida.
--   Estrategia de i18n: formato de catálogos, idioma por defecto,
-    cambio de idioma en caliente y glosario por idioma.
+-   Gestión del token de acceso a la API cuando se abra a la red local.
+-   Idioma por defecto y cambio de idioma en caliente.

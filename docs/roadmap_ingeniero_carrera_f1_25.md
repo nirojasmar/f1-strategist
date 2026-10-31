@@ -24,12 +24,15 @@ eventos útiles, silencio cuando corresponde y respuestas fundamentadas.
 
 ### Trabajo
 
--   Elegir lenguaje y estructura inicial del repositorio.
+-   Crear la estructura inicial del repositorio con el stack acordado
+    (Python 3.12+, `uv`, `pyproject.toml`, `ruff`, `pyright`, `pytest`) y
+    CI en GitHub Actions.
 -   Revisar la especificación UDP correspondiente a F1 25 y la
     configuración del juego.
 -   Confirmar paquetes disponibles y campos necesarios.
--   Definir cómo se ejecutará el modelo local y cómo se invocará desde
-    la aplicación.
+-   Definir cómo se ejecutará el modelo local. La invocación será por
+    una API HTTP compatible con OpenAI mediante un adaptador
+    intercambiable.
 -   Primera interfaz definida: consola. La GUI queda planificada para
     una fase posterior (Fase 8).
 -   Definir las dos topologías de despliegue (mismo PC y red local) y
@@ -66,6 +69,11 @@ local.
 
 -   Implementar receptor UDP no bloqueante.
 -   Implementar parser por tipo de paquete.
+-   Escribir el parser propio con `struct` o `ctypes`, detrás de una
+    interfaz, procesando solo los tipos de paquete necesarios. Contrastar
+    los layouts con la librería `F1Game.UDP` como referencia.
+-   Probar el receptor sobre `asyncio` en el sistema operativo objetivo;
+    si da problemas, usar un hilo con socket bloqueante y una cola.
 -   Validar versiones, tamaños y rangos.
 -   Normalizar los datos a modelos internos.
 -   Mantener estado de sesión, coche y rivales.
@@ -86,7 +94,8 @@ local.
 
 ### Pruebas
 
--   Parser con fixtures de paquetes.
+-   Parser con fixtures de paquetes y pruebas de propiedades
+    (`hypothesis`) con paquetes truncados o corruptos.
 -   Paquetes inválidos o incompletos.
 -   Cambio de sesión y reinicio.
 -   Continuidad del estado pese a paquetes perdidos.
@@ -132,7 +141,9 @@ dentro de tolerancias definidas y no presentan saltos injustificados.
 
 ### Trabajo
 
--   Diseñar formato de almacenamiento.
+-   Diseñar el formato de almacenamiento: captura binaria cruda
+    (timestamp, longitud y payload) para el replay, y SQLite para
+    métricas, eventos, consultas y llamadas al LLM.
 -   Registrar datos normalizados, métricas y eventos.
 -   Implementar reproducción de sesiones grabadas.
 -   Permitir pausar, acelerar y repetir una sesión.
@@ -235,6 +246,10 @@ justifican una intervención sin depender del LLM.
 ### Trabajo
 
 -   Crear una interfaz desacoplada para el runtime del modelo.
+-   Implementar el adaptador como cliente HTTP de una API compatible
+    con OpenAI, con salida estructurada validada con `pydantic`.
+-   Medir la latencia de primer token y total con el modelo elegido,
+    también con el juego en ejecución.
 -   Configurar modelo, parámetros y timeout.
 -   Definir prompts separados para mensajes espontáneos y preguntas.
 -   Construir contextos compactos y específicos.
@@ -317,12 +332,23 @@ mediciones, estimaciones y recomendaciones.
 -   Añadir push-to-talk o activación por voz.
 -   Definir cómo se interrumpen o encolan mensajes.
 -   Añadir control de volumen, idioma y velocidad.
--   Crear una GUI sencilla que consuma la misma interfaz del núcleo
-    que la consola (estado de conexión, carrera, eventos, estrategia,
-    avisos y entrada de preguntas).
--   Decidir la tecnología de la GUI (escritorio, web local u overlay) y
-    si podrá ejecutarse en un PC distinto al del núcleo; en ese caso,
-    definir el acceso por red de forma explícita y segura.
+-   Seguir la ruta acordada para la GUI (web local), en tres pasos:
+    1.  **API del núcleo y dashboard mínimo:** exponer la interfaz del
+        núcleo como API local (HTTP y WebSocket) con contrato versionado
+        (snapshot y cambios con número de secuencia, frecuencia
+        limitada) y un dashboard web con estado de conexión, carrera,
+        eventos, estrategia, avisos y entrada de preguntas.
+    2.  **Pulido visual y diseño para carrera:** pocos datos grandes y
+        legibles durante la conducción, paneles detallados para antes y
+        después, y tipos de TypeScript generados desde el esquema.
+    3.  **Empaquetado de escritorio (opcional):** Tauri o Electron con el
+        núcleo como proceso auxiliar.
+-   Definir el acceso por red: loopback por defecto; abrir la API a la
+    red local (por ejemplo, tablet o segundo PC como pantalla) solo de
+    forma explícita y con token.
+-   Evaluar un overlay solo si el juego corre en ventana sin bordes. No
+    se inyecta nada en el proceso del juego; la segunda pantalla es la
+    opción preferida.
 -   Evaluar el uso de voz o segunda pantalla cuando la aplicación corre
     en otro PC, donde escribir durante la conducción no es práctico.
 
@@ -330,13 +356,15 @@ mediciones, estimaciones y recomendaciones.
 
 -   Entrada por voz.
 -   Salida hablada.
--   Interfaz gráfica mínima de carrera.
+-   API local con contrato versionado y dashboard web mínimo de
+    carrera.
 -   Gestión de interrupciones.
 
 ### Criterio de salida
 
 El piloto puede hacer preguntas y recibir mensajes breves sin que la
-interacción afecte la captura de telemetría.
+interacción afecte la captura de telemetría. La GUI puede abrirse,
+cerrarse y reconectarse sin afectar a la captura ni al agente.
 
 ------------------------------------------------------------------------
 
@@ -383,8 +411,8 @@ no requiera refactorizar el núcleo.
 
 ### Trabajo
 
--   Crear catálogos de mensajes en inglés y español, con idioma de
-    respaldo.
+-   Crear catálogos de mensajes en inglés y español con `gettext` (y
+    `Babel` para formatos), con idioma de respaldo.
 -   Separar los ajustes de idioma de interfaz, comunicación del agente,
     entrada del piloto y voz.
 -   Versionar prompts por idioma y definir un glosario de terminología
@@ -454,6 +482,10 @@ núcleo y las claves de mensaje para no bloquear esas extensiones.
 | La lógica se acopla a la consola y dificulta la futura GUI | Interfaz estable del núcleo, adaptadores sin lógica y pruebas del núcleo sin interfaz. |
 | Textos y prompts codificados dificultan la localización | Claves de mensaje, catálogos por idioma, registros neutros al idioma y pruebas de i18n desde el inicio. |
 | La aplicación queda expuesta en la red local sin control | Loopback por defecto, apertura explícita, filtro de IP de origen y API/GUI remota desactivadas por defecto. |
+| No hay un parser verificado en Python para F1 25 | Parser propio contra la especificación oficial, capturas reales como fixtures, contraste con `F1Game.UDP` y pruebas de propiedades. |
+| El receptor UDP sobre `asyncio` se comporta mal en el sistema operativo objetivo | Probarlo en la Fase 1 y, si falla, usar un hilo con socket bloqueante y una cola. |
+| La GUI y el núcleo se desincronizan | Esquema versionado, tipos generados, pruebas de contrato y de reconexión. |
+| La GUI es demasiado compleja para usarla durante la carrera | Pocos datos grandes en carrera, voz como canal principal y segunda pantalla en lugar de overlay. |
 
 ## Primer sprint sugerido
 
