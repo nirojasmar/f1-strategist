@@ -71,13 +71,21 @@ Documentos de diseño:
 -   Flujo de extremo a extremo en Linux con procesos reales: `replay` -> `run` -> captura -> `inspect`.
 -   **Recepción de telemetría real en Windows 11** con el juego: captura de 68 541 paquetes en
     ~13 minutos, sin paquetes inválidos.
--   La cabecera de 29 bytes (formato de F1 24/25) es correcta para la versión 1.26 del Season Pack.
+-   La cabecera de 29 bytes y los IDs de tipo de paquete (0 a 15) coinciden con la especificación oficial
+    de EA (formato 2025) y funcionan con la versión 1.26 del Season Pack.
+-   Los tamaños de los 14 tipos de paquete presentes en la captura coinciden exactamente con los de la
+    especificación.
+-   El orden de campos de `LapData` de la especificación es consistente con los datos reales (sección 7).
+-   `LapData.m_gridPosition` es de base 0 (parrilla menos 1), mientras que `FinalClassification.m_gridPosition`
+    es de base 1 (sección 7).
+-   La captura es una carrera de 5 vueltas con 22 coches.
 
 **No verificado todavía:**
 
 -   Recepción desde un segundo PC de la red local (topología B) y filtro de IP de origen con tráfico real.
 -   Ejecución en Linux con el juego real.
 -   Primera ejecución del CI en GitHub Actions (Windows y Ubuntu).
+-   Si la captura de 5 vueltas incluye paradas en boxes (`m_numPitStops`).
 -   Pruebas (`pytest`) en Windows.
 -   Que el paquete `Event` (1 202 en 13 min) contenga lo que se espera; se aclarará al parsear los códigos.
 
@@ -94,8 +102,8 @@ Documentos de diseño:
     (juego objetivo, sistemas operativos, nota del parser).
 -   Búsqueda de librerías de referencia: `F1Game.UDP` (.NET) y un parser en TypeScript
     (`@deltazeroproduction/f1-udp-parser`) soportan F1 25. No se encontró un parser en Python verificado.
--   La página de la especificación oficial de EA no se pudo leer con las herramientas de desarrollo; los
-    layouts de paquetes deben tomarse de un documento que aporte el usuario o de las librerías de referencia.
+-   La página web de la especificación de EA no se pudo leer con las herramientas de desarrollo. La
+    especificación sí estaba disponible desde el inicio como archivos del proyecto (ver 2026-11-01).
 
 ### 2026-11-01
 
@@ -104,11 +112,23 @@ Documentos de diseño:
     `0.0.0.0` (`--listen-address 0.0.0.0`).
 -   Con esa configuración se grabó la primera captura real (ver sección 7).
 -   El usuario indicó que no se edite código sin petición directa.
+-   El usuario señaló la documentación UDP de EA (formato 2025) y un comentario de foro sobre el orden de
+    `m_gridPosition` y `m_driverStatus` en `LapData`. Se contrastaron la cabecera, los IDs de paquete y el
+    tamaño de `LapData` (57 bytes por coche, 1 285 por paquete) con la especificación: coinciden.
+-   **Corrección:** la cadencia anotada antes (~11 Hz, ~85 KB/s) se calculó sobre la duración total de la
+    captura y era errónea. Con las frecuencias fijas de la especificación, el envío es de 20 Hz (sección 7).
+-   Verificación sobre la captura real: los 14 tipos de paquete miden exactamente lo que declara la
+    especificación. En `LapData`, el offset 43 (`m_gridPosition` según la especificación) trae 22 valores
+    distintos de 0 a 21, constantes en toda la captura, y el offset 44 (`m_driverStatus`) vale 4 en todos los
+    coches. El comentario de foro sobre el orden intercambiado no se confirma en esta versión.
+-   Cruce de `LapData` y `FinalClassification` sobre la captura: `LapData.m_gridPosition` es la parrilla menos 1
+    para los 22 coches (base 0), mientras que `FinalClassification.m_gridPosition` y `m_carPosition` al inicio
+    coinciden en base 1. La sesión es una carrera de 5 vueltas con 22 coches.
 -   Creado este archivo.
 
 ## 7. Hallazgos de la primera captura real
 
-Captura: 68 541 paquetes, 795,5 s (~13 min), ~66 MB. Salida de `inspect`:
+Captura: 68 541 paquetes, ~66 MB, 795,5 s entre el primer y el último paquete. Salida de `inspect`:
 
 -   **Orígenes:** `192.168.68.59` (68 538 paquetes; es la IP de red local del propio PC del juego) y
     `127.0.0.1` (3 paquetes). Con Broadcast Mode el origen es la IP de red local, no loopback; si se usa
@@ -118,27 +138,72 @@ Captura: 68 541 paquetes, 795,5 s (~13 min), ~66 MB. Salida de `inspect`:
 -   **Tipos presentes:** 0 a 8, 10 a 13 y 15. Ausentes: 9 (`LobbyInfo`, solo online) y 14 (`TimeTrial`,
     solo contrarreloj). Hay un `FinalClassification`, así que la captura incluye el cierre de sesión.
 
-| ID | Tipo | Paquetes | Frecuencia aprox. |
+| ID | Tipo | Paquetes | Frecuencia (según la especificación) |
 | --- | --- | --- | --- |
-| 0 | Motion | 8 674 | 10,9 Hz |
-| 1 | Session | 869 | 1,1 Hz |
-| 2 | LapData | 8 674 | 10,9 Hz |
-| 3 | Event | 1 202 | no periódico |
-| 4 | Participants | 88 | 0,11 Hz |
-| 5 | CarSetups | 869 | 1,1 Hz |
-| 6 | CarTelemetry | 8 674 | 10,9 Hz |
-| 7 | CarStatus | 8 674 | 10,9 Hz |
-| 8 | FinalClassification | 1 | una vez |
-| 10 | CarDamage | 4 338 | 5,5 Hz |
-| 11 | SessionHistory | 8 694 | 10,9 Hz |
-| 12 | TyreSets | 8 674 | 10,9 Hz |
-| 13 | MotionEx | 8 674 | 10,9 Hz |
-| 15 | LapPositions | 435 | 0,55 Hz |
+| 0 | Motion | 8 674 | la del menú del juego (20 Hz) |
+| 1 | Session | 869 | 2 Hz |
+| 2 | LapData | 8 674 | la del menú del juego (20 Hz) |
+| 3 | Event | 1 202 | cuando ocurre el evento |
+| 4 | Participants | 88 | cada 5 s |
+| 5 | CarSetups | 869 | 2 Hz |
+| 6 | CarTelemetry | 8 674 | la del menú del juego (20 Hz) |
+| 7 | CarStatus | 8 674 | la del menú del juego (20 Hz) |
+| 8 | FinalClassification | 1 | una vez al final |
+| 10 | CarDamage | 4 338 | 10 Hz |
+| 11 | SessionHistory | 8 694 | 20 por segundo, rotando entre coches |
+| 12 | TyreSets | 8 674 | 20 por segundo, rotando entre coches |
+| 13 | MotionEx | 8 674 | la del menú del juego (20 Hz) |
+| 15 | LapPositions | 435 | 1 Hz |
 
--   **Tráfico:** ~85 KB/s (~0,7 Mbit/s). Irrelevante para una red local, incluso por Wi-Fi.
--   **Cadencia:** ~11 Hz efectivos para los paquetes por fotograma. Suficiente para estrategia; no hace
-    falta subir la frecuencia de envío del juego.
--   Las frecuencias son observadas en esta captura, no extraídas de la especificación.
+-   **Duración efectiva y frecuencia de envío.** Los tipos de frecuencia fija de la especificación permiten
+    calibrar el reloj: `Session` (869 a 2 Hz), `CarSetups` (869 a 2 Hz), `CarDamage` (4 338 a 10 Hz),
+    `LapPositions` (435 a 1 Hz) y `Participants` (88 cada 5 s) dan todos ≈ 434 s de emisión. De ahí se
+    deduce que (a) la frecuencia de envío configurada en el juego es de 20 Hz (8 674 paquetes por fotograma
+    en ~434 s) y (b) los 795,5 s incluyen ≈ 360 s sin datos. Causa de esos segundos sin datos: no
+    confirmada (espera antes de entrar en sesión, pausas o los paquetes de prueba manuales).
+-   **Tráfico:** ~155 KB/s (~1,3 Mbit/s) durante la emisión. Irrelevante para una red local, incluso por
+    Wi-Fi. 20 Hz es suficiente para estrategia; no hace falta subir la frecuencia de envío.
+-   **Corrección:** una versión anterior de este archivo anotaba ~11 Hz y ~85 KB/s, calculados sobre los
+    795,5 s totales. Era un error.
+
+### Especificación de referencia y puntos por verificar
+
+-   **Fuente:** `F1_25_Telemetry_Output_Structures.txt` (estructuras C++) y `Data_Output_from_F1_25_v3.pdf`,
+    documentación de EA para el formato 2025. Están disponibles como archivos del proyecto de Claude; no
+    están en el repositorio (EA los facilita solo como referencia).
+-   **Contrastado:** cabecera de 29 bytes, IDs 0 a 15 y `LapData` (57 bytes por coche; 22 coches más la
+    cabecera y 2 bytes finales = 1 285 bytes, como declara la especificación).
+-   **Verificado con la captura (2026-11-01):**
+    1.  **Tamaños:** los 14 tipos presentes (0 a 8, 10 a 13 y 15) tienen exactamente el tamaño declarado
+        en la especificación (por ejemplo, LapData 1285, CarDamage 1041, TyreSets 231). `Event` mide
+        siempre 45 bytes. Esto sugiere que el 2026 Season Pack (v1.26) no cambió el tamaño de los
+        paquetes del formato 2025; no prueba por sí solo que todos los campos coincidan.
+    2.  **Orden de `m_gridPosition` y `m_driverStatus` en `LapData`:** el comentario de foro no se
+        sostiene con esta versión. Con el orden de la especificación, el offset 43 toma 22 valores
+        distintos (0 a 21) y constantes durante toda la captura, y el offset 44 vale 4 ("on track") en
+        todos los coches. El offset 43 no puede ser `m_driverStatus`, cuyo rango es de 0 a 4. Se mantiene
+        el orden de la especificación; el parser lo define en un único lugar y lo cubre con una prueba
+        sobre datos reales.
+-   **Base de `m_gridPosition`:** cruzando `LapData.m_gridPosition` con `m_carPosition` del primer
+    `LapData` y con `m_gridPosition` de `FinalClassification` (offset 2 de cada coche; 46 bytes por coche
+    tras la cabecera y `m_numCars`), el valor de `LapData` es siempre la parrilla menos 1 (base 0) para
+    los 22 coches. `FinalClassification.m_gridPosition` y `m_carPosition` al inicio coinciden en base 1.
+    La especificación no lo indica. El parser debe normalizar a base 1 y cubrirlo con una prueba.
+-   **Sesión grabada:** carrera de 5 vueltas con 22 coches (todos con `m_numLaps` = 5 en
+    `FinalClassification`, y las posiciones finales forman una permutación de 1 a 22; esto valida también
+    el layout de `FinalClassification`). Se desconoce si hubo paradas en boxes (`m_numPitStops`).
+-   **Notas de la especificación que afectan al diseño:**
+    -   `SessionHistory` y `TyreSets` se envían a 20 paquetes por segundo rotando entre coches: cada
+        paquete es de un solo coche (`m_carIdx`), así que cada coche se actualiza alrededor de una vez por
+        segundo, no a 20 Hz.
+    -   Los índices de coche no cambian durante la sesión.
+    -   Un coche tiene datos válidos si su `m_resultStatus` en `LapData` no es 0 (invalid) ni 1
+        (inactive); `m_numActiveCars` de `Participants` indica cuántos coches hay.
+    -   Con "Your Telemetry" en restringido (otros jugadores en multijugador), campos como combustible,
+        ERS, daños y desgaste llegan a cero: deben tratarse como desconocidos, no como 0.
+    -   F1 25 admite además los formatos 2024 y 2023; por ahora solo se prevé el 2025.
+    -   El `.txt` y el PDF difieren en un tipo (`NEuint8` en `DRSDisabled` del `.txt`, `uint8` en el PDF);
+        se interpreta como `uint8`.
 
 ## 8. Mapa del código
 
@@ -186,7 +251,7 @@ Orden de trabajo propuesto (el detalle se discute en la conversación y se actua
 
 1.  **Receptor, cierre:** detección de pérdida, duplicados y desorden con los identificadores de la
     cabecera; prueba en red local con dos PC; decidir hilo frente a `asyncio`.
-2.  **Parser:** interfaz y registro por tipo de paquete, validación de tamaños y rangos, y soporte
+2.  **Parser:** interfaz y registro por tipo de paquete, layouts según la especificación de EA (formato 2025), validación de tamaños y rangos, y soporte
     únicamente de los formatos conocidos (aviso ante formatos no soportados). Orden: `Session`,
     `LapData`, `Participants`, `CarStatus`, `CarDamage`, `TyreSets`, `SessionHistory`, `Event`,
     `FinalClassification`.
@@ -197,8 +262,7 @@ Orden de trabajo propuesto (el detalle se discute en la conversación y se actua
 
 ## 11. Pendientes y decisiones abiertas
 
--   Fuente de referencia para los layouts de cada paquete (documento oficial del usuario o librerías de
-    referencia contrastadas con la captura).
+-   Comprobar si la captura de 5 vueltas incluye paradas en boxes (`m_numPitStops`).
 -   Captura más variada: carrera con paradas en boxes, safety car y, si es posible, lluvia.
 -   Probar la topología de red local con dos PC; decidir envío dirigido o broadcast y política de
     filtrado por IP de origen.
