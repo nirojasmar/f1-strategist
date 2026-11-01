@@ -69,13 +69,16 @@ local.
 
 ### Trabajo
 
--   Implementar receptor UDP no bloqueante.
+-   Implementar el receptor UDP con hilo dedicado, socket bloqueante y cola acotada.
 -   Implementar parser por tipo de paquete.
 -   Escribir el parser propio con `struct` o `ctypes`, detrás de una
     interfaz, procesando solo los tipos de paquete necesarios. Contrastar
     los layouts con la librería `F1Game.UDP` como referencia.
--   Probar el receptor sobre `asyncio` en el sistema operativo objetivo;
-    si da problemas, usar un hilo con socket bloqueante y una cola.
+-   Medir y mostrar por tipo de paquete los huecos de frame estimados,
+    duplicados y paquetes fuera de orden, aislados por `session_uid`.
+-   Mantener la recepción en un hilo: con la carga observada, migrar a
+    `asyncio` no aporta valor. Los huecos de frame son estimaciones, no
+    pérdidas confirmadas, porque la cadencia varía según el tipo.
 -   Validar versiones, tamaños y rangos.
 -   Normalizar los datos a modelos internos.
 -   Mantener estado de sesión, coche y rivales.
@@ -485,7 +488,6 @@ núcleo y las claves de mensaje para no bloquear esas extensiones.
 | Textos y prompts codificados dificultan la localización | Claves de mensaje, catálogos por idioma, registros neutros al idioma y pruebas de i18n desde el inicio. |
 | La aplicación queda expuesta en la red local sin control | Loopback por defecto, apertura explícita, filtro de IP de origen y API/GUI remota desactivadas por defecto. |
 | No hay un parser verificado en Python para F1 25 | Parser propio contra la especificación oficial, capturas reales como fixtures, contraste con `F1Game.UDP` y pruebas de propiedades. |
-| El receptor UDP sobre `asyncio` se comporta mal en el sistema operativo objetivo | Probarlo en la Fase 1 y, si falla, usar un hilo con socket bloqueante y una cola. |
 | La GUI y el núcleo se desincronizan | Esquema versionado, tipos generados, pruebas de contrato y de reconexión. |
 | La GUI es demasiado compleja para usarla durante la carrera | Pocos datos grandes en carrera, voz como canal principal y segunda pantalla en lugar de overlay. |
 | El 2026 Season Pack cambia la especificación UDP respecto a F1 25 | Basar el parser en la especificación del Season Pack, guardar versión de juego y de paquete en cada captura y avisar ante formatos no soportados. |

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from f1_strategist.config import TelemetryConfig
 from f1_strategist.diagnostics import ConnectionState, connection_state, diagnose
-from f1_strategist.receiver import StatsSnapshot
+from f1_strategist.receiver import PacketSequenceStats, StatsSnapshot
 
 CFG = TelemetryConfig(no_data_warning_s=3.0)
 
@@ -27,3 +27,19 @@ def test_stalled_after_data() -> None:
     assert connection_state(CFG, snap, 11.0) is ConnectionState.RECEIVING
     assert connection_state(CFG, snap, 20.0) is ConnectionState.STALLED
     assert "Sin datos desde hace" in diagnose(CFG, snap, 20.0)[0]
+
+
+def test_sequence_anomalies_are_reported_with_loss_estimation_caveat() -> None:
+    snap = StatsSnapshot(
+        started_monotonic=0.0,
+        received=4,
+        sequence_by_id={
+            6: PacketSequenceStats(frame_gaps=2, duplicates=1, out_of_order=1)
+        },
+    )
+
+    messages = diagnose(CFG, snap, 1.0)
+
+    assert any("CarTelemetry" in message for message in messages)
+    assert any("2 huecos de frame" in message for message in messages)
+    assert any("cadencia varía" in message for message in messages)

@@ -15,7 +15,15 @@ from .conftest import make_packet
 
 
 def _write_source_capture(path: Path, count: int) -> list[bytes]:
-    payloads = [make_packet(i % 3, session_time=i * 0.016) for i in range(count)]
+    payloads = [
+        make_packet(
+            i % 3,
+            session_time=i * 0.016,
+            frame_identifier=i,
+            overall_frame_identifier=i,
+        )
+        for i in range(count)
+    ]
     with CaptureWriter(path) as writer:
         for i, payload in enumerate(payloads):
             writer.write(CapturedPacket(1_000_000_000 + i * 16_000_000, "10.0.0.5", 4000, payload))

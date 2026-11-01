@@ -8,7 +8,10 @@ import pytest
 
 from f1_strategist.capture import CapturedPacket
 from f1_strategist.config import TelemetryConfig
+from f1_strategist.packets import parse_header
 from f1_strategist.receiver import ReceiverError, Stats, UdpReceiver
+
+from .conftest import make_packet
 
 
 def _send(port: int, payloads: list[bytes]) -> None:
@@ -68,6 +71,44 @@ def test_full_queue_counts_drops() -> None:
     finally:
         receiver.stop()
     assert stats.snapshot().dropped_queue_full == 2
+
+
+def test_sequence_stats_are_scoped_by_session_and_packet_type() -> None:
+    stats = Stats()
+    headers = [
+        make_packet(6, session_uid=10, frame_identifier=10, overall_frame_identifier=20),
+        make_packet(6, session_uid=10, frame_identifier=13, overall_frame_identifier=23),
+        make_packet(6, session_uid=10, frame_identifier=12, overall_frame_identifier=22),
+        make_packet(6, session_uid=10, frame_identifier=12, overall_frame_identifier=22),
+        make_packet(6, session_uid=11, frame_identifier=1, overall_frame_identifier=1),
+        make_packet(7, session_uid=10, frame_identifier=1, overall_frame_identifier=1),
+    ]
+    for payload in headers:
+        stats.record_header(parse_header(payload))
+
+    snap = stats.snapshot()
+    assert snap.sequence_by_id[6].frame_gaps == 2
+    assert snap.sequence_by_id[6].duplicates == 1
+    assert snap.sequence_by_id[6].out_of_order == 1
+    assert snap.sequence_by_id[7].frame_gaps == 0
+    assert snap.sequence_by_id[7].duplicates == 0
+    assert snap.sequence_by_id[7].out_of_order == 0
+
+
+def test_sequence_stats_handle_uint32_frame_wraparound() -> None:
+    stats = Stats()
+    for frame in (0xFFFFFFFE, 1):
+        stats.record_header(
+            parse_header(
+                make_packet(
+                    6,
+                    frame_identifier=frame,
+                    overall_frame_identifier=frame,
+                )
+            )
+        )
+
+    assert stats.snapshot().sequence_by_id[6].frame_gaps == 2
 
 
 def test_port_in_use_gives_clear_error() -> None:

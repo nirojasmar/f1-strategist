@@ -73,12 +73,23 @@ def render(cfg: AppConfig, session: CaptureSession, now: float | None = None) ->
         Panel(info, title="F1 Strategist · telemetría UDP", expand=False)
     ]
     if snap.packets_by_id:
-        table = Table(title="Paquetes por tipo", expand=False)
+        table = Table(title="Paquetes por tipo · huecos estimados", expand=False)
         table.add_column("ID", justify="right")
         table.add_column("Tipo")
         table.add_column("Cantidad", justify="right")
+        table.add_column("Huecos", justify="right")
+        table.add_column("Duplicados", justify="right")
+        table.add_column("Desorden", justify="right")
         for packet_id, count in sorted(snap.packets_by_id.items()):
-            table.add_row(str(packet_id), packet_name(packet_id), str(count))
+            sequence = snap.sequence_by_id.get(packet_id)
+            table.add_row(
+                str(packet_id),
+                packet_name(packet_id),
+                str(count),
+                str(sequence.frame_gaps if sequence else 0),
+                str(sequence.duplicates if sequence else 0),
+                str(sequence.out_of_order if sequence else 0),
+            )
         parts.append(table)
     for message in diagnose(tele, snap, now):
         parts.append(f"[yellow]{message}[/]")

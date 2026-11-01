@@ -49,7 +49,7 @@ Documentos de diseño:
 | Interfaz | Consola primero; GUI web local (FastAPI + WebSocket) después | Acordado |
 | Topologías | Mismo PC o PC de la red local; solo cambia la configuración | Requisito del usuario |
 | Seguridad de red | Escucha solo en loopback por defecto; apertura a la LAN explícita | Requisito |
-| Receptor UDP | Hilo dedicado con socket bloqueante y cola acotada | Implementación de Sprint 1; la comparación con `asyncio` sigue abierta |
+| Receptor UDP | Hilo dedicado con socket bloqueante y cola acotada | Decisión cerrada; anomalías de secuencia medidas por tipo y `session_uid` |
 | Formato `.f1cap` v1 | Definido en `src/f1_strategist/capture.py` | Implementado en Sprint 1 |
 | Parser | Propio (`struct`), detrás de una interfaz | Acordado; aún no implementado |
 
@@ -121,6 +121,10 @@ Documentos de diseño:
     especificación. En `LapData`, el offset 43 (`m_gridPosition` según la especificación) trae 22 valores
     distintos de 0 a 21, constantes en toda la captura, y el offset 44 (`m_driverStatus`) vale 4 en todos los
     coches. El comentario de foro sobre el orden intercambiado no se confirma en esta versión.
+-   Cierre del receptor: se mantiene el hilo dedicado; a la carga observada no le aporta valor migrar a
+    `asyncio`. Se miden huecos de frame estimados, duplicados y desorden por tipo, aislados por
+    `session_uid`, y se muestran en consola. Los huecos no confirman pérdida porque la cadencia cambia
+    entre tipos de paquete; UDP no reenvía.
 -   Cruce de `LapData` y `FinalClassification` sobre la captura: `LapData.m_gridPosition` es la parrilla menos 1
     para los 22 coches (base 0), mientras que `FinalClassification.m_gridPosition` y `m_carPosition` al inicio
     coinciden en base 1. La sesión es una carrera de 5 vueltas con 22 coches.
@@ -245,12 +249,10 @@ uv run f1-strategist replay captures/<archivo>.f1cap --host 127.0.0.1 --port 207
 -   Si el juego envía por broadcast, la app debe escuchar en `0.0.0.0`; en loopback no recibe nada.
 -   Otra aplicación de telemetría usando el puerto 20777 provoca un error claro al abrir el socket.
 
-## 10. Siguiente paso: plan de la Fase 1 (propuesta, pendiente de aprobación)
+## 10. Siguiente paso: plan de la Fase 1
 
-Orden de trabajo propuesto (el detalle se discute en la conversación y se actualizará aquí al aprobarse):
-
-1.  **Receptor, cierre:** detección de pérdida, duplicados y desorden con los identificadores de la
-    cabecera; prueba en red local con dos PC; decidir hilo frente a `asyncio`.
+1.  **Receptor, cerrado:** hilo dedicado con socket bloqueante y cola acotada; anomalías de secuencia
+    medidas y visibles por tipo de paquete. La prueba en red local con dos PC sigue pendiente.
 2.  **Parser:** interfaz y registro por tipo de paquete, layouts según la especificación de EA (formato 2025), validación de tamaños y rangos, y soporte
     únicamente de los formatos conocidos (aviso ante formatos no soportados). Orden: `Session`,
     `LapData`, `Participants`, `CarStatus`, `CarDamage`, `TyreSets`, `SessionHistory`, `Event`,
@@ -266,7 +268,6 @@ Orden de trabajo propuesto (el detalle se discute en la conversación y se actua
 -   Captura más variada: carrera con paradas en boxes, safety car y, si es posible, lluvia.
 -   Probar la topología de red local con dos PC; decidir envío dirigido o broadcast y política de
     filtrado por IP de origen.
--   Receptor UDP: mantener el hilo dedicado o pasar a `asyncio`.
 -   Esquema de SQLite; modelo local concreto del LLM; voz; framework del front-end de la GUI;
     empaquetado de escritorio; fórmulas de degradación y simulación de paradas; umbrales iniciales;
     idioma por defecto y cambio en caliente.

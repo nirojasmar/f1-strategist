@@ -5,6 +5,7 @@ from __future__ import annotations
 from enum import Enum
 
 from .config import TelemetryConfig
+from .packets import packet_name
 from .receiver import StatsSnapshot
 
 
@@ -64,4 +65,27 @@ def diagnose(cfg: TelemetryConfig, snap: StatsSnapshot, now_monotonic: float) ->
         )
     if snap.capture_error:
         messages.append(snap.capture_error)
+
+    sequence_issues = [
+        (packet_id, stats)
+        for packet_id, stats in sorted(snap.sequence_by_id.items())
+        if stats.frame_gaps or stats.duplicates or stats.out_of_order
+    ]
+    if sequence_issues:
+        details = []
+        for packet_id, stats in sequence_issues:
+            parts = []
+            if stats.frame_gaps:
+                parts.append(f"{stats.frame_gaps} huecos de frame (posibles pérdidas)")
+            if stats.duplicates:
+                parts.append(f"{stats.duplicates} duplicados")
+            if stats.out_of_order:
+                parts.append(f"{stats.out_of_order} fuera de orden")
+            details.append(f"{packet_name(packet_id)}: {', '.join(parts)}")
+        messages.append("Anomalías de secuencia UDP: " + "; ".join(details) + ".")
+        if any(stats.frame_gaps for _, stats in sequence_issues):
+            messages.append(
+                "Los huecos se estiman con frame_identifier por tipo; la cadencia "
+                "varía y no confirma datagramas perdidos."
+            )
     return messages

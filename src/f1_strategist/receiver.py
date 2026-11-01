@@ -13,7 +13,7 @@ import queue
 import socket
 import threading
 import time
-from collections import Counter
+from collections import Counter, deque
 from dataclasses import dataclass, field
 
 from .capture import CapturedPacket
@@ -22,10 +22,34 @@ from .packets import PacketHeader
 
 _RECV_BUFFER = 4 * 1024 * 1024
 _MAX_DATAGRAM = 65535
+_SEQUENCE_HISTORY_LIMIT = 4096
+_UINT32_MASK = 0xFFFFFFFF
+_UINT32_HALF = 0x80000000
 
 
 class ReceiverError(Exception):
     """No se pudo abrir el socket UDP."""
+
+
+@dataclass(frozen=True, slots=True)
+class PacketSequenceStats:
+    frame_gaps: int = 0
+    duplicates: int = 0
+    out_of_order: int = 0
+
+
+@dataclass(slots=True)
+class _SequenceCounters:
+    frame_gaps: int = 0
+    duplicates: int = 0
+    out_of_order: int = 0
+
+
+@dataclass(slots=True)
+class _FrameSequence:
+    last_frame_identifier: int | None = None
+    recent: deque[tuple[int, int]] = field(default_factory=deque)
+    seen: set[tuple[int, int]] = field(default_factory=set)
 
 
 def normalize_ip(value: str) -> str:
@@ -47,6 +71,7 @@ class StatsSnapshot:
     sources: dict[str, int] = field(default_factory=dict)
     rejected_sources: dict[str, int] = field(default_factory=dict)
     packets_by_id: dict[int, int] = field(default_factory=dict)
+    sequence_by_id: dict[int, PacketSequenceStats] = field(default_factory=dict)
     last_header: PacketHeader | None = None
     capture_packets: int = 0
     capture_bytes: int = 0
@@ -68,6 +93,8 @@ class Stats:
         self._sources: Counter[str] = Counter()
         self._rejected_sources: Counter[str] = Counter()
         self._by_id: Counter[int] = Counter()
+        self._sequence_counters: dict[int, _SequenceCounters] = {}
+        self._sequences: dict[tuple[int, int], _FrameSequence] = {}
         self._header: PacketHeader | None = None
         self._capture_packets = 0
         self._capture_bytes = 0
@@ -96,6 +123,32 @@ class Stats:
                 return
             self._by_id[header.packet_id] += 1
             self._header = header
+            counters = self._sequence_counters.setdefault(
+                header.packet_id, _SequenceCounters()
+            )
+            sequence = self._sequences.setdefault(
+                (header.session_uid, header.packet_id), _FrameSequence()
+            )
+            frame_key = (header.frame_identifier, header.overall_frame_identifier)
+            if frame_key in sequence.seen:
+                counters.duplicates += 1
+                return
+
+            last_frame = sequence.last_frame_identifier
+            if last_frame is None:
+                sequence.last_frame_identifier = header.frame_identifier
+            else:
+                delta = (header.frame_identifier - last_frame) & _UINT32_MASK
+                if 0 < delta < _UINT32_HALF:
+                    counters.frame_gaps += delta - 1
+                    sequence.last_frame_identifier = header.frame_identifier
+                else:
+                    counters.out_of_order += 1
+
+            if len(sequence.recent) == _SEQUENCE_HISTORY_LIMIT:
+                sequence.seen.remove(sequence.recent.popleft())
+            sequence.recent.append(frame_key)
+            sequence.seen.add(frame_key)
 
     def set_capture(self, packets: int, nbytes: int) -> None:
         with self._lock:
@@ -119,6 +172,14 @@ class Stats:
                 sources=dict(self._sources),
                 rejected_sources=dict(self._rejected_sources),
                 packets_by_id=dict(self._by_id),
+                sequence_by_id={
+                    packet_id: PacketSequenceStats(
+                        frame_gaps=counters.frame_gaps,
+                        duplicates=counters.duplicates,
+                        out_of_order=counters.out_of_order,
+                    )
+                    for packet_id, counters in self._sequence_counters.items()
+                },
                 last_header=self._header,
                 capture_packets=self._capture_packets,
                 capture_bytes=self._capture_bytes,
