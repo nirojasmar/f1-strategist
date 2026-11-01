@@ -24,47 +24,22 @@ puedan verificarse mediante código.
 
 ## 2. Diagrama lógico
 
-``` text
-F1 25
-  |
-  | UDP telemetry
-  v
-[UDP Receiver]
-  |
-  v
-[Packet Parser]
-  |
-  v
-[Normalizer + Session State]
-  |                     \
-  |                      \--> [Session Recorder]
-  v
-[Metrics / Feature Engine]
-  |
-  v
-[Strategy Engine]
-  |
-  v
-[Event Detector]
-  |
-  v
-[Event Gate / Priority Manager] <---- [Pilot Input]
-  |                                      |
-  | spontaneous event                    v
-  |                               [Intent Router]
-  |                                      |
-  +-------------------+------------------+
-                      v
-              [Context Builder]
-                      |
-                      v
-                [Local LLM]
-                      |
-                      v
-             [Response Validator]
-                      |
-                      v
-             [Text / Voice Output]
+```mermaid
+flowchart TD
+    F1["F1 25"] -->|"UDP telemetry"| RX["UDP Receiver"]
+    RX --> P["Packet Parser"]
+    P --> NS["Normalizer + Session State"]
+    NS --> REC["Session Recorder"]
+    NS --> M["Metrics / Feature Engine"]
+    M --> S["Strategy Engine"]
+    S --> E["Event Detector"]
+    E --> G["Event Gate / Priority Manager"]
+    PI["Pilot Input"] --> IR["Intent Router"]
+    G -->|"spontaneous event"| CB["Context Builder"]
+    IR --> CB
+    CB --> LLM["Local LLM"]
+    LLM --> RV["Response Validator"]
+    RV --> OUT["Text / Voice Output"]
 ```
 
 La recepción, normalización y registro deben continuar aunque el LLM
@@ -75,27 +50,23 @@ esté ocupado o no disponible.
 El mismo artefacto soporta dos topologías. La diferencia es solo de
 configuración.
 
-``` text
-Topología A: mismo PC
-+--------------------------------------+
-| PC del juego                         |
-|   F1 25 --UDP--> 127.0.0.1:puerto    |
-|                  [Aplicación]        |
-|                  [Consola]           |
-|                  [LLM local] (*)     |
-+--------------------------------------+
-
-Topología B: red local
-+----------------+     UDP (LAN)     +----------------------------+
-| PC del juego   | ----------------> | PC de la aplicación        |
-|   F1 25        |  IP:puerto        |   [Aplicación]             |
-+----------------+                   |   [Consola / GUI futura]   |
-                                     |   [LLM local] (*)          |
-                                     +----------------------------+
+```mermaid
+flowchart TB
+    subgraph TOPA["Topología A: mismo PC"]
+        A1["F1 25"] -->|"UDP: 127.0.0.1:puerto"| A2["Aplicación"]
+        A2 --- A3["Consola"]
+        A2 --- A4["LLM local (*)"]
+    end
+    subgraph TOPB["Topología B: red local"]
+        B1["PC del juego: F1 25"] -->|"UDP (LAN): IP:puerto"| B2["PC de la aplicación"]
+        B2 --- B3["Aplicación"]
+        B2 --- B4["Consola / GUI futura"]
+        B2 --- B5["LLM local (*)"]
+    end
+```
 
 (*) El endpoint del LLM es configurable y puede estar en cualquiera de
-    los dos PC o en otra máquina de la red local.
-```
+los dos PC o en otra máquina de la red local.
 
 Configuración ilustrativa (los nombres finales se definirán en la
 implementación; el puerto debe coincidir con el configurado en el juego):
@@ -133,13 +104,12 @@ router de intenciones, contexto y LLM) no conoce ninguna interfaz
 concreta. Las interfaces son adaptadores que se conectan a una interfaz
 estable del núcleo.
 
-``` text
-[Consola]   [GUI (futuro)]   [Voz (futuro)]
-    \            |               /
-     v            v              v
-   [Interfaz del núcleo: comandos / consultas / flujo de eventos]
-                  |
-            [Núcleo (pipeline)]
+```mermaid
+flowchart TB
+    C["Consola"] --> K["Interfaz del núcleo: comandos / consultas / flujo de eventos"]
+    G["GUI (futuro)"] --> K
+    V["Voz (futuro)"] --> K
+    K --> N["Núcleo (pipeline)"]
 ```
 
 -   **Comandos:** enviar una pregunta del piloto, silenciar o reactivar
@@ -161,12 +131,12 @@ Ruta acordada para la GUI: una interfaz web local conectada al núcleo
 por una API local. La consola no necesita el servidor; la API se añade
 cuando llegue la GUI.
 
-``` text
-[Navegador o app de escritorio (futuro)]
-      |  WebSocket: estado, eventos, mensajes del agente
-      |  HTTP: comandos y consultas
-      v
-[API local (FastAPI)] --> [Interfaz del núcleo] --> [Núcleo]
+```mermaid
+flowchart TB
+    UI["Navegador o app de escritorio (futuro)"] -->|"WebSocket: estado, eventos, mensajes del agente"| API["API local (FastAPI)"]
+    UI -->|"HTTP: comandos y consultas"| API
+    API --> KI["Interfaz del núcleo"]
+    KI --> N["Núcleo"]
 ```
 
 Reglas del contrato:
