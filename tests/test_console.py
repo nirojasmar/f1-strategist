@@ -6,9 +6,11 @@ from pathlib import Path
 
 from rich.console import Console
 
+import f1_strategist.console as console_module
 from f1_strategist.config import AppConfig
-from f1_strategist.console import render
+from f1_strategist.console import _render_race_summary, render
 from f1_strategist.console_messages import render_race_event
+from f1_strategist.messages import message
 from f1_strategist.parser import (
     CarStatusPacket,
     EnumValue,
@@ -88,3 +90,34 @@ def test_race_event_with_out_of_range_car_index_renders_safely() -> None:
     cars = tuple(CarSnapshot(car_index=index) for index in range(22))
 
     assert render_race_event(event, cars) == "Coche 23: entra en boxes"
+
+
+def test_console_renders_untrusted_markup_as_literal_text(monkeypatch) -> None:
+    config = AppConfig()
+    session = CaptureSession(config)
+    race = session.race_snapshot()
+    name = "[red]Driver[/red]"
+    race = replace(
+        race,
+        player_car_index=0,
+        cars=(replace(race.cars[0], name=name), *race.cars[1:]),
+        events=(RaceEvent("pit_entry", 1.0, car_index=0),),
+    )
+    output = StringIO()
+    console = Console(file=output, width=120, no_color=True)
+    console.print(_render_race_summary(race, now=2.0))
+
+    assert output.getvalue().count(name) == 2
+
+    diagnostics = (
+        message("rejected_sources", ips=("[bold]192.0.2.1[/bold]",)),
+        message("capture_write_error", error="disk [red]failure[/red]"),
+    )
+    monkeypatch.setattr(console_module, "diagnose", lambda *_: diagnostics)
+    output = StringIO()
+    console = Console(file=output, width=120, no_color=True)
+    console.print(render(config, session, now=2.0))
+
+    rendered = output.getvalue()
+    assert "[bold]192.0.2.1[/bold]" in rendered
+    assert "disk [red]failure[/red]" in rendered

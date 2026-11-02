@@ -6,6 +6,7 @@ import time
 
 from rich.console import Console, Group, RenderableType
 from rich.live import Live
+from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
 
@@ -47,7 +48,9 @@ def _render_race_summary(race: RaceStateSnapshot, now: float) -> Panel:
         "Sesión",
         f"{_display_enum(race.session.session_type)} · {_display_enum(race.session.track)}",
     )
-    table.add_row("Piloto", player.name if player is not None and player.name else "—")
+    table.add_row(
+        "Piloto", escape(player.name) if player is not None and player.name else "—"
+    )
     lap = str(race.current_lap) if race.current_lap is not None else "—"
     if race.session.total_laps is not None:
         lap = f"{lap}/{race.session.total_laps}"
@@ -87,7 +90,9 @@ def _render_race_summary(race: RaceStateSnapshot, now: float) -> Panel:
     if race.events:
         table.add_row(
             "Eventos",
-            "\n".join(render_race_event(event, race.cars) for event in race.events[-4:]),
+            "\n".join(
+                escape(render_race_event(event, race.cars)) for event in race.events[-4:]
+            ),
         )
     return Panel(table, title="Estado de carrera", expand=False)
 
@@ -168,7 +173,7 @@ def render(cfg: AppConfig, session: SessionPort, now: float | None = None) -> Gr
             )
         parts.append(table)
     for diagnostic in diagnose(tele, snap, now):
-        parts.append(f"[yellow]{render_diagnostic(diagnostic)}[/]")
+        parts.append(f"[yellow]{escape(render_diagnostic(diagnostic))}[/]")
     parts.append("[dim]Ctrl+C para salir[/]")
     return Group(*parts)
 
