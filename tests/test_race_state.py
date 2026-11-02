@@ -167,6 +167,23 @@ def test_session_uid_change_resets_old_state_and_records_transition() -> None:
     assert snapshot.events[0].session_uid == 2
 
 
+def test_shorter_participants_packet_preserves_previously_known_cars() -> None:
+    state = RaceState()
+    participants = _parsed_fixture("participants.bin")
+    assert isinstance(participants, ParticipantsPacket)
+    state.apply(_with_header(participants), observed_at=1.0)
+    previous_names = tuple(car.name for car in state.snapshot().cars)
+
+    state.apply(
+        _with_header(
+            replace(participants, active_cars=1, participants=participants.participants[:1])
+        ),
+        observed_at=2.0,
+    )
+
+    assert tuple(car.name for car in state.snapshot().cars) == previous_names
+
+
 def test_unrelated_event_with_other_session_uid_does_not_reset_state() -> None:
     state = RaceState()
     participants = _parsed_fixture("participants.bin")

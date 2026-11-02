@@ -8,6 +8,7 @@ from rich.console import Console
 
 from f1_strategist.config import AppConfig
 from f1_strategist.console import render
+from f1_strategist.console_messages import render_race_event
 from f1_strategist.parser import (
     CarStatusPacket,
     EnumValue,
@@ -16,6 +17,7 @@ from f1_strategist.parser import (
     SessionPacket,
     parse_packet,
 )
+from f1_strategist.race_state import CarSnapshot, RaceEvent
 from f1_strategist.session import CaptureSession
 
 
@@ -79,3 +81,10 @@ def test_console_renders_race_summary_fields() -> None:
     assert "Posición" in text and "2" in text
     assert "12.3 kg" in text
     assert "C3" in text
+
+
+def test_race_event_with_out_of_range_car_index_renders_safely() -> None:
+    event = RaceEvent("pit_entry", occurred_at_monotonic=1.0, car_index=22)
+    cars = tuple(CarSnapshot(car_index=index) for index in range(22))
+
+    assert render_race_event(event, cars) == "Coche 23: entra en boxes"

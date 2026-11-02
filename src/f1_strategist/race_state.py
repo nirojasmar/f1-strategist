@@ -200,13 +200,12 @@ class RaceState:
         self._append_event("session_changed", observed_at, session_uid=session_uid)
 
     def _apply_participants(self, packet: ParticipantsPacket) -> None:
-        for index in range(MAX_CARS):
+        for index, participant in enumerate(packet.participants):
             car = self._cars[index]
-            participant = packet.participants[index] if index < len(packet.participants) else None
             self._cars[index] = replace(
                 car,
-                name=(participant.name or None) if participant is not None else None,
-                team=_known_enum(participant.team_id) if participant is not None else None,
+                name=participant.name or None,
+                team=_known_enum(participant.team_id),
             )
 
     def _apply_lap_data(self, packet: LapDataPacket, observed_at: float) -> None:

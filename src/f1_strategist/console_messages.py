@@ -86,7 +86,11 @@ def render_race_event(event: RaceEvent, cars: tuple[CarSnapshot, ...]) -> str:
     if event.kind == "lap_changed":
         return f"Vuelta {event.lap_number}"
     if event.kind in {"pit_entry", "pit_stop_completed"}:
-        car = cars[event.car_index] if event.car_index is not None else None
+        car = (
+            cars[event.car_index]
+            if event.car_index is not None and 0 <= event.car_index < len(cars)
+            else None
+        )
         name = (
             car.name
             if car is not None and car.name
