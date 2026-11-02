@@ -1,0 +1,345 @@
+# Progreso del proyecto --- F1 Strategist
+
+**Última actualización:** 2026-11-02
+**Propósito de este archivo:** llevar trazabilidad del avance importante y dejar el contexto
+necesario para que cualquier persona o agente que llegue al proyecto entienda dónde estamos, qué
+está decidido, qué está verificado y qué falta.
+
+**Cómo mantenerlo:**
+
+-   Actualizarlo al cerrar cada hito, decisión o hallazgo relevante (no por cada commit).
+-   Añadir entradas nuevas a la bitácora (sección 6) con fecha; no reescribir las anteriores.
+-   Distinguir siempre entre lo **verificado** (con evidencia) y lo **supuesto** o provisional.
+-   Los documentos de diseño (`docs/`) dicen *qué se quiere construir*; este archivo dice *qué se ha
+    hecho y qué se sabe*.
+
+## 1. Resumen
+
+Aplicación local que recibe la telemetría UDP de **F1 25 (2026 Season Pack)**, mantiene un estado de
+carrera, evalúa estrategias y actúa como ingeniero de carrera virtual (LLM local para explicar y
+conversar; cálculos y decisiones en código determinista). Se ejecuta en el mismo PC del juego o en
+otro PC de la red local. Primera interfaz: consola; GUI web local y localización (inglés y español)
+más adelante.
+
+Documentos de diseño:
+
+-   [`docs/requerimientos_ingeniero_carrera_f1_25.md`](docs/requerimientos_ingeniero_carrera_f1_25.md)
+-   [`docs/outline_tecnico_ingeniero_carrera_f1_25.md`](docs/outline_tecnico_ingeniero_carrera_f1_25.md)
+-   [`docs/roadmap_ingeniero_carrera_f1_25.md`](docs/roadmap_ingeniero_carrera_f1_25.md)
+
+## 2. Reglas de colaboración (para agentes)
+
+-   **No editar código si el usuario no lo pide de forma directa.** Proponer el cambio y esperar
+    confirmación. (Indicado por el usuario el 2026-11-01.)
+-   Comunicación y documentación en **español**.
+-   Ante la duda sobre el alcance de un cambio, preguntar antes de actuar.
+-   Distinguir en las respuestas lo medido, lo estimado y lo supuesto; no inventar datos del juego.
+
+## 3. Decisiones vigentes
+
+| Tema | Decisión | Origen / estado |
+| --- | --- | --- |
+| Juego objetivo | F1 25 (2026 Season Pack) | Usuario (2026-10-31) |
+| Versión observada | Juego 1.26, formato UDP 2025, año 25 | Verificado con captura real (2026-11-01) |
+| Sistemas operativos de la app | Windows y Linux (Ubuntu/Mint) | Usuario (2026-10-31) |
+| Lenguaje y entorno | Python 3.12+, `uv`, `ruff`, `pyright`, `pytest` | Acordado (2026-10-31) |
+| Modelos y configuración | `pydantic` v2 y TOML | Acordado |
+| LLM | Cliente HTTP a API compatible con OpenAI, adaptador intercambiable | Acordado; modelo concreto pendiente |
+| Almacenamiento | Captura binaria cruda (`.f1cap`) + SQLite para derivados | Acordado; esquema SQLite pendiente |
+| Interfaz | Consola primero; GUI web local (FastAPI + WebSocket) después | Acordado |
+| Topologías | Mismo PC o PC de la red local; solo cambia la configuración | Requisito del usuario |
+| Seguridad de red | Escucha solo en loopback por defecto; apertura a la LAN explícita | Requisito |
+| Receptor UDP | Hilo dedicado con socket bloqueante y cola acotada | Decisión cerrada; `overall_frame_identifier`, cadencia observada y retención limitada |
+| Formato `.f1cap` v1 | Definido en `src/f1_strategist/capture.py` | Implementado en Sprint 1 |
+| Parser | Registro de decodificadores `struct` precompilados; modelos inmutables | Nueve tipos; formato 2025, año 25, juego 1.x y paquete v1; otras versiones menores se avisan y requieren tamaño exacto |
+| Estado de carrera | Un consumidor escritor publica snapshots inmutables | Datos de sesión y coches, frescura por grupo y eventos; las métricas derivadas quedan en Fase 2 |
+
+## 4. Estado por fase del roadmap
+
+| Fase | Estado | Notas |
+| --- | --- | --- |
+| 0. Definición y entorno | Parcial | Repo, CI definido, config, receptor y guía de firewall listos. Falta validar la recepción desde otro PC de la red local y en Linux real. |
+| 1. Receptor, parser y estado | Implementada; CI verde | Snapshots inmutables de sesión y coches, daños, frescura por grupo, eventos y resumen de consola. |
+| 2. Métricas e histórico | No iniciada | |
+| 3. Grabación y replay | Parcial | Captura y reemisión UDP listas (se adelantaron en Sprint 1). Falta el replay interno hacia el pipeline y el registro en SQLite. |
+| 4--10 | No iniciadas | |
+
+## 5. Qué está verificado y qué no
+
+**Verificado:**
+
+-   La suite `pytest` (84 pruebas), Ruff (lint y formato) y Pyright pasan en Windows (2026-11-02).
+-   CI de GitHub Actions exitoso para `phase-1-udp-parser`, commit `096eceb`, en Ubuntu y Windows; también
+    pasaron Ruff (lint y formato) y Pyright (2026-11-02).
+-   El consumidor único aplica los paquetes parseados al estado y publica snapshots inmutables; la frescura
+    usa el reloj monotónico de recepción. La consola presenta vuelta, posición, combustible, compuesto y eventos.
+-   Flujo de extremo a extremo en Linux con procesos reales: `replay` -> `run` -> captura -> `inspect`.
+-   **Recepción de telemetría real en Windows 11** con el juego: captura de 68 541 paquetes en
+    ~13 minutos, sin paquetes inválidos.
+-   La cabecera de 29 bytes y los IDs de tipo de paquete (0 a 15) coinciden con la especificación oficial
+    de EA (formato 2025) y funcionan con la versión 1.26 del Season Pack.
+-   El parser valida formato 2025, año 25, versión mayor 1 y paquete v1 con tamaño exacto. Acepta
+    versiones menores distintas de 1.26 con aviso; rechaza protocolos incompatibles y cuenta los tipos
+    excluidos como ignorados por diseño.
+-   Los nueve tipos implementados (`Session`, `LapData`, `Participants`, `CarStatus`,
+    `CarDamage`, `TyreSets`, `SessionHistory`, `Event`, `FinalClassification`) se decodificaron contra
+    datagramas de la captura real; sus tamaños medidos son 753, 1285, 1284, 1239, 1041, 231, 1460,
+    45 y 1042 bytes, respectivamente.
+-   Los valores desconocidos en campos enumerados quedan representados como `EnumValue(name="unknown")`
+    y conservan el valor original. Errores y diagnósticos usan claves y parámetros; la consola los
+    renderiza en español.
+-   Los fixtures compactos de `tests/fixtures/` cubren los nueve tipos; se extrajeron de la captura real y
+    anonimizan nombres de participantes e identificadores de red.
+-   Hypothesis prueba datagramas arbitrarios y cuerpos aleatorios con cabeceras válidas; solo se permiten
+    rechazos tipados del parser.
+-   Los tamaños de los 14 tipos de paquete presentes en la captura coinciden exactamente con los de la
+    especificación.
+-   El orden de campos de `LapData` de la especificación se verifica con el fixture de captura real
+    (sección 7).
+-   `LapCarData.grid_position_zero_based` conserva la base 0 del paquete; el estado de carrera lo expone
+    como `grid_position` base 1, igual que `FinalClassification.grid_position`.
+-   La captura es una carrera de 5 vueltas con 22 coches.
+-   Ejecución en Linux en red local captura adecuadamente los paquetes del primer PC.
+
+**No verificado todavía:**
+
+## 6. Bitácora
+
+### 2026-10-31
+
+-   Revisión de los tres documentos iniciales y análisis de gaps.
+-   Añadidos los requisitos: ejecución en el mismo PC o en la red local (RF-11), consola primero y GUI
+    después (RF-12), localización inglés/español (RF-13); Fase 10 del roadmap y nuevos riesgos.
+-   Stack acordado y registrado en el outline (sección 8) y en las decisiones de los requerimientos.
+-   Sprint 1 entregado en dos parches: esqueleto Python, receptor UDP, captura `.f1cap` v1, reemisión
+    UDP (`replay`), `inspect`, consola con Rich, configuración TOML, pruebas y CI; y actualización de docs
+    (juego objetivo, sistemas operativos, nota del parser).
+-   Búsqueda de librerías de referencia: `F1Game.UDP` (.NET) y un parser en TypeScript
+    (`@deltazeroproduction/f1-udp-parser`) soportan F1 25. No se encontró un parser en Python verificado.
+-   La página web de la especificación de EA no se pudo leer con las herramientas de desarrollo. La
+    especificación sí estaba disponible desde el inicio como archivos del proyecto (ver 2026-11-01).
+
+### 2026-11-01
+
+-   Primera ejecución en Windows 11: la captura salió con 0 paquetes. **Causa: el juego tenía Broadcast
+    Mode activado**; con la app escuchando solo en `127.0.0.1` no llegaban datos. Solución: escuchar en
+    `0.0.0.0` (`--listen-address 0.0.0.0`).
+-   Con esa configuración se grabó la primera captura real (ver sección 7).
+-   El usuario indicó que no se edite código sin petición directa.
+-   El usuario señaló la documentación UDP de EA (formato 2025) y un comentario de foro sobre el orden de
+    `m_gridPosition` y `m_driverStatus` en `LapData`. Se contrastaron la cabecera, los IDs de paquete y el
+    tamaño de `LapData` (57 bytes por coche, 1 285 por paquete) con la especificación: coinciden.
+-   **Corrección:** la cadencia anotada antes (~11 Hz, ~85 KB/s) se calculó sobre la duración total de la
+    captura y era errónea. Con las frecuencias fijas de la especificación, el envío es de 20 Hz (sección 7).
+-   Verificación sobre la captura real: los 14 tipos de paquete miden exactamente lo que declara la
+    especificación. En `LapData`, el offset 43 (`m_gridPosition` según la especificación) trae 22 valores
+    distintos de 0 a 21, constantes en toda la captura, y el offset 44 (`m_driverStatus`) vale 4 en todos los
+    coches. El comentario de foro sobre el orden intercambiado no se confirma en esta versión.
+-   Cierre del receptor: se mantiene el hilo dedicado; a la carga observada no le aporta valor migrar a
+    `asyncio`. Se miden huecos de frame estimados, duplicados y desorden por tipo, aislados por
+    `session_uid`, y se muestran en consola. Los huecos no confirman pérdida porque la cadencia cambia
+    entre tipos de paquete; UDP no reenvía.
+-   Cruce de `LapData` y `FinalClassification` sobre la captura: `LapData.m_gridPosition` es la parrilla menos 1
+    para los 22 coches (base 0), mientras que `FinalClassification.m_gridPosition` y `m_carPosition` al inicio
+    coinciden en base 1. La sesión es una carrera de 5 vueltas con 22 coches.
+-   Creado este archivo.
+
+### 2026-11-02
+
+-   Atendidos los comentarios de `review.md`: corregidos los layouts de stints en `SessionHistory` y
+    `FinalClassification`, incluidos contadores y valores opcionales; se añadieron fixtures anonimizados,
+    pruebas con valores no nulos, validaciones de rango y pruebas basadas en Hypothesis.
+-   Se completaron además los cambios de versión, clasificación de paquetes ignorados, secuencias UDP,
+    límites de memoria, aislamiento del consumidor, modelos de mensajes/localización y documentación.
+-   Validación local en Windows: `pytest` (70 pruebas), Ruff (lint y formato) y Pyright pasan.
+-   Replay de `captures/session-20261101-115103.f1cap`: se decodificaron 41 214 datagramas de los nueve
+    tipos implementados, sin errores de parser.
+-   Replay de `captures/session-20261101-233816.f1cap`: se verificó la captura y el estado (ver sección
+    7). Los paquetes `CarDamage` quedan en los snapshots por coche, sin derivar métricas.
+-   Replay de estado de la misma captura: los nueve tipos se aplicaron sin errores; se conservaron los 22
+    nombres de `Participants` y las muestras del piloto. Los eventos `Event` con `session_uid=0` no
+    alteran la sesión identificada por `Session`.
+-   Se realizó una prueba ejecutando el receptor en el segundo PC con Linux, mientras el   primer PC (Windows) corría el juego, prueba hecha sobre el código de `main`.
+-   Implementado el estado de carrera de un solo escritor: sesión, 22 coches con nombres de `Participants`,
+    coche del piloto, muestras desconocidas como `None`, frescura por grupo y hasta 50 eventos recientes.
+-   Se detectan cambio de sesión, inicio/final, vuelta y entrada/completado de parada en boxes. El panel
+    muestra vuelta, posición, combustible y compuesto; no calcula métricas derivadas (Fase 2).
+-   La prueba con la captura real confirmó que algunos eventos `buttons` traen `session_uid=0` mientras
+    los demás paquetes usan el UID de carrera; solo `Session` y eventos de ciclo de vida pueden cambiar
+    la identidad que mantiene el estado.
+
+## 7. Hallazgos de la primera captura real
+
+Captura: 68 541 paquetes, ~66 MB, 795,5 s entre el primer y el último paquete. Salida de `inspect`:
+
+-   **Orígenes:** `192.168.68.59` (68 538 paquetes; es la IP de red local del propio PC del juego) y
+    `127.0.0.1` (3 paquetes). Con Broadcast Mode el origen es la IP de red local, no loopback; si se usa
+    `allowed_sources` en ese caso, debe llevar esa IP.
+-   **Cabecera:** los 68 540 paquetes del juego llevan formato 2025, año 25, versión 1.26. El paquete
+    restante (formato 30840, año 120) es la prueba manual `b'x' * 40`, no del juego.
+-   **Tipos presentes:** 0 a 8, 10 a 13 y 15. Ausentes: 9 (`LobbyInfo`, solo online) y 14 (`TimeTrial`,
+    solo contrarreloj). Hay un `FinalClassification`, así que la captura incluye el cierre de sesión.
+
+| ID | Tipo | Paquetes | Frecuencia (según la especificación) |
+| --- | --- | --- | --- |
+| 0 | Motion | 8 674 | la del menú del juego (20 Hz) |
+| 1 | Session | 869 | 2 Hz |
+| 2 | LapData | 8 674 | la del menú del juego (20 Hz) |
+| 3 | Event | 1 202 | cuando ocurre el evento |
+| 4 | Participants | 88 | cada 5 s |
+| 5 | CarSetups | 869 | 2 Hz |
+| 6 | CarTelemetry | 8 674 | la del menú del juego (20 Hz) |
+| 7 | CarStatus | 8 674 | la del menú del juego (20 Hz) |
+| 8 | FinalClassification | 1 | una vez al final |
+| 10 | CarDamage | 4 338 | 10 Hz |
+| 11 | SessionHistory | 8 694 | 20 por segundo, rotando entre coches |
+| 12 | TyreSets | 8 674 | 20 por segundo, rotando entre coches |
+| 13 | MotionEx | 8 674 | la del menú del juego (20 Hz) |
+| 15 | LapPositions | 435 | 1 Hz |
+
+-   **Duración efectiva y frecuencia de envío.** Los tipos de frecuencia fija de la especificación permiten
+    calibrar el reloj: `Session` (869 a 2 Hz), `CarSetups` (869 a 2 Hz), `CarDamage` (4 338 a 10 Hz),
+    `LapPositions` (435 a 1 Hz) y `Participants` (88 cada 5 s) dan todos ≈ 434 s de emisión. De ahí se
+    deduce que (a) la frecuencia de envío configurada en el juego es de 20 Hz (8 674 paquetes por fotograma
+    en ~434 s) y (b) los 795,5 s incluyen ≈ 360 s sin datos. Causa de esos segundos sin datos: no
+    confirmada (espera antes de entrar en sesión, pausas o los paquetes de prueba manuales).
+-   **Tráfico:** ~155 KB/s (~1,3 Mbit/s) durante la emisión. Irrelevante para una red local, incluso por
+    Wi-Fi. 20 Hz es suficiente para estrategia; no hace falta subir la frecuencia de envío.
+-   **Corrección:** una versión anterior de este archivo anotaba ~11 Hz y ~85 KB/s, calculados sobre los
+    795,5 s totales. Era un error.
+
+### Especificación de referencia y puntos por verificar
+
+-   **Fuente:** `F1_25_Telemetry_Output_Structures.txt` (estructuras C++) y `Data_Output_from_F1_25_v3.pdf`,
+    documentación de EA para el formato 2025. Están disponibles como archivos del proyecto de Claude; no
+    están en el repositorio (EA los facilita solo como referencia).
+-   **Contrastado:** cabecera de 29 bytes, IDs 0 a 15 y `LapData` (57 bytes por coche; 22 coches más la
+    cabecera y 2 bytes finales = 1 285 bytes, como declara la especificación).
+-   **Verificado con la captura (2026-11-01):**
+    1.  **Tamaños:** los 14 tipos presentes (0 a 8, 10 a 13 y 15) tienen exactamente el tamaño declarado
+        en la especificación (por ejemplo, LapData 1285, CarDamage 1041, TyreSets 231). `Event` mide
+        siempre 45 bytes. Esto sugiere que el 2026 Season Pack (v1.26) no cambió el tamaño de los
+        paquetes del formato 2025; no prueba por sí solo que todos los campos coincidan.
+    2.  **Orden de `m_gridPosition` y `m_driverStatus` en `LapData`:** el comentario de foro no se
+        sostiene con esta versión. Con el orden de la especificación, el offset 43 toma 22 valores
+        distintos (0 a 21) y constantes durante toda la captura, y el offset 44 vale 4 ("on track") en
+        todos los coches. El offset 43 no puede ser `m_driverStatus`, cuyo rango es de 0 a 4. Se mantiene
+        el orden de la especificación; el parser lo define en un único lugar y lo cubre con una prueba
+        con fixtures derivados de datos reales.
+-   **Base de `m_gridPosition`:** cruzando `LapData.m_gridPosition` con `m_carPosition` del primer
+    `LapData` y con `m_gridPosition` de `FinalClassification` (offset 2 de cada coche; 46 bytes por coche
+    tras la cabecera y `m_numCars`), el valor de `LapData` es siempre la parrilla menos 1 (base 0) para
+    los 22 coches. `FinalClassification.m_gridPosition` y `m_carPosition` al inicio coinciden en base 1.
+    La especificación no lo indica. El parser conserva el campo como `grid_position_zero_based`; el estado
+    lo publica como `grid_position` base 1 para que coincida con `FinalClassification`.
+-   **Fixtures reproducibles:** `tests/fixtures/` contiene un datagrama anonimizado por tipo implementado.
+    Proceden de `captures/session-20261101-115103.f1cap` (SHA-256
+    `5aef1a7c0d1eac85154221cf5f7b97af24bb06f3930219e68aa27bdc12a06e5f`); se limpiaron los nombres
+    de participantes y los identificadores de red.
+-   **Sesión grabada:** carrera de 5 vueltas con 22 coches (todos con `m_numLaps` = 5 en
+    `FinalClassification`, y las posiciones finales forman una permutación de 1 a 22; esto valida también
+    el layout de `FinalClassification`). Se desconoce si hubo paradas en boxes (`m_numPitStops`).
+-   **Notas de la especificación que afectan al diseño:**
+    -   `SessionHistory` y `TyreSets` se envían a 20 paquetes por segundo rotando entre coches: cada
+        paquete es de un solo coche (`m_carIdx`), así que cada coche se actualiza alrededor de una vez por
+        segundo, no a 20 Hz.
+    -   Los índices de coche no cambian durante la sesión.
+    -   Un coche tiene datos válidos si su `m_resultStatus` en `LapData` no es 0 (invalid) ni 1
+        (inactive); `m_numActiveCars` de `Participants` indica cuántos coches hay.
+    -   Con "Your Telemetry" en restringido (otros jugadores en multijugador), campos como combustible,
+        ERS, daños y desgaste llegan a cero: deben tratarse como desconocidos, no como 0.
+    -   F1 25 admite además los formatos 2024 y 2023; por ahora solo se prevé el 2025.
+    -   El `.txt` y el PDF difieren en un tipo (`NEuint8` en `DRSDisabled` del `.txt`, `uint8` en el PDF);
+        se interpreta como `uint8`.
+
+### Captura de carrera con paradas y daños (2026-11-01)
+
+-   Archivo local: `captures/session-20261101-233816.f1cap` (no se versiona). Contiene 174 948 paquetes,
+    177 067 935 bytes de payload y 1 203,3 s; no está truncado y todos los paquetes tienen cabecera.
+-   Los nueve tipos soportados suman 104 999 datagramas; el parser los procesó sin rechazos. La sesión es
+    una carrera en Monza de 13 vueltas con 20 participantes activos y un paquete `FinalClassification`
+    consistente con las 13 vueltas y 20 coches clasificados.
+-   Cada uno de los 20 clasificados registra una parada y dos stints. En `Event` se observaron 39
+    colisiones y 10 penalizaciones; son códigos observados, no una atribución causal de daños.
+-   El piloto (índice 1, OCON) termina en posición 13 con una parada. Su `CarDamage` final indica 67 en
+    ala delantera izquierda, 41 en daño de motor, 9 en caja de cambios y desgaste de neumáticos
+    `(22, 16, 35, 12)`. El estado conserva esos valores brutos por coche; no calcula métricas derivadas.
+-   Replay completo parser → estado: 22 slots de coche, 20 nombres activos y los valores finales de
+    posición, vuelta, parada y daños concuerdan con `FinalClassification`/`CarDamage`.
+
+## 8. Mapa del código
+
+```text
+src/f1_strategist/
+  config.py       Configuración TOML validada (pydantic) y overrides de la CLI
+  packets.py      Cabecera común de 29 bytes y nombres de tipos de paquete
+  capture.py      Formato .f1cap v1: CaptureWriter, CaptureReader, CapturedPacket
+  receiver.py     UdpReceiver (hilo + cola acotada), Stats y StatsSnapshot
+  race_state.py   Estado de carrera de un solo escritor y snapshots inmutables
+  session.py      CaptureSession: receptor -> cola -> consumidor (captura + estado + estadísticas)
+  diagnostics.py  Estado de conexión y causas probables cuando no llegan datos
+  replay.py       Reemisión de una captura por UDP respetando los tiempos
+  summary.py      Resumen de una captura (comando inspect)
+  console.py      Panel de consola con Rich (solo presentación)
+  cli.py          Comandos run, replay e inspect
+tests/            Pruebas unitarias y de extremo a extremo (replay -> receptor -> captura)
+config/config.example.toml   Ejemplo de configuración
+```
+
+Comandos útiles:
+
+```bash
+uv sync                              # instalar dependencias
+uv run pytest                        # pruebas
+uv run ruff check . && uv run ruff format --check . && uv run pyright
+uv run f1-strategist run --listen-address 0.0.0.0   # recibir y grabar
+uv run f1-strategist inspect captures/<archivo>.f1cap
+uv run f1-strategist replay captures/<archivo>.f1cap --host 127.0.0.1 --port 20777
+```
+
+## 9. Notas técnicas para agentes
+
+-   Las capturas completas (`captures/`) no se versionan en git. Los fixtures compactos de la captura
+    inicial sí se versionan en `tests/fixtures/`.
+-   En Windows, usar PowerShell o Windows Terminal para la consola. Git Bash puede no redibujar el
+    panel en vivo (hipótesis no confirmada).
+-   `run` instala manejadores para Ctrl+C y SIGTERM: los procesos lanzados en segundo plano desde shells
+    no interactivos ignoran SIGINT, y sin el manejador no se cerraba la captura limpiamente.
+-   Si el juego envía por broadcast, la app debe escuchar en `0.0.0.0`; en loopback no recibe nada.
+-   Otra aplicación de telemetría usando el puerto 20777 provoca un error claro al abrir el socket.
+
+## 10. Siguiente paso: plan de la Fase 1
+
+1.  **Receptor, cerrado:** hilo dedicado con socket bloqueante y cola acotada; secuencia basada en
+    `overall_frame_identifier`, con estimación de cadencia y retención limitada. La prueba en red local
+    con dos PC sigue pendiente.
+2.  **Parser, cerrado para el alcance acordado:** registro único de decodificadores y tamaños, con
+    `struct` precompilados. Acepta formato 2025, año 25, juego 1.x y paquete v1; el minor no verificado
+    genera un aviso y se valida el tamaño exacto. Los tipos omitidos se cuentan como ignorados por diseño.
+3.  **Estado de carrera, implementado:** modelos de sesión y coches, incluyendo combustible, neumáticos
+    y daños recibidos; frescura por grupo; detección de cambio de sesión, vuelta y parada; panel de
+    resumen en consola. No se calculan métricas derivadas (Fase 2).
+4.  **Validación:** fixtures reales anonimizados, pruebas de propiedades y replay sintético con paquetes
+    soportados, más replay completo de la captura real con paradas y daños sin rechazos del parser. CI
+    de GitHub Actions pasa en Ubuntu y Windows.
+
+## 11. Pendientes y decisiones abiertas
+
+-   Captura más variada: safety car y, si es posible, lluvia.
+-   Probar la topología de red local con dos PC; decidir envío dirigido o broadcast y política de
+    filtrado por IP de origen.
+-   Esquema de SQLite; modelo local concreto del LLM; voz; framework del front-end de la GUI;
+    empaquetado de escritorio; fórmulas de degradación y simulación de paradas; umbrales iniciales;
+    idioma por defecto y cambio en caliente.
+-   Registrar en `docs/` hallazgos adicionales de nuevas capturas y validación de CI.
+
+### 2026-11-02
+
+-   Corregidos los offsets y conteos de stints de `SessionHistory` y `FinalClassification`; los históricos
+    ahora exponen solo los elementos declarados por sus contadores.
+-   Añadidos fixtures de captura anonimizados, pruebas de layout con bytes no nulos, Hypothesis y un replay
+    válido de extremo a extremo.
+-   La versión menor 1.x se acepta con aviso cuando el resto de la cabecera y el tamaño coinciden; los
+    tipos no implementados se ignoran sin generar rechazos.
+-   Las métricas usan `overall_frame_identifier`, se calibran por cadencia observada y limitan las sesiones
+    retenidas. Los errores y diagnósticos pasan a claves neutrales al idioma para renderizarse en consola.

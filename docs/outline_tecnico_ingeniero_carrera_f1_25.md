@@ -104,6 +104,10 @@ router de intenciones, contexto y LLM) no conoce ninguna interfaz
 concreta. Las interfaces son adaptadores que se conectan a una interfaz
 estable del núcleo.
 
+La consola consume el protocolo `SessionPort`; los diagnósticos del núcleo
+se representan mediante claves y parámetros neutrales al idioma, y el
+adaptador los renderiza con su catálogo de mensajes.
+
 ```mermaid
 flowchart TB
     C["Consola"] --> K["Interfaz del núcleo: comandos / consultas / flujo de eventos"]
@@ -609,9 +613,9 @@ métricas implementados.
 -   Limitar la frecuencia de los estados enviados a la GUI y aplicar
     conflación con clientes lentos: se descartan estados intermedios,
     nunca eventos ni mensajes del agente.
--   El receptor puede ser una tarea `asyncio` o un hilo con socket
-    bloqueante que alimente una cola. Medir ambas opciones en el sistema
-    operativo objetivo y parsear solo los tipos de paquete necesarios.
+-   El receptor UDP usa un hilo dedicado, socket bloqueante con timeout y
+    cola acotada. A 20 Hz, mantener este diseño evita complejidad sin
+    aportar una ventaja observable con `asyncio`.
 
 ## 7. Pruebas
 
@@ -649,7 +653,7 @@ registra como decisión en el documento de requerimientos.
 | Componente | Elección | Notas |
 | --- | --- | --- |
 | Lenguaje y entorno | Python 3.12+, `uv`, `pyproject.toml` | `ruff` para lint y formato, `pyright` para tipos, CI en GitHub Actions sobre Windows y Linux |
-| Concurrencia | `asyncio` y colas acotadas | Alternativa para el receptor: hilo con socket bloqueante y cola |
+| Concurrencia | Hilo receptor, socket bloqueante y cola acotada | Decisión cerrada; la carga medida es de 20 Hz |
 | Parser UDP | Propio (`struct` o `ctypes`) tras una interfaz | Validado con capturas reales |
 | Modelos y configuración | `pydantic` v2 y TOML | Valida también `AgentResponse` y exporta JSON Schema |
 | Métricas | Python y `numpy` | `polars` o `pandas` solo para análisis offline (Fase 9) |
@@ -659,7 +663,7 @@ registra como decisión en el documento de requerimientos.
 | Consola | `Rich` y `prompt_toolkit` | `Textual` si se quieren paneles |
 | API local y GUI futura | FastAPI (HTTP y WebSocket) y front web local | React o Svelte, con tipos de TypeScript generados desde JSON Schema; empaquetado opcional con Tauri o Electron |
 | i18n | `gettext` y `Babel` | Prompts y glosarios en archivos versionados por idioma |
-| Pruebas | `pytest`, `pytest-asyncio`, `hypothesis` | Replays como pruebas de regresión |
+| Pruebas | `pytest`, `hypothesis` | Fixtures de paquetes reales anonimizados y replays como regresión |
 
 ### 8.2 Notas
 
@@ -700,9 +704,6 @@ registra como decisión en el documento de requerimientos.
     definido en el código.
 -   Framework del front-end de la GUI, herramienta de generación de tipos
     y si se empaqueta como app de escritorio.
--   Si el receptor UDP se mantiene como hilo dedicado (primera
-    implementación) o pasa a `asyncio`, según mediciones en Windows y
-    Linux.
 -   Formato UDP que se procesará (2025 o 2024) y cambios de la
     especificación del 2026 Season Pack respecto a la de F1 25.
 -   Envío dirigido o broadcast desde el juego y política de filtrado por

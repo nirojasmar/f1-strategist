@@ -46,6 +46,8 @@ class CapturedPacket:
     source_ip: str
     source_port: int
     payload: bytes
+    # In-process receive time for freshness; intentionally omitted from the capture format.
+    recv_monotonic: float | None = None
 
 
 class CaptureWriter:

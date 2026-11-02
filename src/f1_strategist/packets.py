@@ -1,4 +1,4 @@
-"""Cabecera común de los paquetes UDP de F1.
+"""Cabecera común de 29 bytes de los paquetes UDP de F1 25.
 
 Layout (little-endian, 29 bytes), según el formato de F1 24/F1 25:
 
@@ -8,8 +8,7 @@ Layout (little-endian, 29 bytes), según el formato de F1 24/F1 25:
     uint32 overall_frame_identifier, uint8 player_car_index,
     uint8 secondary_player_car_index
 
-PROVISIONAL: confirmar contra la especificación oficial del 2026 Season Pack y
-contra una captura real antes de construir el parser completo (Fase 1).
+El parser por tipo y las versiones admitidas están en `parser.py`.
 """
 
 from __future__ import annotations
@@ -20,7 +19,6 @@ from dataclasses import dataclass
 HEADER_STRUCT = struct.Struct("<HBBBBBQfIIBB")
 HEADER_SIZE = HEADER_STRUCT.size  # 29
 
-# Nombres provisionales de los tipos de paquete (a validar con la especificación).
 PACKET_NAMES: dict[int, str] = {
     0: "Motion",
     1: "Session",

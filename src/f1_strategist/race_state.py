@@ -1,0 +1,371 @@
+"""Single-writer race state and immutable snapshots for presentation adapters."""
+
+from __future__ import annotations
+
+from collections import deque
+from dataclasses import dataclass, replace
+
+from .parser import (
+    MAX_CARS,
+    CarDamagePacket,
+    CarStatusPacket,
+    EnumValue,
+    EventPacket,
+    FinalClassificationPacket,
+    LapDataPacket,
+    ParsedPacket,
+    ParticipantsPacket,
+    SessionPacket,
+)
+
+_EVENT_HISTORY_LIMIT = 50
+# Thresholds allow several missed intervals; event-driven groups have no periodic expiry.
+_PACKET_GROUPS = {
+    1: ("session", 2.5),
+    2: ("lap_data", 1.5),
+    3: ("event", None),
+    4: ("participants", 12.0),
+    7: ("car_status", 1.5),
+    8: ("final_classification", None),
+    10: ("car_damage", 3.0),
+    11: ("session_history", 5.0),
+    12: ("tyre_sets", 5.0),
+}
+
+
+def _known_enum(value: EnumValue) -> str | None:
+    return value.name if value.name != "unknown" else None
+
+
+@dataclass(frozen=True, slots=True)
+class CarDamageSnapshot:
+    tyres_wear: tuple[float, ...]
+    tyres_damage: tuple[int, ...]
+    brakes_damage: tuple[int, ...]
+    tyre_blisters: tuple[int, ...]
+    front_left_wing_damage: int
+    front_right_wing_damage: int
+    rear_wing_damage: int
+    floor_damage: int
+    diffuser_damage: int
+    sidepod_damage: int
+    drs_fault: str | None
+    ers_fault: str | None
+    gearbox_damage: int
+    engine_damage: int
+    engine_mguh_wear: int
+    engine_es_wear: int
+    engine_ce_wear: int
+    engine_ice_wear: int
+    engine_mguk_wear: int
+    engine_tc_wear: int
+    engine_blown: str | None
+    engine_seized: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class CarSnapshot:
+    car_index: int
+    name: str | None = None
+    team: str | None = None
+    grid_position: int | None = None
+    position: int | None = None
+    current_lap: int | None = None
+    pit_status: str | None = None
+    pit_stops: int | None = None
+    driver_status: str | None = None
+    fuel_kg: float | None = None
+    actual_tyre_compound: str | None = None
+    visual_tyre_compound: str | None = None
+    tyre_age_laps: int | None = None
+    damage: CarDamageSnapshot | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class PacketFreshness:
+    group: str
+    updated_at_monotonic: float | None
+    stale_after_seconds: float | None
+
+    def age_seconds(self, now: float) -> float | None:
+        if self.updated_at_monotonic is None:
+            return None
+        return max(0.0, now - self.updated_at_monotonic)
+
+    def is_stale(self, now: float) -> bool:
+        age = self.age_seconds(now)
+        return (
+            age is not None
+            and self.stale_after_seconds is not None
+            and age > self.stale_after_seconds
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class RaceEvent:
+    kind: str
+    occurred_at_monotonic: float
+    car_index: int | None = None
+    lap_number: int | None = None
+    session_uid: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RaceSessionSnapshot:
+    uid: int | None
+    session_type: str | None
+    track: str | None
+    total_laps: int | None
+    started: bool | None
+    ended: bool | None
+
+
+@dataclass(frozen=True, slots=True)
+class RaceStateSnapshot:
+    session: RaceSessionSnapshot
+    current_lap: int | None
+    player_car_index: int | None
+    cars: tuple[CarSnapshot, ...]
+    freshness: tuple[PacketFreshness, ...]
+    events: tuple[RaceEvent, ...]
+
+    @property
+    def player_car(self) -> CarSnapshot | None:
+        if self.player_car_index is None:
+            return None
+        return self.cars[self.player_car_index]
+
+    def freshness_for(self, group: str) -> PacketFreshness:
+        for item in self.freshness:
+            if item.group == group:
+                return item
+        raise KeyError(group)
+
+
+class RaceState:
+    """Applies parsed packets from one consumer thread and publishes snapshots."""
+
+    def __init__(self) -> None:
+        self._session_uid: int | None = None
+        self._session_type: str | None = None
+        self._track: str | None = None
+        self._total_laps: int | None = None
+        self._current_lap: int | None = None
+        self._player_car_index: int | None = None
+        self._session_started: bool | None = None
+        self._session_ended: bool | None = None
+        self._cars = [CarSnapshot(car_index=index) for index in range(MAX_CARS)]
+        self._updated_at: dict[str, float | None] = {
+            group: None for group, _ in _PACKET_GROUPS.values()
+        }
+        self._events: deque[RaceEvent] = deque(maxlen=_EVENT_HISTORY_LIMIT)
+        self._snapshot = self._build_snapshot()
+
+    def snapshot(self) -> RaceStateSnapshot:
+        return self._snapshot
+
+    def apply(self, packet: ParsedPacket, observed_at: float) -> None:
+        header = packet.header
+        # Some non-lifecycle Event packets use a different UID and must not reset the session.
+        is_session_event = isinstance(packet, EventPacket) and packet.event_code.name in {
+            "session_started",
+            "session_ended",
+        }
+        is_authoritative_session_packet = isinstance(packet, SessionPacket) or is_session_event
+        if isinstance(packet, EventPacket) and not is_session_event:
+            if self._session_uid is None or header.session_uid != self._session_uid:
+                return
+        elif (
+            self._session_uid is not None
+            and header.session_uid != self._session_uid
+            and not is_authoritative_session_packet
+        ):
+            return
+        self._ensure_session(header.session_uid, observed_at)
+        player_car_index = header.player_car_index if header.player_car_index < MAX_CARS else None
+        if self._player_car_index != player_car_index:
+            self._current_lap = None
+        self._player_car_index = player_car_index
+        group, _ = _PACKET_GROUPS[header.packet_id]
+        self._updated_at[group] = observed_at
+
+        if isinstance(packet, SessionPacket):
+            self._session_type = _known_enum(packet.session_type)
+            self._track = _known_enum(packet.track_id)
+            self._total_laps = packet.total_laps or None
+        elif isinstance(packet, ParticipantsPacket):
+            self._apply_participants(packet)
+        elif isinstance(packet, LapDataPacket):
+            self._apply_lap_data(packet, observed_at)
+        elif isinstance(packet, CarStatusPacket):
+            self._apply_car_status(packet)
+        elif isinstance(packet, CarDamagePacket):
+            self._apply_car_damage(packet)
+        elif isinstance(packet, EventPacket):
+            self._apply_event(packet, observed_at)
+        elif isinstance(packet, FinalClassificationPacket):
+            self._mark_session_ended(observed_at)
+
+        self._snapshot = self._build_snapshot()
+
+    def _ensure_session(self, session_uid: int, observed_at: float) -> None:
+        if self._session_uid is None:
+            self._session_uid = session_uid
+            return
+        if self._session_uid == session_uid:
+            return
+
+        self._session_uid = session_uid
+        self._session_type = None
+        self._track = None
+        self._total_laps = None
+        self._current_lap = None
+        self._player_car_index = None
+        self._session_started = None
+        self._session_ended = None
+        self._cars = [CarSnapshot(car_index=index) for index in range(MAX_CARS)]
+        for group in self._updated_at:
+            self._updated_at[group] = None
+        self._events.clear()
+        self._append_event("session_changed", observed_at, session_uid=session_uid)
+
+    def _apply_participants(self, packet: ParticipantsPacket) -> None:
+        for index, participant in enumerate(packet.participants):
+            if participant is None:
+                continue
+            car = self._cars[index]
+            self._cars[index] = replace(
+                car,
+                name=participant.name or None,
+                team=_known_enum(participant.team_id),
+            )
+
+    def _apply_lap_data(self, packet: LapDataPacket, observed_at: float) -> None:
+        player_index = self._player_car_index
+        for index, lap_data in enumerate(packet.cars):
+            previous = self._cars[index]
+            pit_status = _known_enum(lap_data.pit_status)
+            current_lap = lap_data.current_lap_number or None
+            current = replace(
+                previous,
+                grid_position=(
+                    lap_data.grid_position_zero_based + 1
+                    if 0 <= lap_data.grid_position_zero_based < MAX_CARS
+                    else None
+                ),
+                position=lap_data.car_position or None,
+                current_lap=current_lap,
+                pit_status=pit_status,
+                pit_stops=lap_data.pit_stops,
+                driver_status=_known_enum(lap_data.driver_status),
+            )
+            self._cars[index] = current
+
+            if index == player_index:
+                if (
+                    previous.current_lap is not None
+                    and current_lap is not None
+                    and previous.current_lap != current_lap
+                ):
+                    self._current_lap = current_lap
+                    self._append_event(
+                        "lap_changed",
+                        observed_at,
+                        car_index=index,
+                        lap_number=current_lap,
+                    )
+                elif current_lap is not None:
+                    self._current_lap = current_lap
+
+            was_in_pits = previous.pit_status in {"pitting", "in_pit_area"}
+            is_in_pits = pit_status in {"pitting", "in_pit_area"}
+            if previous.pit_status is not None and is_in_pits and not was_in_pits:
+                self._append_event("pit_entry", observed_at, car_index=index)
+            if previous.pit_stops is not None and lap_data.pit_stops > previous.pit_stops:
+                self._append_event("pit_stop_completed", observed_at, car_index=index)
+
+    def _apply_car_status(self, packet: CarStatusPacket) -> None:
+        for index, status in enumerate(packet.cars):
+            self._cars[index] = replace(
+                self._cars[index],
+                fuel_kg=status.fuel_in_tank,
+                actual_tyre_compound=_known_enum(status.actual_tyre_compound),
+                visual_tyre_compound=_known_enum(status.visual_tyre_compound),
+                tyre_age_laps=status.tyres_age_laps,
+            )
+
+    def _apply_car_damage(self, packet: CarDamagePacket) -> None:
+        for index, damage in enumerate(packet.cars):
+            self._cars[index] = replace(
+                self._cars[index],
+                damage=CarDamageSnapshot(
+                    tyres_wear=damage.tyres_wear,
+                    tyres_damage=damage.tyres_damage,
+                    brakes_damage=damage.brakes_damage,
+                    tyre_blisters=damage.tyre_blisters,
+                    front_left_wing_damage=damage.front_left_wing_damage,
+                    front_right_wing_damage=damage.front_right_wing_damage,
+                    rear_wing_damage=damage.rear_wing_damage,
+                    floor_damage=damage.floor_damage,
+                    diffuser_damage=damage.diffuser_damage,
+                    sidepod_damage=damage.sidepod_damage,
+                    drs_fault=_known_enum(damage.drs_fault),
+                    ers_fault=_known_enum(damage.ers_fault),
+                    gearbox_damage=damage.gearbox_damage,
+                    engine_damage=damage.engine_damage,
+                    engine_mguh_wear=damage.engine_mguh_wear,
+                    engine_es_wear=damage.engine_es_wear,
+                    engine_ce_wear=damage.engine_ce_wear,
+                    engine_ice_wear=damage.engine_ice_wear,
+                    engine_mguk_wear=damage.engine_mguk_wear,
+                    engine_tc_wear=damage.engine_tc_wear,
+                    engine_blown=_known_enum(damage.engine_blown),
+                    engine_seized=_known_enum(damage.engine_seized),
+                ),
+            )
+
+    def _apply_event(self, packet: EventPacket, observed_at: float) -> None:
+        event_name = packet.event_code.name
+        if event_name == "session_started":
+            if self._session_started is not True:
+                self._append_event("session_started", observed_at)
+            self._session_started = True
+            self._session_ended = False
+        elif event_name == "session_ended":
+            self._mark_session_ended(observed_at)
+
+    def _mark_session_ended(self, observed_at: float) -> None:
+        if self._session_ended is not True:
+            self._append_event("session_ended", observed_at)
+        self._session_ended = True
+
+    def _append_event(
+        self,
+        kind: str,
+        observed_at: float,
+        *,
+        car_index: int | None = None,
+        lap_number: int | None = None,
+        session_uid: int | None = None,
+    ) -> None:
+        self._events.append(RaceEvent(kind, observed_at, car_index, lap_number, session_uid))
+
+    def _build_snapshot(self) -> RaceStateSnapshot:
+        return RaceStateSnapshot(
+            session=RaceSessionSnapshot(
+                uid=self._session_uid,
+                session_type=self._session_type,
+                track=self._track,
+                total_laps=self._total_laps,
+                started=self._session_started,
+                ended=self._session_ended,
+            ),
+            current_lap=self._current_lap,
+            player_car_index=self._player_car_index,
+            cars=tuple(self._cars),
+            freshness=tuple(
+                PacketFreshness(group, self._updated_at[group], stale_after)
+                for group, stale_after in _PACKET_GROUPS.values()
+            ),
+            events=tuple(self._events),
+        )
