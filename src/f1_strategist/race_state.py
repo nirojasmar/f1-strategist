@@ -201,6 +201,8 @@ class RaceState:
 
     def _apply_participants(self, packet: ParticipantsPacket) -> None:
         for index, participant in enumerate(packet.participants):
+            if participant is None:
+                continue
             car = self._cars[index]
             self._cars[index] = replace(
                 car,

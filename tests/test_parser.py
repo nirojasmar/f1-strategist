@@ -90,12 +90,14 @@ def test_capture_sizes_and_registered_decoders_match() -> None:
     assert len(found[2].cars) == 22
     assert isinstance(found[3], EventPacket)
     assert isinstance(found[4], ParticipantsPacket)
-    assert found[4].participants == ()
+    assert len(found[4].participants) == 22
+    assert all(participant is None for participant in found[4].participants)
     assert isinstance(found[7], CarStatusPacket)
     assert len(found[7].cars) == 22
     assert isinstance(found[8], FinalClassificationPacket)
     assert found[8].num_cars == 0
-    assert found[8].classification == ()
+    assert len(found[8].classification) == 22
+    assert all(entry is None for entry in found[8].classification)
     assert isinstance(found[10], CarDamagePacket)
     assert len(found[10].cars) == 22
     assert isinstance(found[11], SessionHistoryPacket)
@@ -213,17 +215,46 @@ def test_final_classification_tyre_stints_are_aligned_and_truncated() -> None:
         *[12, 25, 0, 0, 0, 0, 0, 0],
     )
     packet = (
-        _header(8) + b"\x01" + row + bytes(SUPPORTED_PACKET_SIZES[8] - HEADER_SIZE - 1 - len(row))
+        _header(8)
+        + b"\x01"
+        + bytes(len(row) * 5)
+        + row
+        + bytes(SUPPORTED_PACKET_SIZES[8] - HEADER_SIZE - 1 - len(row) * 6)
     )
 
     parsed = parse_packet(packet)
 
     assert isinstance(parsed, FinalClassificationPacket)
-    classification = parsed.classification[0]
+    assert len(parsed.classification) == 22
+    assert parsed.classification[0] is None
+    classification = parsed.classification[5]
+    assert classification is not None
     assert classification.num_tyre_stints == 2
     assert [value.raw for value in classification.tyre_stints_actual] == [18, 16]
     assert [value.raw for value in classification.tyre_stints_visual] == [17, 16]
     assert classification.tyre_stints_end_laps == (12, 25)
+
+
+def test_participants_preserve_sparse_vehicle_indices() -> None:
+    packet = (Path(__file__).parent / "fixtures" / "participants.bin").read_bytes()
+    record_size = (len(packet) - HEADER_SIZE - 1) // 22
+    records_start = HEADER_SIZE + 1
+    first_record = packet[records_start : records_start + record_size]
+    sparse_packet = (
+        packet[:HEADER_SIZE]
+        + b"\x01"
+        + bytes(record_size * 5)
+        + first_record
+        + bytes(record_size * 16)
+    )
+
+    parsed = parse_packet(sparse_packet)
+
+    assert isinstance(parsed, ParticipantsPacket)
+    assert len(parsed.participants) == 22
+    assert all(parsed.participants[index] is None for index in range(5))
+    assert parsed.participants[5] is not None
+    assert parsed.participants[5].name == "Driver 01"
 
 
 def test_no_detail_event_is_not_unknown_and_penalty_has_named_fields() -> None:
@@ -329,10 +360,12 @@ def test_real_capture_fixtures_preserve_known_values() -> None:
         lap_data.cars[0].grid_position_zero_based,
     ) == (8, 7)
     assert isinstance(participants, ParticipantsPacket)
-    assert participants.participants[0].name == "Driver 01"
+    first_participant = participants.participants[0]
+    assert first_participant is not None
+    assert first_participant.name == "Driver 01"
     assert (
-        participants.participants[0].team_id.raw,
-        participants.participants[0].team_id.name,
+        first_participant.team_id.raw,
+        first_participant.team_id.name,
     ) == (
         228,
         "unknown",
@@ -341,8 +374,10 @@ def test_real_capture_fixtures_preserve_known_values() -> None:
     assert status.cars[0].actual_tyre_compound.raw == 16
     assert isinstance(classification, FinalClassificationPacket)
     assert classification.num_cars == 22
-    assert classification.classification[0].num_tyre_stints == 1
-    assert [value.raw for value in classification.classification[0].tyre_stints_actual] == [16]
+    first_classification = classification.classification[0]
+    assert first_classification is not None
+    assert first_classification.num_tyre_stints == 1
+    assert [value.raw for value in first_classification.tyre_stints_actual] == [16]
     assert isinstance(history, SessionHistoryPacket)
     assert history.num_laps == 5
     assert history.num_tyre_stints == 1

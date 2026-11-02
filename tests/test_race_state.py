@@ -91,7 +91,9 @@ def test_packets_update_pilot_and_named_car_snapshots_without_filling_missing_da
         track_id=EnumValue(11, "monza"),
         total_laps=5,
     )
-    first_participant = replace(participants.participants[0], name="Test Driver")
+    first_participant = participants.participants[0]
+    assert first_participant is not None
+    first_participant = replace(first_participant, name="Test Driver")
     participants = _with_header(
         replace(participants, participants=(first_participant, *participants.participants[1:]))
     )
@@ -182,6 +184,32 @@ def test_shorter_participants_packet_preserves_previously_known_cars() -> None:
     )
 
     assert tuple(car.name for car in state.snapshot().cars) == previous_names
+
+
+def test_sparse_participants_do_not_overwrite_or_shift_car_indices() -> None:
+    state = RaceState()
+    participants = _parsed_fixture("participants.bin")
+    assert isinstance(participants, ParticipantsPacket)
+    state.apply(_with_header(participants), observed_at=1.0)
+    previous_name = state.snapshot().cars[0].name
+    fifth_slot_participant = participants.participants[0]
+    assert fifth_slot_participant is not None
+    sparse_participants = (None,) * 5 + (fifth_slot_participant,) + (None,) * 16
+
+    state.apply(
+        _with_header(
+            replace(
+                participants,
+                active_cars=1,
+                participants=sparse_participants,
+            )
+        ),
+        observed_at=2.0,
+    )
+
+    snapshot = state.snapshot()
+    assert snapshot.cars[0].name == previous_name
+    assert snapshot.cars[5].name == "Driver 01"
 
 
 def test_unrelated_event_with_other_session_uid_does_not_reset_state() -> None:

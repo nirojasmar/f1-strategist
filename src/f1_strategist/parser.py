@@ -767,7 +767,7 @@ class Participant:
 class ParticipantsPacket:
     header: PacketHeader
     active_cars: int
-    participants: tuple[Participant, ...]
+    participants: tuple[Participant | None, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -828,7 +828,7 @@ class FinalClassification:
 class FinalClassificationPacket:
     header: PacketHeader
     num_cars: int
-    classification: tuple[FinalClassification, ...]
+    classification: tuple[FinalClassification | None, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -1214,7 +1214,7 @@ def _parse_participants(header: PacketHeader, data: bytes) -> ParticipantsPacket
     active_cars = data[HEADER_SIZE]
     if active_cars > MAX_CARS:
         raise PacketParseError("participants_count_exceeded")
-    records = tuple(_PARTICIPANT.iter_unpack(data[HEADER_SIZE + 1 :]))[:active_cars]
+    records = _PARTICIPANT.iter_unpack(data[HEADER_SIZE + 1 :])
     participants = tuple(
         Participant(
             ai_controlled=_boolean(row[0]),
@@ -1235,6 +1235,8 @@ def _parse_participants(header: PacketHeader, data: bytes) -> ParticipantsPacket
                 for index in range(0, 12, _LIVERY_COLOUR.size)
             ),
         )
+        if any(any(value) if isinstance(value, bytes) else value != 0 for value in row)
+        else None
         for row in records
     )
     return ParticipantsPacket(header, active_cars, participants)
@@ -1285,7 +1287,8 @@ def _parse_classification(header: PacketHeader, data: bytes) -> FinalClassificat
     if num_cars > MAX_CARS:
         raise PacketParseError("classification_count_exceeded")
     entries = tuple(
-        _classification(row) for row in tuple(_CLASSIFICATION.iter_unpack(data[30:]))[:num_cars]
+        _classification(row) if any(row) else None
+        for row in _CLASSIFICATION.iter_unpack(data[30:])
     )
     return FinalClassificationPacket(header, num_cars, entries)
 
