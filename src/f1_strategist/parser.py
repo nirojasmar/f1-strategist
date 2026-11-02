@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import math
 import struct
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, fields, is_dataclass
 from types import MappingProxyType
 
 from .packets import HEADER_SIZE, PacketHeader, packet_name, parse_header
@@ -14,6 +15,15 @@ MAX_CARS = 22
 
 class PacketParseError(ValueError):
     """Un datagrama no se puede interpretar con los layouts soportados."""
+
+    def __init__(self, code: str, **parameters: str | int | float) -> None:
+        self.code = code
+        self.parameters = tuple(sorted(parameters.items()))
+        super().__init__(code)
+
+    @property
+    def issue(self) -> ParseIssue:
+        return ParseIssue(self.code, self.parameters)
 
 
 class UnsupportedFormatError(PacketParseError):
@@ -29,14 +39,32 @@ class PacketSizeError(PacketParseError):
 
 
 @dataclass(frozen=True, slots=True)
+class ParseIssue:
+    code: str
+    parameters: tuple[tuple[str, str | int | float], ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class EnumValue:
     raw: int | str
     name: str
 
 
+@dataclass(frozen=True, slots=True)
+class BooleanValue:
+    raw: int
+    value: bool | None
+
+
 def _enum(category: str, raw: int | str) -> EnumValue:
-    name = _ENUMS.get(category, {}).get(raw, "unknown")
+    if category not in _ENUMS:
+        raise ValueError(f"Enum category is not registered: {category}")
+    name = _ENUMS[category].get(raw, "unknown")
     return EnumValue(raw, name)
+
+
+def _boolean(raw: int) -> BooleanValue:
+    return BooleanValue(raw, bool(raw) if raw in (0, 1) else None)
 
 
 _ENUMS: dict[str, dict[int | str, str]] = {
@@ -179,9 +207,6 @@ _ENUMS: dict[str, dict[int | str, str]] = {
     "safety_car_experience": {0: "broadcast", 1: "immersive"},
     "formation_lap_experience": {0: "broadcast", 1: "immersive"},
     "red_flags": {0: "off", 1: "reduced", 2: "standard", 3: "increased"},
-    "on_off": {0: "off", 1: "on"},
-    "anti_lock_brakes": {0: "off", 1: "on"},
-    "pit_limiter": {0: "off", 1: "on"},
     "drs_allowed": {0: "not_allowed", 1: "allowed"},
     "network_paused": {0: "not_paused", 1: "paused"},
     "telemetry_setting": {0: "restricted", 1: "public"},
@@ -366,12 +391,11 @@ _ENUMS: dict[str, dict[int | str, str]] = {
         29: "esto_saari",
         30: "yasar_atiyeh",
         31: "callisto_calabresi",
-        32: "naota_izum",
+        32: "naota_izumi",
         33: "howard_clarke",
-        34: "wilheim_kaufmann",
+        34: "lars_kaufmann",
         35: "marie_laursen",
         36: "flavio_nieves",
-        37: "peter_belousov",
         38: "klimek_michalski",
         39: "santiago_moreno",
         40: "benjamin_coppens",
@@ -412,7 +436,7 @@ _ENUMS: dict[str, dict[int | str, str]] = {
         156: "brendon_leigh",
         157: "david_tonizza",
         158: "jarno_opmeer",
-        159: "lucus_blakeley",
+        159: "lucas_blakeley",
         160: "paul_aron",
         161: "gabriel_bortoleto",
         162: "franco_colapinto",
@@ -484,7 +508,7 @@ _ENUMS: dict[str, dict[int | str, str]] = {
         49: "luxembourger",
         50: "malaysian",
         51: "maltese",
-        52: "mexian",
+        52: "mexican",
         53: "monegasque",
         54: "new_zealander",
         55: "nicaraguan",
@@ -499,7 +523,6 @@ _ENUMS: dict[str, dict[int | str, str]] = {
         64: "portuguese",
         65: "qatari",
         66: "romanian",
-        67: "russian",
         68: "salvadoran",
         69: "saudi",
         70: "scottish",
@@ -514,8 +537,8 @@ _ENUMS: dict[str, dict[int | str, str]] = {
         79: "swiss",
         80: "thai",
         81: "turkish",
-        82: "ukrainian",
-        83: "uruguayan",
+        82: "uruguayan",
+        83: "ukrainian",
         84: "venezuelan",
         85: "barbadian",
         86: "welsh",
@@ -596,10 +619,10 @@ class SessionAssistsAndRules:
     steering_assist: EnumValue
     braking_assist: EnumValue
     gearbox_assist: EnumValue
-    pit_assist: EnumValue
-    pit_release_assist: EnumValue
-    ers_assist: EnumValue
-    drs_assist: EnumValue
+    pit_assist: BooleanValue
+    pit_release_assist: BooleanValue
+    ers_assist: BooleanValue
+    drs_assist: BooleanValue
     dynamic_racing_line: EnumValue
     dynamic_racing_line_type: EnumValue
     game_mode: EnumValue
@@ -627,19 +650,19 @@ class SessionSettings:
     car_damage: EnumValue
     car_damage_rate: EnumValue
     collisions: EnumValue
-    collisions_off_first_lap_only: EnumValue
+    collisions_off_first_lap_only: BooleanValue
     multiplayer_unsafe_pit_release: EnumValue
     multiplayer_griefing: EnumValue
     corner_cutting_stringency: EnumValue
-    parc_ferme_rules: EnumValue
+    parc_ferme_rules: BooleanValue
     pit_stop_experience: EnumValue
     safety_car: EnumValue
     safety_car_experience: EnumValue
-    formation_lap: EnumValue
+    formation_lap: BooleanValue
     formation_lap_experience: EnumValue
     red_flags: EnumValue
-    licence_level_solo: EnumValue
-    licence_level_multiplayer: EnumValue
+    licence_level_solo: BooleanValue
+    licence_level_multiplayer: BooleanValue
     num_sessions_in_weekend: int
 
 
@@ -657,10 +680,10 @@ class SessionPacket:
     session_time_left: int
     session_duration: int
     pit_speed_limit: int
-    game_paused: EnumValue
-    is_spectating: EnumValue
+    game_paused: BooleanValue
+    is_spectating: BooleanValue
     spectator_car_index: int
-    sli_pro_native_support: EnumValue
+    sli_pro_native_support: BooleanValue
     marshal_zones: tuple[MarshalZone, ...]
     safety_car_status: EnumValue
     network_game: EnumValue
@@ -686,13 +709,9 @@ class LapCarData:
     last_lap_time_ms: int
     current_lap_time_ms: int
     sector1_time_ms: int
-    sector1_time_minutes: int
     sector2_time_ms: int
-    sector2_time_minutes: int
     delta_to_car_in_front_ms: int
-    delta_to_car_in_front_minutes: int
     delta_to_race_leader_ms: int
-    delta_to_race_leader_minutes: int
     lap_distance: float
     total_distance: float
     safety_car_delta: float
@@ -701,19 +720,19 @@ class LapCarData:
     pit_status: EnumValue
     pit_stops: int
     sector: EnumValue
-    current_lap_invalid: EnumValue
+    current_lap_invalid: BooleanValue
     penalties: int
     total_warnings: int
     corner_cutting_warnings: int
     unserved_drive_through_penalties: int
     unserved_stop_go_penalties: int
-    grid_position: int
+    grid_position_zero_based: int
     driver_status: EnumValue
     result_status: EnumValue
-    pit_lane_timer_active: EnumValue
+    pit_lane_timer_active: BooleanValue
     pit_lane_time_ms: int
     pit_stop_timer_ms: int
-    pit_stop_should_serve_penalty: EnumValue
+    pit_stop_should_serve_penalty: BooleanValue
     speed_trap_fastest_speed: float
     speed_trap_fastest_lap: int
 
@@ -728,16 +747,16 @@ class LapDataPacket:
 
 @dataclass(frozen=True, slots=True)
 class Participant:
-    ai_controlled: EnumValue
+    ai_controlled: BooleanValue
     driver_id: EnumValue
     network_id: int
     team_id: EnumValue
-    my_team: EnumValue
+    my_team: BooleanValue
     race_number: int
     nationality: EnumValue
     name: str
     your_telemetry: EnumValue
-    show_online_names: EnumValue
+    show_online_names: BooleanValue
     tech_level: int
     platform: EnumValue
     num_livery_colours: int
@@ -754,10 +773,10 @@ class ParticipantsPacket:
 @dataclass(frozen=True, slots=True)
 class CarStatus:
     traction_control: EnumValue
-    anti_lock_brakes: EnumValue
+    anti_lock_brakes: BooleanValue
     fuel_mix: EnumValue
     front_brake_bias: int
-    pit_limiter_status: EnumValue
+    pit_limiter_status: BooleanValue
     fuel_in_tank: float
     fuel_capacity: float
     fuel_remaining_laps: float
@@ -799,9 +818,10 @@ class FinalClassification:
     total_race_time: float
     penalties_time: int
     penalties: int
+    num_tyre_stints: int
     tyre_stints_actual: tuple[EnumValue, ...]
     tyre_stints_visual: tuple[EnumValue, ...]
-    tyre_stints_end_laps: tuple[int, ...]
+    tyre_stints_end_laps: tuple[int | None, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -847,11 +867,8 @@ class CarDamagePacket:
 class LapHistory:
     lap_time_ms: int
     sector1_time_ms: int
-    sector1_time_minutes: int
     sector2_time_ms: int
-    sector2_time_minutes: int
     sector3_time_ms: int
-    sector3_time_minutes: int
     valid_bit_flags: int
 
 
@@ -859,7 +876,7 @@ class LapHistory:
 class TyreStintHistory:
     actual_compound: EnumValue
     visual_compound: EnumValue
-    end_lap: int
+    end_lap: int | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -881,12 +898,12 @@ class TyreSet:
     actual_tyre_compound: EnumValue
     visual_tyre_compound: EnumValue
     wear: int
-    available: EnumValue
+    available: BooleanValue
     recommended_session: EnumValue
     lifespan: int
     usable_life: int
     lap_delta_time_ms: int
-    fitted: EnumValue
+    fitted: BooleanValue
 
 
 @dataclass(frozen=True, slots=True)
@@ -900,6 +917,22 @@ class TyreSetsPacket:
 @dataclass(frozen=True, slots=True)
 class EventDetail:
     values: tuple[int | float | EnumValue, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class NoEventDetail:
+    pass
+
+
+@dataclass(frozen=True, slots=True)
+class PenaltyEventDetail:
+    penalty_type: EnumValue
+    infringement_type: EnumValue
+    vehicle_index: int
+    other_vehicle_index: int
+    time_seconds: int
+    lap_number: int
+    places_gained: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -927,7 +960,14 @@ class UnknownEventDetail:
 class EventPacket:
     header: PacketHeader
     event_code: EnumValue
-    detail: EventDetail | SpeedTrapDetail | FlashbackDetail | UnknownEventDetail
+    detail: (
+        EventDetail
+        | NoEventDetail
+        | PenaltyEventDetail
+        | SpeedTrapDetail
+        | FlashbackDetail
+        | UnknownEventDetail
+    )
 
 
 type ParsedPacket = (
@@ -965,8 +1005,32 @@ _TIME_TRIAL_CAR_INDICES = struct.Struct("<BB")
 def _require_size(data: bytes, expected: int, header: PacketHeader) -> None:
     if len(data) != expected:
         raise PacketSizeError(
-            f"Paquete {packet_name(header.packet_id)} (ID {header.packet_id}) "
-            f"de {len(data)} bytes; se esperaban {expected}."
+            "packet_size_mismatch",
+            packet=packet_name(header.packet_id),
+            packet_id=header.packet_id,
+            actual=len(data),
+            expected=expected,
+        )
+
+
+def _validate_finite_values(value: object) -> None:
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise PacketParseError("non_finite_float")
+    elif is_dataclass(value):
+        for field_info in fields(value):
+            _validate_finite_values(getattr(value, field_info.name))
+    elif isinstance(value, tuple):
+        for item in value:
+            _validate_finite_values(item)
+
+
+def _validate_percentage(field_name: str, value: int | float) -> None:
+    if not 0 <= value <= 100:
+        raise PacketParseError(
+            "percentage_out_of_range",
+            field=field_name,
+            value=value,
         )
 
 
@@ -982,7 +1046,7 @@ def _parse_session(header: PacketHeader, data: bytes) -> SessionPacket:
     offset += 21 * _MARSHAL_ZONE.size
     safety_car, network_game, forecast_count = _SESSION_MIDDLE.unpack_from(data, offset)
     if prefix[15] > 21 or forecast_count > 64:
-        raise PacketParseError("La cabecera Session declara más zonas o pronósticos que el máximo.")
+        raise PacketParseError("session_count_exceeded")
     zones = zones_all[: prefix[15]]
     offset += _SESSION_MIDDLE.size
     forecasts_raw = tuple(_FORECAST.iter_unpack(data[offset : offset + 64 * 8]))
@@ -999,14 +1063,16 @@ def _parse_session(header: PacketHeader, data: bytes) -> SessionPacket:
         )
         for row in forecasts_raw[:forecast_count]
     )
+    for row in forecasts_raw[:forecast_count]:
+        _validate_percentage("weather_forecast.rain_percentage", int(row[7]))
     offset += 64 * _FORECAST.size
     tail = _SESSION_TAIL.unpack_from(data, offset)
     if offset + _SESSION_TAIL.size != len(data):
-        raise PacketSizeError("El layout Session no consume el tamaño completo.")
+        raise PacketSizeError("session_layout_size_mismatch")
     settings_raw = tail[20:53]
     num_sessions = settings_raw[32]
     if num_sessions > 12:
-        raise PacketParseError("Session declara más de 12 sesiones en el fin de semana.")
+        raise PacketParseError("session_weekend_count_exceeded")
     settings = SessionSettings(
         session_length=_enum("session_length", settings_raw[0]),
         speed_units_lead_player=_enum("speed_units", settings_raw[1]),
@@ -1027,19 +1093,19 @@ def _parse_session(header: PacketHeader, data: bytes) -> SessionPacket:
         car_damage=_enum("car_damage", settings_raw[16]),
         car_damage_rate=_enum("car_damage_rate", settings_raw[17]),
         collisions=_enum("collisions", settings_raw[18]),
-        collisions_off_first_lap_only=_enum("on_off", settings_raw[19]),
+        collisions_off_first_lap_only=_boolean(settings_raw[19]),
         multiplayer_unsafe_pit_release=_enum("mp_unsafe_pit_release", settings_raw[20]),
         multiplayer_griefing=_enum("griefing_setting", settings_raw[21]),
         corner_cutting_stringency=_enum("corner_cutting", settings_raw[22]),
-        parc_ferme_rules=_enum("on_off", settings_raw[23]),
+        parc_ferme_rules=_boolean(settings_raw[23]),
         pit_stop_experience=_enum("pit_stop_experience", settings_raw[24]),
         safety_car=_enum("safety_car_setting", settings_raw[25]),
         safety_car_experience=_enum("safety_car_experience", settings_raw[26]),
-        formation_lap=_enum("on_off", settings_raw[27]),
+        formation_lap=_boolean(settings_raw[27]),
         formation_lap_experience=_enum("formation_lap_experience", settings_raw[28]),
         red_flags=_enum("red_flags", settings_raw[29]),
-        licence_level_solo=_enum("on_off", settings_raw[30]),
-        licence_level_multiplayer=_enum("on_off", settings_raw[31]),
+        licence_level_solo=_boolean(settings_raw[30]),
+        licence_level_multiplayer=_boolean(settings_raw[31]),
         num_sessions_in_weekend=num_sessions,
     )
 
@@ -1056,10 +1122,10 @@ def _parse_session(header: PacketHeader, data: bytes) -> SessionPacket:
         session_time_left=prefix[8],
         session_duration=prefix[9],
         pit_speed_limit=prefix[10],
-        game_paused=_enum("on_off", prefix[11]),
-        is_spectating=_enum("on_off", prefix[12]),
+        game_paused=_boolean(prefix[11]),
+        is_spectating=_boolean(prefix[12]),
         spectator_car_index=prefix[13],
-        sli_pro_native_support=_enum("on_off", prefix[14]),
+        sli_pro_native_support=_boolean(prefix[14]),
         marshal_zones=zones,
         safety_car_status=_enum("safety_car", safety_car),
         network_game=_enum("network_game", network_game),
@@ -1076,10 +1142,10 @@ def _parse_session(header: PacketHeader, data: bytes) -> SessionPacket:
             steering_assist=_enum("steering_assist", tail[8]),
             braking_assist=_enum("braking_assist", tail[9]),
             gearbox_assist=_enum("gearbox_assist", tail[10]),
-            pit_assist=_enum("on_off", tail[11]),
-            pit_release_assist=_enum("on_off", tail[12]),
-            ers_assist=_enum("on_off", tail[13]),
-            drs_assist=_enum("on_off", tail[14]),
+            pit_assist=_boolean(tail[11]),
+            pit_release_assist=_boolean(tail[12]),
+            ers_assist=_boolean(tail[13]),
+            drs_assist=_boolean(tail[14]),
             dynamic_racing_line=_enum("dynamic_racing_line", tail[15]),
             dynamic_racing_line_type=_enum("dynamic_racing_line_type", tail[16]),
             game_mode=_enum("game_mode", tail[17]),
@@ -1109,14 +1175,10 @@ def _lap_car(row: tuple[int | float, ...]) -> LapCarData:
     return LapCarData(
         last_lap_time_ms=int(row[0]),
         current_lap_time_ms=int(row[1]),
-        sector1_time_ms=int(row[2]),
-        sector1_time_minutes=int(row[3]),
-        sector2_time_ms=int(row[4]),
-        sector2_time_minutes=int(row[5]),
-        delta_to_car_in_front_ms=int(row[6]),
-        delta_to_car_in_front_minutes=int(row[7]),
-        delta_to_race_leader_ms=int(row[8]),
-        delta_to_race_leader_minutes=int(row[9]),
+        sector1_time_ms=int(row[3]) * 60_000 + int(row[2]),
+        sector2_time_ms=int(row[5]) * 60_000 + int(row[4]),
+        delta_to_car_in_front_ms=int(row[7]) * 60_000 + int(row[6]),
+        delta_to_race_leader_ms=int(row[9]) * 60_000 + int(row[8]),
         lap_distance=float(row[10]),
         total_distance=float(row[11]),
         safety_car_delta=float(row[12]),
@@ -1125,19 +1187,19 @@ def _lap_car(row: tuple[int | float, ...]) -> LapCarData:
         pit_status=_enum("pit_status", int(row[15])),
         pit_stops=int(row[16]),
         sector=_enum("sector", int(row[17])),
-        current_lap_invalid=_enum("on_off", int(row[18])),
+        current_lap_invalid=_boolean(int(row[18])),
         penalties=int(row[19]),
         total_warnings=int(row[20]),
         corner_cutting_warnings=int(row[21]),
         unserved_drive_through_penalties=int(row[22]),
         unserved_stop_go_penalties=int(row[23]),
-        grid_position=int(row[24]),
+        grid_position_zero_based=int(row[24]),
         driver_status=_enum("driver_status", int(row[25])),
         result_status=_enum("result_status", int(row[26])),
-        pit_lane_timer_active=_enum("on_off", int(row[27])),
+        pit_lane_timer_active=_boolean(int(row[27])),
         pit_lane_time_ms=int(row[28]),
         pit_stop_timer_ms=int(row[29]),
-        pit_stop_should_serve_penalty=_enum("on_off", int(row[30])),
+        pit_stop_should_serve_penalty=_boolean(int(row[30])),
         speed_trap_fastest_speed=float(row[31]),
         speed_trap_fastest_lap=int(row[32]),
     )
@@ -1151,20 +1213,20 @@ def _parse_participants(header: PacketHeader, data: bytes) -> ParticipantsPacket
     _require_size(data, SUPPORTED_PACKET_SIZES[4], header)
     active_cars = data[HEADER_SIZE]
     if active_cars > MAX_CARS:
-        raise PacketParseError("Participants declara más coches activos que el máximo de 22.")
-    records = _PARTICIPANT.iter_unpack(data[HEADER_SIZE + 1 :])
+        raise PacketParseError("participants_count_exceeded")
+    records = tuple(_PARTICIPANT.iter_unpack(data[HEADER_SIZE + 1 :]))[:active_cars]
     participants = tuple(
         Participant(
-            ai_controlled=_enum("on_off", row[0]),
+            ai_controlled=_boolean(row[0]),
             driver_id=_enum("driver_id", row[1]),
             network_id=row[2],
             team_id=_enum("team_id", row[3]),
-            my_team=_enum("on_off", row[4]),
+            my_team=_boolean(row[4]),
             race_number=row[5],
             nationality=_enum("nationality", row[6]),
             name=_decode_name(row[7]),
             your_telemetry=_enum("telemetry_setting", row[8]),
-            show_online_names=_enum("on_off", row[9]),
+            show_online_names=_boolean(row[9]),
             tech_level=row[10],
             platform=_enum("platform", row[11]),
             num_livery_colours=row[12],
@@ -1187,12 +1249,13 @@ def _parse_car_status(header: PacketHeader, data: bytes) -> CarStatusPacket:
 
 
 def _car_status(row: tuple[int | float, ...]) -> CarStatus:
+    _validate_percentage("front_brake_bias", int(row[3]))
     return CarStatus(
         traction_control=_enum("traction_control", int(row[0])),
-        anti_lock_brakes=_enum("anti_lock_brakes", int(row[1])),
+        anti_lock_brakes=_boolean(int(row[1])),
         fuel_mix=_enum("fuel_mix", int(row[2])),
         front_brake_bias=int(row[3]),
-        pit_limiter_status=_enum("pit_limiter", int(row[4])),
+        pit_limiter_status=_boolean(int(row[4])),
         fuel_in_tank=float(row[5]),
         fuel_capacity=float(row[6]),
         fuel_remaining_laps=float(row[7]),
@@ -1220,12 +1283,17 @@ def _parse_classification(header: PacketHeader, data: bytes) -> FinalClassificat
     _require_size(data, SUPPORTED_PACKET_SIZES[8], header)
     num_cars = data[HEADER_SIZE]
     if num_cars > MAX_CARS:
-        raise PacketParseError("FinalClassification declara más coches que el máximo de 22.")
-    entries = tuple(_classification(row) for row in _CLASSIFICATION.iter_unpack(data[30:]))
+        raise PacketParseError("classification_count_exceeded")
+    entries = tuple(
+        _classification(row) for row in tuple(_CLASSIFICATION.iter_unpack(data[30:]))[:num_cars]
+    )
     return FinalClassificationPacket(header, num_cars, entries)
 
 
 def _classification(row: tuple[int | float, ...]) -> FinalClassification:
+    num_tyre_stints = int(row[11])
+    if num_tyre_stints > 8:
+        raise PacketParseError("classification_stints_exceeded")
     return FinalClassification(
         position=int(row[0]),
         laps=int(row[1]),
@@ -1238,9 +1306,16 @@ def _classification(row: tuple[int | float, ...]) -> FinalClassification:
         total_race_time=float(row[8]),
         penalties_time=int(row[9]),
         penalties=int(row[10]),
-        tyre_stints_actual=tuple(_enum("tyre_compound", int(value)) for value in row[11:19]),
-        tyre_stints_visual=tuple(_enum("visual_tyre_compound", int(value)) for value in row[19:27]),
-        tyre_stints_end_laps=tuple(int(value) for value in row[27:35]),
+        num_tyre_stints=num_tyre_stints,
+        tyre_stints_actual=tuple(
+            _enum("tyre_compound", int(value)) for value in row[12 : 12 + num_tyre_stints]
+        ),
+        tyre_stints_visual=tuple(
+            _enum("visual_tyre_compound", int(value)) for value in row[20 : 20 + num_tyre_stints]
+        ),
+        tyre_stints_end_laps=tuple(
+            None if int(value) == 255 else int(value) for value in row[28 : 28 + num_tyre_stints]
+        ),
     )
 
 
@@ -1254,6 +1329,22 @@ def _parse_car_damage(header: PacketHeader, data: bytes) -> CarDamagePacket:
 
 def _car_damage(row: tuple[int | float, ...]) -> CarDamage:
     values = tuple(int(value) for value in row[4:])
+    percentage_values = (
+        ("tyres_wear", *(float(value) for value in row[:4])),
+        ("tyres_damage", *values[:4]),
+        ("brakes_damage", *values[4:8]),
+        ("tyre_blisters", *values[8:12]),
+        (
+            "car_damage",
+            *values[12:18],
+        ),
+        ("gearbox_damage", values[20]),
+        ("engine_damage", values[21]),
+        ("engine_wear", *values[22:28]),
+    )
+    for field_name, *percentages in percentage_values:
+        for value in percentages:
+            _validate_percentage(field_name, value)
     return CarDamage(
         tyres_wear=tuple(float(value) for value in row[:4]),
         tyres_damage=values[:4],
@@ -1287,20 +1378,22 @@ def _parse_session_history(header: PacketHeader, data: bytes) -> SessionHistoryP
         int(value) for value in history_header
     )
     if num_laps > 100 or num_tyre_stints > 8:
-        raise PacketParseError("La cabecera SessionHistory excede la capacidad de sus historiales.")
+        raise PacketParseError("session_history_count_exceeded")
     offset = HEADER_SIZE + _SESSION_HISTORY_HEADER.size
     laps = tuple(
         _lap_history(_LAP_HISTORY.unpack_from(data, offset + index * _LAP_HISTORY.size))
-        for index in range(100)
+        for index in range(num_laps)
     )
     offset += 100 * _LAP_HISTORY.size
     stints = tuple(
         TyreStintHistory(
             _enum("tyre_compound", int(actual)),
             _enum("visual_tyre_compound", int(visual)),
-            int(end_lap),
+            None if int(end_lap) == 255 else int(end_lap),
         )
-        for actual, visual, end_lap in _TYRE_STINT_HISTORY.iter_unpack(data[offset:])
+        for end_lap, actual, visual in tuple(_TYRE_STINT_HISTORY.iter_unpack(data[offset:]))[
+            :num_tyre_stints
+        ]
     )
     return SessionHistoryPacket(
         header=header,
@@ -1319,12 +1412,9 @@ def _parse_session_history(header: PacketHeader, data: bytes) -> SessionHistoryP
 def _lap_history(row: tuple[int | float, ...]) -> LapHistory:
     return LapHistory(
         int(row[0]),
-        int(row[1]),
-        int(row[2]),
-        int(row[3]),
-        int(row[4]),
-        int(row[5]),
-        int(row[6]),
+        int(row[2]) * 60_000 + int(row[1]),
+        int(row[4]) * 60_000 + int(row[3]),
+        int(row[6]) * 60_000 + int(row[5]),
         int(row[7]),
     )
 
@@ -1338,15 +1428,17 @@ def _parse_tyre_sets(header: PacketHeader, data: bytes) -> TyreSetsPacket:
             _enum("tyre_compound", int(row[0])),
             _enum("visual_tyre_compound", int(row[1])),
             int(row[2]),
-            _enum("on_off", int(row[3])),
+            _boolean(int(row[3])),
             _enum("session_type", int(row[4])),
             int(row[5]),
             int(row[6]),
             int(row[7]),
-            _enum("on_off", int(row[8])),
+            _boolean(int(row[8])),
         )
         for row in _TYRE_SET.iter_unpack(data[offset : offset + 20 * _TYRE_SET.size])
     )
+    for tyre_set in tyre_sets:
+        _validate_percentage("tyre_set.wear", tyre_set.wear)
     fitted_index = data[-1]
     return TyreSetsPacket(header, car_index, tyre_sets, fitted_index)
 
@@ -1358,7 +1450,7 @@ _EVENT_DETAIL_STRUCTS: dict[str, struct.Struct] = {
     "TMPT": struct.Struct("<B"),
     "RCWN": struct.Struct("<B"),
     "PENA": struct.Struct("<7B"),
-    "SPTP": struct.Struct("<BfBB Bf"),
+    "SPTP": struct.Struct("<BfBBBf"),
     "STLG": struct.Struct("<B"),
     "DTSV": struct.Struct("<B"),
     "SGSV": struct.Struct("<Bf"),
@@ -1377,8 +1469,17 @@ def _parse_event(header: PacketHeader, data: bytes) -> EventPacket:
     known_codes = _ENUMS["event_code"]
     event_code = EnumValue(code, known_codes.get(code, "unknown"))
     detail_struct = _EVENT_DETAIL_STRUCTS.get(code)
-    if detail_struct is None:
-        detail: EventDetail | SpeedTrapDetail | FlashbackDetail | UnknownEventDetail
+    no_detail_codes = {"SSTA", "SEND", "DRSE", "CHQF", "LGOT", "RDFL"}
+    if code in no_detail_codes:
+        detail: (
+            EventDetail
+            | NoEventDetail
+            | PenaltyEventDetail
+            | SpeedTrapDetail
+            | FlashbackDetail
+            | UnknownEventDetail
+        ) = NoEventDetail()
+    elif detail_struct is None:
         detail = UnknownEventDetail(details_raw)
     else:
         values = detail_struct.unpack_from(details_raw)
@@ -1398,12 +1499,14 @@ def _parse_event(header: PacketHeader, data: bytes) -> EventPacket:
         elif code == "DRSD":
             detail = EventDetail((_enum("drs_disabled_reason", int(values[0])),))
         elif code == "PENA":
-            detail = EventDetail(
-                (
-                    _enum("penalty_type", int(values[0])),
-                    _enum("infringement_type", int(values[1])),
-                    *(int(value) for value in values[2:]),
-                )
+            detail = PenaltyEventDetail(
+                penalty_type=_enum("penalty_type", int(values[0])),
+                infringement_type=_enum("infringement_type", int(values[1])),
+                vehicle_index=int(values[2]),
+                other_vehicle_index=int(values[3]),
+                time_seconds=int(values[4]),
+                lap_number=int(values[5]),
+                places_gained=int(values[6]),
             )
         elif code == "SCAR":
             detail = EventDetail(
@@ -1412,44 +1515,55 @@ def _parse_event(header: PacketHeader, data: bytes) -> EventPacket:
                     _enum("safety_car_event", int(values[1])),
                 )
             )
+        elif code in no_detail_codes:
+            detail = NoEventDetail()
         else:
             detail = EventDetail(tuple(values))
     return EventPacket(header, event_code, detail)
 
 
-PACKET_DECODERS: Mapping[int, Callable[[PacketHeader, bytes], ParsedPacket]] = MappingProxyType(
+@dataclass(frozen=True, slots=True)
+class PacketDecoder:
+    size: int
+    decode: Callable[[PacketHeader, bytes], ParsedPacket]
+
+
+PACKET_DECODERS: Mapping[int, PacketDecoder] = MappingProxyType(
     {
-        1: _parse_session,
-        2: _parse_lap_data,
-        4: _parse_participants,
-        7: _parse_car_status,
-        10: _parse_car_damage,
-        12: _parse_tyre_sets,
-        11: _parse_session_history,
-        3: _parse_event,
-        8: _parse_classification,
+        1: PacketDecoder(
+            HEADER_SIZE
+            + _SESSION_PREFIX.size
+            + 21 * _MARSHAL_ZONE.size
+            + _SESSION_MIDDLE.size
+            + 64 * _FORECAST.size
+            + _SESSION_TAIL.size,
+            _parse_session,
+        ),
+        2: PacketDecoder(
+            HEADER_SIZE + MAX_CARS * _LAP_CAR.size + _TIME_TRIAL_CAR_INDICES.size,
+            _parse_lap_data,
+        ),
+        3: PacketDecoder(HEADER_SIZE + _EVENT.size, _parse_event),
+        4: PacketDecoder(HEADER_SIZE + 1 + MAX_CARS * _PARTICIPANT.size, _parse_participants),
+        7: PacketDecoder(HEADER_SIZE + MAX_CARS * _CAR_STATUS.size, _parse_car_status),
+        8: PacketDecoder(
+            HEADER_SIZE + 1 + MAX_CARS * _CLASSIFICATION.size,
+            _parse_classification,
+        ),
+        10: PacketDecoder(HEADER_SIZE + MAX_CARS * _CAR_DAMAGE.size, _parse_car_damage),
+        11: PacketDecoder(
+            HEADER_SIZE
+            + _SESSION_HISTORY_HEADER.size
+            + 100 * _LAP_HISTORY.size
+            + 8 * _TYRE_STINT_HISTORY.size,
+            _parse_session_history,
+        ),
+        12: PacketDecoder(HEADER_SIZE + 2 + 20 * _TYRE_SET.size, _parse_tyre_sets),
     }
 )
-
-SUPPORTED_PACKET_SIZES = {
-    1: HEADER_SIZE
-    + _SESSION_PREFIX.size
-    + 21 * _MARSHAL_ZONE.size
-    + _SESSION_MIDDLE.size
-    + 64 * _FORECAST.size
-    + _SESSION_TAIL.size,
-    2: HEADER_SIZE + MAX_CARS * _LAP_CAR.size + _TIME_TRIAL_CAR_INDICES.size,
-    3: HEADER_SIZE + _EVENT.size,
-    4: HEADER_SIZE + 1 + MAX_CARS * _PARTICIPANT.size,
-    7: HEADER_SIZE + MAX_CARS * _CAR_STATUS.size,
-    8: HEADER_SIZE + 1 + MAX_CARS * _CLASSIFICATION.size,
-    10: HEADER_SIZE + MAX_CARS * _CAR_DAMAGE.size,
-    11: HEADER_SIZE
-    + _SESSION_HISTORY_HEADER.size
-    + 100 * _LAP_HISTORY.size
-    + 8 * _TYRE_STINT_HISTORY.size,
-    12: HEADER_SIZE + 2 + 20 * _TYRE_SET.size,
-}
+SUPPORTED_PACKET_SIZES: Mapping[int, int] = MappingProxyType(
+    {packet_id: decoder.size for packet_id, decoder in PACKET_DECODERS.items()}
+)
 
 
 def parse_packet(data: bytes) -> ParsedPacket:
@@ -1457,28 +1571,36 @@ def parse_packet(data: bytes) -> ParsedPacket:
     header = parse_header(data)
     if header is None:
         raise PacketSizeError(
-            f"Datagrama de {len(data)} bytes: no contiene la cabecera UDP completa "
-            f"de {HEADER_SIZE} bytes."
+            "packet_header_too_short",
+            actual=len(data),
+            expected=HEADER_SIZE,
         )
-    version = (
+    if (
         header.packet_format,
         header.game_year,
         header.game_major_version,
-        header.game_minor_version,
         header.packet_version,
-    )
-    if version != (2025, 25, 1, 26, 1):
+    ) != (
+        2025,
+        25,
+        1,
+        1,
+    ):
         raise UnsupportedFormatError(
-            "Formato o versión UDP no soportados: "
-            f"formato {header.packet_format}, año {header.game_year}, "
-            f"juego {header.game_major_version}.{header.game_minor_version}, "
-            f"paquete v{header.packet_version}; se admite únicamente "
-            "formato 2025, F1 25 (1.26), paquete v1."
+            "unsupported_format",
+            packet_format=header.packet_format,
+            game_year=header.game_year,
+            game_major=header.game_major_version,
+            game_minor=header.game_minor_version,
+            packet_version=header.packet_version,
         )
-    decoder = PACKET_DECODERS.get(header.packet_id)
-    if decoder is None:
+    packet_decoder = PACKET_DECODERS.get(header.packet_id)
+    if packet_decoder is None:
         raise UnsupportedPacketTypeError(
-            f"Paquete {packet_name(header.packet_id)} (ID {header.packet_id}) "
-            "sin decodificador; se conserva sin interpretar."
+            "unsupported_packet_type",
+            packet=packet_name(header.packet_id),
+            packet_id=header.packet_id,
         )
-    return decoder(header, data)
+    parsed = packet_decoder.decode(header, data)
+    _validate_finite_values(parsed)
+    return parsed

@@ -10,14 +10,20 @@ from rich.panel import Panel
 from rich.table import Table
 
 from .config import AppConfig
+from .console_messages import render_diagnostic
 from .diagnostics import ConnectionState, connection_state, diagnose
 from .packets import packet_name
-from .session import CaptureSession
+from .ports import SessionPort
 
 _STATE_STYLE = {
     ConnectionState.WAITING: "yellow",
     ConnectionState.RECEIVING: "green",
     ConnectionState.STALLED: "red",
+}
+_STATE_LABEL = {
+    ConnectionState.WAITING: "ESPERANDO",
+    ConnectionState.RECEIVING: "RECIBIENDO",
+    ConnectionState.STALLED: "SIN DATOS",
 }
 
 
@@ -30,7 +36,7 @@ def format_bytes(nbytes: int) -> str:
     return f"{nbytes} B"
 
 
-def render(cfg: AppConfig, session: CaptureSession, now: float | None = None) -> Group:
+def render(cfg: AppConfig, session: SessionPort, now: float | None = None) -> Group:
     now = time.monotonic() if now is None else now
     tele = cfg.telemetry
     snap = session.snapshot()
@@ -43,11 +49,15 @@ def render(cfg: AppConfig, session: CaptureSession, now: float | None = None) ->
     info.add_row("Escucha", f"{tele.listen_address}:{session.bound_port} · {scope}")
     if tele.allowed_sources:
         info.add_row("Orígenes permitidos", ", ".join(tele.allowed_sources))
-    info.add_row("Estado", f"[{_STATE_STYLE[state]}]{state.value.upper()}[/]")
+    info.add_row("Estado", f"[{_STATE_STYLE[state]}]{_STATE_LABEL[state]}[/]")
     if snap.last_packet_monotonic is not None:
         info.add_row("Último paquete", f"hace {now - snap.last_packet_monotonic:.1f} s")
     if snap.sources:
-        info.add_row("Origen", ", ".join(f"{ip} ({n})" for ip, n in sorted(snap.sources.items())))
+        sources = ", ".join(
+            f"{'otros' if ip == 'other' else ip} ({count})"
+            for ip, count in sorted(snap.sources.items())
+        )
+        info.add_row("Origen", sources)
     info.add_row(
         "Paquetes",
         f"{snap.received} recibidos · {snap.rejected_source} rechazados · "
@@ -91,13 +101,13 @@ def render(cfg: AppConfig, session: CaptureSession, now: float | None = None) ->
                 str(sequence.out_of_order if sequence else 0),
             )
         parts.append(table)
-    for message in diagnose(tele, snap, now):
-        parts.append(f"[yellow]{message}[/]")
+    for diagnostic in diagnose(tele, snap, now):
+        parts.append(f"[yellow]{render_diagnostic(diagnostic)}[/]")
     parts.append("[dim]Ctrl+C para salir[/]")
     return Group(*parts)
 
 
-def run_console(cfg: AppConfig, session: CaptureSession, console: Console | None = None) -> None:
+def run_console(cfg: AppConfig, session: SessionPort, console: Console | None = None) -> None:
     """Muestra el estado hasta Ctrl+C o hasta que falle el socket."""
     console = console or Console()
     with Live(render(cfg, session), console=console, refresh_per_second=4) as live:

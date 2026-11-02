@@ -1,6 +1,6 @@
 # Progreso del proyecto --- F1 Strategist
 
-**Última actualización:** 2026-11-01
+**Última actualización:** 2026-11-02
 **Propósito de este archivo:** llevar trazabilidad del avance importante y dejar el contexto
 necesario para que cualquier persona o agente que llegue al proyecto entienda dónde estamos, qué
 está decidido, qué está verificado y qué falta.
@@ -49,9 +49,9 @@ Documentos de diseño:
 | Interfaz | Consola primero; GUI web local (FastAPI + WebSocket) después | Acordado |
 | Topologías | Mismo PC o PC de la red local; solo cambia la configuración | Requisito del usuario |
 | Seguridad de red | Escucha solo en loopback por defecto; apertura a la LAN explícita | Requisito |
-| Receptor UDP | Hilo dedicado con socket bloqueante y cola acotada | Decisión cerrada; anomalías de secuencia medidas por tipo y `session_uid` |
+| Receptor UDP | Hilo dedicado con socket bloqueante y cola acotada | Decisión cerrada; `overall_frame_identifier`, cadencia observada y retención limitada |
 | Formato `.f1cap` v1 | Definido en `src/f1_strategist/capture.py` | Implementado en Sprint 1 |
-| Parser | Registro de decodificadores `struct` precompilados; modelos inmutables | Implementados los nueve tipos seleccionados; solo formato 2025, juego 1.26, paquete v1 |
+| Parser | Registro de decodificadores `struct` precompilados; modelos inmutables | Nueve tipos; formato 2025, año 25, juego 1.x y paquete v1; otras versiones menores se avisan y requieren tamaño exacto |
 
 ## 4. Estado por fase del roadmap
 
@@ -67,34 +67,39 @@ Documentos de diseño:
 
 **Verificado:**
 
--   Las 29 pruebas, `ruff` y `pyright` pasan en Linux (contenedor de desarrollo).
+-   La suite `pytest` (70 pruebas), Ruff (lint y formato) y Pyright pasan en Windows (2026-11-02).
 -   Flujo de extremo a extremo en Linux con procesos reales: `replay` -> `run` -> captura -> `inspect`.
 -   **Recepción de telemetría real en Windows 11** con el juego: captura de 68 541 paquetes en
     ~13 minutos, sin paquetes inválidos.
 -   La cabecera de 29 bytes y los IDs de tipo de paquete (0 a 15) coinciden con la especificación oficial
     de EA (formato 2025) y funcionan con la versión 1.26 del Season Pack.
--   El parser valida formato 2025, año 25, juego 1.26, versión de paquete 1 y tamaño exacto; rechaza
-    versiones/tipos no soportados con diagnóstico y no decodifica los tipos excluidos de la tarea.
+-   El parser valida formato 2025, año 25, versión mayor 1 y paquete v1 con tamaño exacto. Acepta
+    versiones menores distintas de 1.26 con aviso; rechaza protocolos incompatibles y cuenta los tipos
+    excluidos como ignorados por diseño.
 -   Los nueve tipos implementados (`Session`, `LapData`, `Participants`, `CarStatus`,
     `CarDamage`, `TyreSets`, `SessionHistory`, `Event`, `FinalClassification`) se decodificaron contra
     datagramas de la captura real; sus tamaños medidos son 753, 1285, 1284, 1239, 1041, 231, 1460,
     45 y 1042 bytes, respectivamente.
 -   Los valores desconocidos en campos enumerados quedan representados como `EnumValue(name="unknown")`
-    y conservan el valor original. Los rechazos del parser se cuentan y aparecen en el diagnóstico.
+    y conservan el valor original. Errores y diagnósticos usan claves y parámetros; la consola los
+    renderiza en español.
+-   Los fixtures compactos de `tests/fixtures/` cubren los nueve tipos; se extrajeron de la captura real y
+    anonimizan nombres de participantes e identificadores de red.
+-   Hypothesis prueba datagramas arbitrarios y cuerpos aleatorios con cabeceras válidas; solo se permiten
+    rechazos tipados del parser.
 -   Los tamaños de los 14 tipos de paquete presentes en la captura coinciden exactamente con los de la
     especificación.
--   El orden de campos de `LapData` de la especificación es consistente con los datos reales (sección 7).
--   `LapData.m_gridPosition` es de base 0 (parrilla menos 1), mientras que `FinalClassification.m_gridPosition`
-    es de base 1 (sección 7).
+-   El orden de campos de `LapData` de la especificación se verifica con el fixture de captura real
+    (sección 7).
+-   `LapCarData.grid_position_zero_based` conserva la base 0 del paquete; `FinalClassification.grid_position`
+    conserva la base 1. La normalización corresponde al futuro estado de carrera.
 -   La captura es una carrera de 5 vueltas con 22 coches.
+-   Ejecución en Linux en red local captura adecuadamente los paquetes del primer PC.
 
 **No verificado todavía:**
 
--   Recepción desde un segundo PC de la red local (topología B) y filtro de IP de origen con tráfico real.
--   Ejecución en Linux con el juego real.
--   Primera ejecución del CI en GitHub Actions (Windows y Ubuntu).
+-   CI de esta rama y de estos cambios (las ejecuciones recientes visibles corresponden a `main`, 2026-11-01).
 -   Si la captura de 5 vueltas incluye paradas en boxes (`m_numPitStops`).
--   Pruebas (`pytest`) en Windows.
 -   Que el paquete `Event` (1 202 en 13 min) contenga lo que se espera; se aclarará al parsear los códigos.
 
 ## 6. Bitácora
@@ -137,6 +142,19 @@ Documentos de diseño:
     para los 22 coches (base 0), mientras que `FinalClassification.m_gridPosition` y `m_carPosition` al inicio
     coinciden en base 1. La sesión es una carrera de 5 vueltas con 22 coches.
 -   Creado este archivo.
+
+### 2026-11-02
+
+-   Atendidos los comentarios de `review.md`: corregidos los layouts de stints en `SessionHistory` y
+    `FinalClassification`, incluidos contadores y valores opcionales; se añadieron fixtures anonimizados,
+    pruebas con valores no nulos, validaciones de rango y pruebas basadas en Hypothesis.
+-   Se completaron además los cambios de versión, clasificación de paquetes ignorados, secuencias UDP,
+    límites de memoria, aislamiento del consumidor, modelos de mensajes/localización y documentación.
+-   Validación local en Windows: `pytest` (70 pruebas), Ruff (lint y formato) y Pyright pasan.
+-   Replay de `captures/session-20261101-115103.f1cap`: se decodificaron 41 213 datagramas de los nueve
+    tipos implementados, sin errores de parser. Las ejecuciones recientes de GitHub Actions consultadas
+    son de `main`; la CI de esta rama y estos cambios sigue pendiente.
+-   Se realizó una prueba ejecutando el receptor en el segundo PC con Linux, mientras el   primer PC (Windows) corría el juego, prueba hecha sobre el código de `main`.
 
 ## 7. Hallazgos de la primera captura real
 
@@ -195,12 +213,17 @@ Captura: 68 541 paquetes, ~66 MB, 795,5 s entre el primer y el último paquete. 
         distintos (0 a 21) y constantes durante toda la captura, y el offset 44 vale 4 ("on track") en
         todos los coches. El offset 43 no puede ser `m_driverStatus`, cuyo rango es de 0 a 4. Se mantiene
         el orden de la especificación; el parser lo define en un único lugar y lo cubre con una prueba
-        sobre datos reales.
+        con fixtures derivados de datos reales.
 -   **Base de `m_gridPosition`:** cruzando `LapData.m_gridPosition` con `m_carPosition` del primer
     `LapData` y con `m_gridPosition` de `FinalClassification` (offset 2 de cada coche; 46 bytes por coche
     tras la cabecera y `m_numCars`), el valor de `LapData` es siempre la parrilla menos 1 (base 0) para
     los 22 coches. `FinalClassification.m_gridPosition` y `m_carPosition` al inicio coinciden en base 1.
-    La especificación no lo indica. El parser debe normalizar a base 1 y cubrirlo con una prueba.
+    La especificación no lo indica. El parser conserva el campo como `grid_position_zero_based`; el
+    estado de carrera deberá convertirlo a base 1 para que coincida con `FinalClassification`.
+-   **Fixtures reproducibles:** `tests/fixtures/` contiene un datagrama anonimizado por tipo implementado.
+    Proceden de `captures/session-20261101-115103.f1cap` (SHA-256
+    `5aef1a7c0d1eac85154221cf5f7b97af24bb06f3930219e68aa27bdc12a06e5f`); se limpiaron los nombres
+    de participantes y los identificadores de red.
 -   **Sesión grabada:** carrera de 5 vueltas con 22 coches (todos con `m_numLaps` = 5 en
     `FinalClassification`, y las posiciones finales forman una permutación de 1 a 22; esto valida también
     el layout de `FinalClassification`). Se desconoce si hubo paradas en boxes (`m_numPitStops`).
@@ -248,8 +271,8 @@ uv run f1-strategist replay captures/<archivo>.f1cap --host 127.0.0.1 --port 207
 
 ## 9. Notas técnicas para agentes
 
--   Las capturas (`captures/`) no se versionan en git. Para fixtures de pruebas habrá que recortar una
-    captura real a un tamaño razonable.
+-   Las capturas completas (`captures/`) no se versionan en git. Los fixtures compactos de la captura
+    inicial sí se versionan en `tests/fixtures/`.
 -   En Windows, usar PowerShell o Windows Terminal para la consola. Git Bash puede no redibujar el
     panel en vivo (hipótesis no confirmada).
 -   `run` instala manejadores para Ctrl+C y SIGTERM: los procesos lanzados en segundo plano desde shells
@@ -259,16 +282,16 @@ uv run f1-strategist replay captures/<archivo>.f1cap --host 127.0.0.1 --port 207
 
 ## 10. Siguiente paso: plan de la Fase 1
 
-1.  **Receptor, cerrado:** hilo dedicado con socket bloqueante y cola acotada; anomalías de secuencia
-    medidas y visibles por tipo de paquete. La prueba en red local con dos PC sigue pendiente.
-2.  **Parser, cerrado para el alcance acordado:** registro tipado con `struct` precompilados; soporta
-    solo formato 2025 / juego 1.26 / paquete v1 y los nueve tipos requeridos. Las longitudes exactas
-    contrastan con la captura real; tipos/versiones no soportados se rechazan con diagnóstico y los
-    enums desconocidos se conservan como `unknown`.
+1.  **Receptor, cerrado:** hilo dedicado con socket bloqueante y cola acotada; secuencia basada en
+    `overall_frame_identifier`, con estimación de cadencia y retención limitada. La prueba en red local
+    con dos PC sigue pendiente.
+2.  **Parser, cerrado para el alcance acordado:** registro único de decodificadores y tamaños, con
+    `struct` precompilados. Acepta formato 2025, año 25, juego 1.x y paquete v1; el minor no verificado
+    genera un aviso y se valida el tamaño exacto. Los tipos omitidos se cuentan como ignorados por diseño.
 3.  **Estado de carrera:** modelos de sesión, coche del piloto y rivales; frescura por grupo de datos;
     detección de cambio de sesión, de vuelta y de parada; panel de resumen de sesión en consola.
-4.  **Validación:** pruebas con fixtures reales, pruebas de propiedades con paquetes corruptos y replay
-    de la captura completa sin excepciones.
+4.  **Validación:** fixtures reales anonimizados, pruebas de propiedades y replay sintético con paquetes
+    soportados ya cubiertos. Queda el replay completo de la captura real sin excepciones.
 
 ## 11. Pendientes y decisiones abiertas
 
@@ -279,4 +302,15 @@ uv run f1-strategist replay captures/<archivo>.f1cap --host 127.0.0.1 --port 207
 -   Esquema de SQLite; modelo local concreto del LLM; voz; framework del front-end de la GUI;
     empaquetado de escritorio; fórmulas de degradación y simulación de paradas; umbrales iniciales;
     idioma por defecto y cambio en caliente.
--   Registrar en `docs/` los hallazgos confirmados (formato UDP 2025 válido, versión 1.26, broadcast).
+-   Registrar en `docs/` hallazgos adicionales de nuevas capturas y validación de CI.
+
+### 2026-11-02
+
+-   Corregidos los offsets y conteos de stints de `SessionHistory` y `FinalClassification`; los históricos
+    ahora exponen solo los elementos declarados por sus contadores.
+-   Añadidos fixtures de captura anonimizados, pruebas de layout con bytes no nulos, Hypothesis y un replay
+    válido de extremo a extremo.
+-   La versión menor 1.x se acepta con aviso cuando el resto de la cabecera y el tamaño coinciden; los
+    tipos no implementados se ignoran sin generar rechazos.
+-   Las métricas usan `overall_frame_identifier`, se calibran por cadencia observada y limitan las sesiones
+    retenidas. Los errores y diagnósticos pasan a claves neutrales al idioma para renderizarse en consola.

@@ -1,0 +1,168 @@
+"""Spanish rendering of core diagnostic message keys for the console."""
+
+from __future__ import annotations
+
+from .messages import DiagnosticMessage
+from .packets import packet_name
+from .parser import ParseIssue
+from .receiver import PacketSequenceStats
+
+
+def _number(item: DiagnosticMessage, name: str) -> float:
+    value = item.get(name)
+    if not isinstance(value, (int, float)):
+        raise TypeError(f"Diagnostic parameter {name!r} must be numeric.")
+    return float(value)
+
+
+def _render_parse_issue(issue: ParseIssue) -> str:
+    params = dict(issue.parameters)
+    if issue.code == "packet_size_mismatch":
+        return (
+            f"Paquete {params['packet']} (ID {params['packet_id']}) de "
+            f"{params['actual']} bytes; se esperaban {params['expected']}."
+        )
+    if issue.code == "packet_header_too_short":
+        return (
+            f"Datagrama de {params['actual']} bytes: no contiene la cabecera UDP "
+            f"completa de {params['expected']} bytes."
+        )
+    if issue.code == "unsupported_format":
+        return (
+            f"Formato o versión UDP no soportados: formato {params['packet_format']}, "
+            f"año {params['game_year']}, juego {params['game_major']}.{params['game_minor']}, "
+            f"paquete v{params['packet_version']}."
+        )
+    if issue.code == "unsupported_packet_type":
+        return f"Paquete {params['packet']} (ID {params['packet_id']}) sin decodificador."
+    if issue.code == "percentage_out_of_range":
+        return f"El campo {params['field']} tiene un porcentaje fuera de 0-100: {params['value']}."
+    messages = {
+        "non_finite_float": "El paquete contiene un valor flotante no finito.",
+        "session_count_exceeded": "Session declara más zonas o pronósticos que el máximo.",
+        "session_layout_size_mismatch": "El layout Session no consume el tamaño completo.",
+        "session_weekend_count_exceeded": "Session declara más de 12 sesiones en el fin de semana.",
+        "participants_count_exceeded": (
+            "Participants declara más coches activos que el máximo de 22."
+        ),
+        "classification_count_exceeded": (
+            "FinalClassification declara más coches que el máximo de 22."
+        ),
+        "classification_stints_exceeded": (
+            "FinalClassification declara más de 8 stints de neumáticos."
+        ),
+        "session_history_count_exceeded": "SessionHistory excede la capacidad de sus historiales.",
+        "other_parser_rejections_limited": (
+            "Otros rechazos de parser (mensajes distintos limitados)."
+        ),
+    }
+    return messages.get(issue.code, f"Error de parser no traducido: {issue.code}.")
+
+
+def _render_sequence_anomalies(
+    items: tuple[tuple[int, PacketSequenceStats], ...],
+) -> str:
+    details = []
+    for packet_id, stats in items:
+        parts = []
+        if stats.frame_gaps:
+            parts.append(f"{stats.frame_gaps} huecos de frame (posibles pérdidas)")
+        if stats.duplicates:
+            parts.append(f"{stats.duplicates} duplicados")
+        if stats.out_of_order:
+            parts.append(f"{stats.out_of_order} fuera de orden")
+        details.append(f"{packet_name(packet_id)}: {', '.join(parts)}")
+    return "Anomalías de secuencia UDP: " + "; ".join(details) + "."
+
+
+def render_diagnostic(item: DiagnosticMessage) -> str:
+    key = item.key
+    if key == "rejected_sources":
+        ips = item.get("ips")
+        if not isinstance(ips, tuple) or not all(isinstance(ip, str) for ip in ips):
+            raise TypeError("rejected_sources requires a tuple of source addresses.")
+        rendered_ips = ", ".join("otros" if ip == "other" else ip for ip in ips)
+        return (
+            f"Llegan paquetes de orígenes no permitidos ({rendered_ips}). "
+            "Revisa 'allowed_sources' en la configuración."
+        )
+    if key == "no_packets_heading":
+        return "No ha llegado ningún paquete desde el arranque. Causas probables:"
+    if key == "telemetry_disabled":
+        return "  - La telemetría UDP está desactivada en el juego."
+    if key == "destination_mismatch":
+        return (
+            "  - La IP o el puerto de destino configurados en el juego no coinciden con "
+            f"{item.get('address')}."
+        )
+    if key == "firewall":
+        return "  - Un firewall bloquea el puerto UDP de entrada."
+    if key == "loopback_only":
+        return (
+            "  - La aplicación escucha solo en loopback: si el juego corre en otro PC, "
+            'usa listen_address = "0.0.0.0".'
+        )
+    if key == "stalled":
+        return (
+            f"Sin datos desde hace {_number(item, 'age_seconds'):.0f} s. ¿El juego está en pausa, "
+            "en menús o con la telemetría desactivada?"
+        )
+    if key == "queue_dropped":
+        return (
+            f"Se descartaron {item.get('count')} paquetes por cola llena "
+            "(el consumidor no da abasto)."
+        )
+    if key == "consumer_error":
+        error = item.get("error")
+        if not isinstance(error, DiagnosticMessage):
+            raise TypeError("consumer_error requires a DiagnosticMessage.")
+        return (
+            f"El consumidor registró {item.get('count')} errores; último error: "
+            f"{render_diagnostic(error)}"
+        )
+    if key in {
+        "consumer_header_error",
+        "consumer_parse_error",
+        "capture_write_error",
+        "capture_flush_error",
+        "capture_close_error",
+    }:
+        labels = {
+            "consumer_header_error": "Error al registrar una cabecera UDP",
+            "consumer_parse_error": "Error inesperado en el parser UDP",
+            "capture_write_error": "Error al escribir la captura",
+            "capture_flush_error": "Error al vaciar la captura",
+            "capture_close_error": "Error al cerrar la captura",
+        }
+        return f"{labels[key]}: {item.get('error')}"
+    if key == "parser_rejection":
+        issue = item.get("issue")
+        if not isinstance(issue, ParseIssue):
+            raise TypeError("parser_rejection requires a ParseIssue.")
+        return f"Parser: {_render_parse_issue(issue)} ({item.get('count')} paquetes rechazados)"
+    if key == "unverified_game_version":
+        return (
+            f"Juego {item.get('version')}: se parsea por coincidencia de formato y tamaño; "
+            f"esta versión menor no se ha verificado ({item.get('count')} paquetes)."
+        )
+    if key == "sequence_anomalies":
+        items = item.get("items")
+        if not isinstance(items, tuple):
+            raise TypeError("sequence_anomalies requires a tuple of packet statistics.")
+        normalized_items: list[tuple[int, PacketSequenceStats]] = []
+        for item_value in items:
+            if (
+                not isinstance(item_value, tuple)
+                or len(item_value) != 2
+                or not isinstance(item_value[0], int)
+                or not isinstance(item_value[1], PacketSequenceStats)
+            ):
+                raise TypeError("sequence_anomalies contains an invalid packet statistic.")
+            normalized_items.append((item_value[0], item_value[1]))
+        return _render_sequence_anomalies(tuple(normalized_items))
+    if key == "sequence_gap_caveat":
+        return (
+            "Los huecos se estiman con overall_frame_identifier y la cadencia "
+            "observada por tipo; no confirman datagramas perdidos."
+        )
+    return f"Falta la traducción al español del mensaje '{key}'."

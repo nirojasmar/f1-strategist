@@ -1,18 +1,18 @@
-"""Estado de conexión y diagnóstico de ausencia de datos (RF-10, RF-11)."""
+"""Idioma-neutral connection state and diagnostic messages."""
 
 from __future__ import annotations
 
 from enum import Enum
 
 from .config import TelemetryConfig
-from .packets import packet_name
+from .messages import DiagnosticMessage, message
 from .receiver import StatsSnapshot
 
 
 class ConnectionState(Enum):
-    WAITING = "esperando datos"
-    RECEIVING = "recibiendo"
-    STALLED = "sin datos"
+    WAITING = "waiting"
+    RECEIVING = "receiving"
+    STALLED = "stalled"
 
 
 def connection_state(
@@ -25,71 +25,61 @@ def connection_state(
     return ConnectionState.RECEIVING
 
 
-def diagnose(cfg: TelemetryConfig, snap: StatsSnapshot, now_monotonic: float) -> list[str]:
-    """Mensajes en español con las causas probables cuando no llegan datos."""
-    messages: list[str] = []
+def diagnose(
+    cfg: TelemetryConfig, snap: StatsSnapshot, now_monotonic: float
+) -> list[DiagnosticMessage]:
+    messages: list[DiagnosticMessage] = []
     uptime = now_monotonic - snap.started_monotonic
 
     if snap.received == 0:
         if snap.rejected_source:
-            ips = ", ".join(sorted(snap.rejected_sources))
-            messages.append(
-                f"Llegan paquetes de orígenes no permitidos ({ips}). "
-                "Revisa 'allowed_sources' en la configuración."
-            )
+            ips = tuple(sorted(snap.rejected_sources))
+            messages.append(message("rejected_sources", ips=ips))
         elif uptime >= cfg.no_data_warning_s:
-            messages.append("No ha llegado ningún paquete desde el arranque. Causas probables:")
-            messages.append("  - La telemetría UDP está desactivada en el juego.")
-            messages.append(
-                "  - La IP o el puerto de destino configurados en el juego no coinciden "
-                f"con {cfg.listen_address}:{cfg.listen_port}."
+            messages.extend(
+                [
+                    message("no_packets_heading"),
+                    message("telemetry_disabled"),
+                    message(
+                        "destination_mismatch",
+                        address=f"{cfg.listen_address}:{cfg.listen_port}",
+                    ),
+                    message("firewall"),
+                ]
             )
-            messages.append("  - Un firewall bloquea el puerto UDP de entrada.")
             if cfg.is_loopback_only:
-                messages.append(
-                    "  - La aplicación escucha solo en loopback: si el juego corre en "
-                    'otro PC, usa listen_address = "0.0.0.0".'
-                )
+                messages.append(message("loopback_only"))
     elif connection_state(cfg, snap, now_monotonic) is ConnectionState.STALLED:
         assert snap.last_packet_monotonic is not None
-        age = now_monotonic - snap.last_packet_monotonic
-        messages.append(
-            f"Sin datos desde hace {age:.0f} s. ¿El juego está en pausa, en menús "
-            "o con la telemetría desactivada?"
-        )
+        messages.append(message("stalled", age_seconds=now_monotonic - snap.last_packet_monotonic))
 
     if snap.dropped_queue_full:
-        messages.append(
-            f"Se descartaron {snap.dropped_queue_full} paquetes por cola llena "
-            "(el consumidor no da abasto)."
-        )
+        messages.append(message("queue_dropped", count=snap.dropped_queue_full))
     if snap.capture_error:
         messages.append(snap.capture_error)
-    if snap.parser_rejections:
-        rejected = sorted(snap.parser_rejections.items(), key=lambda item: (-item[1], item[0]))
-        for warning, count in rejected:
-            messages.append(f"Parser: {warning} ({count} paquetes rechazados)")
+    if snap.consumer_error:
+        messages.append(
+            message(
+                "consumer_error",
+                count=snap.consumer_errors,
+                error=snap.consumer_error,
+            )
+        )
+    for issue, count in sorted(
+        snap.parser_rejections.items(),
+        key=lambda item: (-item[1], item[0].code, item[0].parameters),
+    ):
+        messages.append(message("parser_rejection", issue=issue, count=count))
+    for version, count in sorted(snap.unverified_game_versions.items()):
+        messages.append(message("unverified_game_version", version=version, count=count))
 
-    sequence_issues = [
+    sequence_issues = tuple(
         (packet_id, stats)
         for packet_id, stats in sorted(snap.sequence_by_id.items())
         if stats.frame_gaps or stats.duplicates or stats.out_of_order
-    ]
+    )
     if sequence_issues:
-        details = []
-        for packet_id, stats in sequence_issues:
-            parts = []
-            if stats.frame_gaps:
-                parts.append(f"{stats.frame_gaps} huecos de frame (posibles pérdidas)")
-            if stats.duplicates:
-                parts.append(f"{stats.duplicates} duplicados")
-            if stats.out_of_order:
-                parts.append(f"{stats.out_of_order} fuera de orden")
-            details.append(f"{packet_name(packet_id)}: {', '.join(parts)}")
-        messages.append("Anomalías de secuencia UDP: " + "; ".join(details) + ".")
+        messages.append(message("sequence_anomalies", items=sequence_issues))
         if any(stats.frame_gaps for _, stats in sequence_issues):
-            messages.append(
-                "Los huecos se estiman con frame_identifier por tipo; la cadencia "
-                "varía y no confirma datagramas perdidos."
-            )
+            messages.append(message("sequence_gap_caveat"))
     return messages

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import platform
 import queue
 import threading
@@ -11,9 +12,12 @@ from pathlib import Path
 from . import __version__
 from .capture import CapturedPacket, CaptureWriter
 from .config import AppConfig
+from .messages import message
 from .packets import parse_header
-from .parser import PacketParseError, parse_packet
+from .parser import PACKET_DECODERS, PacketParseError, parse_packet
 from .receiver import Stats, StatsSnapshot, UdpReceiver
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class CaptureSession:
@@ -75,21 +79,60 @@ class CaptureSession:
                 packet = self._queue.get(timeout=0.25)
             except queue.Empty:
                 continue
-            self.stats.record_header(parse_header(packet.payload))
+
+            try:
+                header = parse_header(packet.payload)
+                self.stats.record_header(header)
+            except Exception as exc:
+                _LOGGER.exception("Unexpected error while recording packet header")
+                self.stats.record_consumer_error(message("consumer_header_error", error=str(exc)))
+                header = None
+
+            self._write_packet(packet)
+
+            if (
+                header is not None
+                and 0 <= header.packet_id <= 15
+                and header.packet_id not in PACKET_DECODERS
+                and (
+                    header.packet_format,
+                    header.game_year,
+                    header.game_major_version,
+                    header.packet_version,
+                )
+                == (2025, 25, 1, 1)
+            ):
+                self.stats.record_ignored_packet(header.packet_id)
+                continue
             try:
                 parse_packet(packet.payload)
             except PacketParseError as exc:
-                self.stats.record_parser_rejection(str(exc))
-            writer = self._writer
-            if writer is None:
-                continue
+                self.stats.record_parser_rejection(exc.issue)
+            except Exception as exc:
+                _LOGGER.exception("Unexpected error while parsing UDP packet")
+                self.stats.record_consumer_error(message("consumer_parse_error", error=str(exc)))
+        writer = self._writer
+        if writer is not None:
             try:
-                writer.write(packet)
-            except (OSError, ValueError) as exc:
-                self.stats.set_capture_error(f"Error al escribir la captura: {exc}")
-                self._writer = None
+                writer.flush()
+            except Exception as exc:
+                _LOGGER.exception("Unable to flush capture")
+                self.stats.set_capture_error(message("capture_flush_error", error=str(exc)))
+
+    def _write_packet(self, packet: CapturedPacket) -> None:
+        writer = self._writer
+        if writer is None:
+            return
+        try:
+            writer.write(packet)
+        except Exception as exc:
+            _LOGGER.exception("Unable to write packet to capture")
+            self.stats.set_capture_error(message("capture_write_error", error=str(exc)))
+            self._writer = None
+            try:
                 writer.close()
-                continue
-            self.stats.set_capture(writer.packets_written, writer.bytes_written)
-        if self._writer is not None:
-            self._writer.flush()
+            except Exception as close_exc:
+                _LOGGER.exception("Unable to close failed capture")
+                self.stats.set_capture_error(message("capture_close_error", error=str(close_exc)))
+            return
+        self.stats.set_capture(writer.packets_written, writer.bytes_written)

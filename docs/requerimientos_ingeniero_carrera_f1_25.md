@@ -418,10 +418,10 @@ confianza cuando sea relevante.
 
 El detalle del stack está en el outline técnico, sección 8.
 
--   **Lenguaje y concurrencia:** Python 3.12+ con `asyncio` y colas
-    acotadas. Si el receptor UDP asíncrono da problemas en el sistema
-    operativo objetivo, se usa un hilo con socket bloqueante que alimente
-    una cola.
+-   **Lenguaje y concurrencia:** Python 3.12+ con un hilo dedicado de
+    recepción UDP, socket bloqueante con timeout y cola acotada para el
+    consumidor. A la carga medida de F1 25 (20 Hz), `asyncio` no aporta
+    una ventaja que justifique cambiar esta decisión.
 -   **Parser UDP:** propio, detrás de una interfaz y validado con
     capturas reales.
 -   **Integración del LLM:** API HTTP compatible con OpenAI mediante un
@@ -444,19 +444,17 @@ El detalle del stack está en el outline técnico, sección 8.
 -   Modelo local concreto y parámetros de generación (el protocolo de
     integración ya está decidido).
 -   Voz: motores de reconocimiento y síntesis, y salida de audio.
--   Frecuencia de muestreo y paquetes concretos que se procesarán.
+-   Tipos de paquete adicionales que se procesarán; los nueve del alcance
+    inicial ya están definidos en el roadmap.
 -   Esquema de SQLite. El formato de captura binaria `.f1cap` v1 ya está
     definido en el código (`src/f1_strategist/capture.py`).
 -   Framework del front-end de la GUI, herramienta de generación de tipos
     y si se empaqueta como app de escritorio.
--   Si el receptor UDP se mantiene como hilo dedicado (primera
-    implementación) o pasa a `asyncio`, según mediciones en Windows y
-    Linux.
 -   Fórmulas iniciales de degradación y simulación de paradas.
 -   Umbrales y prioridades iniciales, que deberán calibrarse mediante
     pruebas.
--   Formato UDP que se procesará (2025 o 2024) y cambios de la
-    especificación del 2026 Season Pack respecto a la de F1 25.
+-   Compatibilidad futura con formatos UDP anteriores y cambios de la
+    especificación de próximos Season Packs.
 -   Envío dirigido (unicast) o broadcast desde el juego, y política de
     filtrado por IP de origen.
 -   Ubicación recomendada del LLM (PC del juego o PC de la red local)

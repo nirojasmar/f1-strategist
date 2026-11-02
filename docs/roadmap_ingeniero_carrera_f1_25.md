@@ -74,8 +74,10 @@ local.
 -   Escribir el parser propio con `struct` o `ctypes`, detrás de una
     interfaz, procesando solo los tipos de paquete necesarios. Contrastar
     los layouts con la librería `F1Game.UDP` como referencia.
--   Por ahora, admitir únicamente formato UDP 2025, juego 1.26, versión
-    de paquete 1 y los tipos `Session`, `LapData`, `Participants`,
+-   Admitir formato UDP 2025, año 25, versión mayor 1 y paquete v1.
+    Aceptar cambios de versión menor del juego si coincide el tamaño
+    exacto, con un aviso mientras no estén verificados. Los tipos
+    `Session`, `LapData`, `Participants`,
     `CarStatus`, `CarDamage`, `TyreSets`, `SessionHistory`, `Event` y
     `FinalClassification`. Rechazar otros formatos, versiones y tipos con
     un diagnóstico claro; mapear enums desconocidos a `unknown`.
@@ -83,11 +85,12 @@ local.
     `Session` 753, `LapData` 1285, `Participants` 1284, `CarStatus` 1239,
     `CarDamage` 1041, `TyreSets` 231, `SessionHistory` 1460, `Event` 45
     y `FinalClassification` 1042 bytes.
--   Medir y mostrar por tipo de paquete los huecos de frame estimados,
-    duplicados y paquetes fuera de orden, aislados por `session_uid`.
+-   Medir y mostrar por tipo de paquete huecos estimados, duplicados y
+    paquetes fuera de orden usando `overall_frame_identifier`, una
+    cadencia aprendida por tipo y retención limitada por sesión.
 -   Mantener la recepción en un hilo: con la carga observada, migrar a
-    `asyncio` no aporta valor. Los huecos de frame son estimaciones, no
-    pérdidas confirmadas, porque la cadencia varía según el tipo.
+    `asyncio` no aporta valor. Los huecos son estimaciones, no pérdidas
+    confirmadas.
 -   Validar versiones, tamaños y rangos.
 -   Normalizar los datos a modelos internos.
 -   Mantener estado de sesión, coche y rivales.
@@ -108,8 +111,8 @@ local.
 
 ### Pruebas
 
--   Parser con fixtures de paquetes y pruebas de propiedades
-    (`hypothesis`) con paquetes truncados o corruptos.
+-   Parser con fixtures anonimizados de captura real y pruebas de
+    propiedades (`hypothesis`) con datagramas y cuerpos corruptos.
 -   Paquetes inválidos o incompletos.
 -   Cambio de sesión y reinicio.
 -   Continuidad del estado pese a paquetes perdidos.
