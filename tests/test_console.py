@@ -43,7 +43,9 @@ def test_console_renders_race_summary_fields() -> None:
         track_id=EnumValue(11, "monza"),
         total_laps=5,
     )
-    first_participant = replace(participants.participants[0], name="Test Driver")
+    first_participant = participants.participants[0]
+    assert first_participant is not None
+    first_participant = replace(first_participant, name="Test Driver")
     participants = replace(
         participants,
         participants=(first_participant, *participants.participants[1:]),

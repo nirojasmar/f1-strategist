@@ -48,9 +48,7 @@ def _render_race_summary(race: RaceStateSnapshot, now: float) -> Panel:
         "Sesión",
         f"{_display_enum(race.session.session_type)} · {_display_enum(race.session.track)}",
     )
-    table.add_row(
-        "Piloto", escape(player.name) if player is not None and player.name else "—"
-    )
+    table.add_row("Piloto", escape(player.name) if player is not None and player.name else "—")
     lap = str(race.current_lap) if race.current_lap is not None else "—"
     if race.session.total_laps is not None:
         lap = f"{lap}/{race.session.total_laps}"
@@ -90,9 +88,7 @@ def _render_race_summary(race: RaceStateSnapshot, now: float) -> Panel:
     if race.events:
         table.add_row(
             "Eventos",
-            "\n".join(
-                escape(render_race_event(event, race.cars)) for event in race.events[-4:]
-            ),
+            "\n".join(escape(render_race_event(event, race.cars)) for event in race.events[-4:]),
         )
     return Panel(table, title="Estado de carrera", expand=False)
 

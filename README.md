@@ -5,8 +5,8 @@ calcula estrategia y se comunica con el piloto.
 
 **Estado:** Sprint 1 (Fase 0 y Fase 1). La aplicación recibe y graba telemetría UDP, decodifica nueve
 tipos de paquete F1 25, mantiene snapshots inmutables de la sesión y los 22 coches, detecta cambios de
-estado y muestra un resumen de carrera en consola. Las métricas derivadas, la estrategia y el LLM llegan
-en fases posteriores.
+estado y conserva datos recibidos de combustible, neumáticos y daños. Muestra un resumen de carrera en
+consola. Las métricas derivadas, la estrategia y el LLM llegan en fases posteriores.
 
 La documentación de diseño está en [`docs/`](docs/): requerimientos, outline técnico y roadmap.
 

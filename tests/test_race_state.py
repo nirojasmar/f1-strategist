@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from f1_strategist.parser import (
+    CarDamagePacket,
     CarStatusPacket,
     EnumValue,
     EventPacket,
@@ -148,6 +149,31 @@ def test_freshness_records_age_and_obsolete_data_by_packet_group() -> None:
     assert not freshness.is_stale(11.25)
     assert freshness.is_stale(12.0)
     assert state.snapshot().freshness_for("participants").age_seconds(12.0) is None
+
+
+def test_car_damage_packet_is_preserved_in_immutable_car_snapshot() -> None:
+    state = RaceState()
+    packet = _parsed_fixture("car_damage.bin")
+    assert isinstance(packet, CarDamagePacket)
+    first_damage = replace(
+        packet.cars[0],
+        tyres_wear=(10.0, 20.0, 30.0, 40.0),
+        front_left_wing_damage=67,
+        engine_damage=41,
+        drs_fault=EnumValue(254, "unknown"),
+    )
+    packet = _with_header(replace(packet, cars=(first_damage, *packet.cars[1:])))
+
+    state.apply(packet, observed_at=1.0)
+
+    snapshot = state.snapshot()
+    assert snapshot.cars[0].damage is not None
+    assert snapshot.cars[0].damage.tyres_wear == (10.0, 20.0, 30.0, 40.0)
+    assert snapshot.cars[0].damage.front_left_wing_damage == 67
+    assert snapshot.cars[0].damage.engine_damage == 41
+    assert snapshot.cars[0].damage.drs_fault is None
+    assert snapshot.cars[1].damage is not None
+    assert snapshot.freshness_for("car_damage").updated_at_monotonic == 1.0
 
 
 def test_session_uid_change_resets_old_state_and_records_transition() -> None:

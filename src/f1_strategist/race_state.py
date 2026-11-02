@@ -7,6 +7,7 @@ from dataclasses import dataclass, replace
 
 from .parser import (
     MAX_CARS,
+    CarDamagePacket,
     CarStatusPacket,
     EnumValue,
     EventPacket,
@@ -37,6 +38,32 @@ def _known_enum(value: EnumValue) -> str | None:
 
 
 @dataclass(frozen=True, slots=True)
+class CarDamageSnapshot:
+    tyres_wear: tuple[float, ...]
+    tyres_damage: tuple[int, ...]
+    brakes_damage: tuple[int, ...]
+    tyre_blisters: tuple[int, ...]
+    front_left_wing_damage: int
+    front_right_wing_damage: int
+    rear_wing_damage: int
+    floor_damage: int
+    diffuser_damage: int
+    sidepod_damage: int
+    drs_fault: str | None
+    ers_fault: str | None
+    gearbox_damage: int
+    engine_damage: int
+    engine_mguh_wear: int
+    engine_es_wear: int
+    engine_ce_wear: int
+    engine_ice_wear: int
+    engine_mguk_wear: int
+    engine_tc_wear: int
+    engine_blown: str | None
+    engine_seized: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class CarSnapshot:
     car_index: int
     name: str | None = None
@@ -51,6 +78,7 @@ class CarSnapshot:
     actual_tyre_compound: str | None = None
     visual_tyre_compound: str | None = None
     tyre_age_laps: int | None = None
+    damage: CarDamageSnapshot | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -171,6 +199,8 @@ class RaceState:
             self._apply_lap_data(packet, observed_at)
         elif isinstance(packet, CarStatusPacket):
             self._apply_car_status(packet)
+        elif isinstance(packet, CarDamagePacket):
+            self._apply_car_damage(packet)
         elif isinstance(packet, EventPacket):
             self._apply_event(packet, observed_at)
         elif isinstance(packet, FinalClassificationPacket):
@@ -262,6 +292,36 @@ class RaceState:
                 actual_tyre_compound=_known_enum(status.actual_tyre_compound),
                 visual_tyre_compound=_known_enum(status.visual_tyre_compound),
                 tyre_age_laps=status.tyres_age_laps,
+            )
+
+    def _apply_car_damage(self, packet: CarDamagePacket) -> None:
+        for index, damage in enumerate(packet.cars):
+            self._cars[index] = replace(
+                self._cars[index],
+                damage=CarDamageSnapshot(
+                    tyres_wear=damage.tyres_wear,
+                    tyres_damage=damage.tyres_damage,
+                    brakes_damage=damage.brakes_damage,
+                    tyre_blisters=damage.tyre_blisters,
+                    front_left_wing_damage=damage.front_left_wing_damage,
+                    front_right_wing_damage=damage.front_right_wing_damage,
+                    rear_wing_damage=damage.rear_wing_damage,
+                    floor_damage=damage.floor_damage,
+                    diffuser_damage=damage.diffuser_damage,
+                    sidepod_damage=damage.sidepod_damage,
+                    drs_fault=_known_enum(damage.drs_fault),
+                    ers_fault=_known_enum(damage.ers_fault),
+                    gearbox_damage=damage.gearbox_damage,
+                    engine_damage=damage.engine_damage,
+                    engine_mguh_wear=damage.engine_mguh_wear,
+                    engine_es_wear=damage.engine_es_wear,
+                    engine_ce_wear=damage.engine_ce_wear,
+                    engine_ice_wear=damage.engine_ice_wear,
+                    engine_mguk_wear=damage.engine_mguk_wear,
+                    engine_tc_wear=damage.engine_tc_wear,
+                    engine_blown=_known_enum(damage.engine_blown),
+                    engine_seized=_known_enum(damage.engine_seized),
+                ),
             )
 
     def _apply_event(self, packet: EventPacket, observed_at: float) -> None:

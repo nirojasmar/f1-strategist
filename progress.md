@@ -59,7 +59,7 @@ Documentos de diseño:
 | Fase | Estado | Notas |
 | --- | --- | --- |
 | 0. Definición y entorno | Parcial | Repo, CI definido, config, receptor y guía de firewall listos. Falta validar la recepción desde otro PC de la red local y en Linux real. |
-| 1. Receptor, parser y estado | Implementada; validación en curso | Snapshots inmutables de sesión y coches, frescura por grupo, eventos y resumen de consola. |
+| 1. Receptor, parser y estado | Implementada; CI pendiente | Snapshots inmutables de sesión y coches, daños, frescura por grupo, eventos y resumen de consola. |
 | 2. Métricas e histórico | No iniciada | |
 | 3. Grabación y replay | Parcial | Captura y reemisión UDP listas (se adelantaron en Sprint 1). Falta el replay interno hacia el pipeline y el registro en SQLite. |
 | 4--10 | No iniciadas | |
@@ -68,7 +68,7 @@ Documentos de diseño:
 
 **Verificado:**
 
--   La suite `pytest` (78 pruebas), Ruff (lint y formato) y Pyright pasan en Windows (2026-11-02).
+-   La suite `pytest` (84 pruebas), Ruff (lint y formato) y Pyright pasan en Windows (2026-11-02).
 -   El consumidor único aplica los paquetes parseados al estado y publica snapshots inmutables; la frescura
     usa el reloj monotónico de recepción. La consola presenta vuelta, posición, combustible, compuesto y eventos.
 -   Flujo de extremo a extremo en Linux con procesos reales: `replay` -> `run` -> captura -> `inspect`.
@@ -102,8 +102,6 @@ Documentos de diseño:
 **No verificado todavía:**
 
 -   CI de esta rama y de estos cambios (las ejecuciones recientes visibles corresponden a `main`, 2026-11-01).
--   Si la captura de 5 vueltas incluye paradas en boxes (`m_numPitStops`).
--   Que el paquete `Event` (1 202 en 13 min) contenga lo que se espera; se aclarará al parsear los códigos.
 
 ## 6. Bitácora
 
@@ -157,6 +155,8 @@ Documentos de diseño:
 -   Replay de `captures/session-20261101-115103.f1cap`: se decodificaron 41 214 datagramas de los nueve
     tipos implementados, sin errores de parser. Las ejecuciones recientes de GitHub Actions consultadas
     son de `main`; la CI de esta rama y estos cambios sigue pendiente.
+-   Replay de `captures/session-20261101-233816.f1cap`: se verificó la captura y el estado (ver sección
+    7). Los paquetes `CarDamage` quedan en los snapshots por coche, sin derivar métricas.
 -   Replay de estado de la misma captura: los nueve tipos se aplicaron sin errores; se conservaron los 22
     nombres de `Participants` y las muestras del piloto. Los eventos `Event` con `session_uid=0` no
     alteran la sesión identificada por `Session`.
@@ -231,8 +231,8 @@ Captura: 68 541 paquetes, ~66 MB, 795,5 s entre el primer y el último paquete. 
     `LapData` y con `m_gridPosition` de `FinalClassification` (offset 2 de cada coche; 46 bytes por coche
     tras la cabecera y `m_numCars`), el valor de `LapData` es siempre la parrilla menos 1 (base 0) para
     los 22 coches. `FinalClassification.m_gridPosition` y `m_carPosition` al inicio coinciden en base 1.
-    La especificación no lo indica. El parser conserva el campo como `grid_position_zero_based`; el
-    estado de carrera deberá convertirlo a base 1 para que coincida con `FinalClassification`.
+    La especificación no lo indica. El parser conserva el campo como `grid_position_zero_based`; el estado
+    lo publica como `grid_position` base 1 para que coincida con `FinalClassification`.
 -   **Fixtures reproducibles:** `tests/fixtures/` contiene un datagrama anonimizado por tipo implementado.
     Proceden de `captures/session-20261101-115103.f1cap` (SHA-256
     `5aef1a7c0d1eac85154221cf5f7b97af24bb06f3930219e68aa27bdc12a06e5f`); se limpiaron los nombres
@@ -253,6 +253,21 @@ Captura: 68 541 paquetes, ~66 MB, 795,5 s entre el primer y el último paquete. 
     -   El `.txt` y el PDF difieren en un tipo (`NEuint8` en `DRSDisabled` del `.txt`, `uint8` en el PDF);
         se interpreta como `uint8`.
 
+### Captura de carrera con paradas y daños (2026-11-01)
+
+-   Archivo local: `captures/session-20261101-233816.f1cap` (no se versiona). Contiene 174 948 paquetes,
+    177 067 935 bytes de payload y 1 203,3 s; no está truncado y todos los paquetes tienen cabecera.
+-   Los nueve tipos soportados suman 104 999 datagramas; el parser los procesó sin rechazos. La sesión es
+    una carrera en Monza de 13 vueltas con 20 participantes activos y un paquete `FinalClassification`
+    consistente con las 13 vueltas y 20 coches clasificados.
+-   Cada uno de los 20 clasificados registra una parada y dos stints. En `Event` se observaron 39
+    colisiones y 10 penalizaciones; son códigos observados, no una atribución causal de daños.
+-   El piloto (índice 1, OCON) termina en posición 13 con una parada. Su `CarDamage` final indica 67 en
+    ala delantera izquierda, 41 en daño de motor, 9 en caja de cambios y desgaste de neumáticos
+    `(22, 16, 35, 12)`. El estado conserva esos valores brutos por coche; no calcula métricas derivadas.
+-   Replay completo parser → estado: 22 slots de coche, 20 nombres activos y los valores finales de
+    posición, vuelta, parada y daños concuerdan con `FinalClassification`/`CarDamage`.
+
 ## 8. Mapa del código
 
 ```text
@@ -261,7 +276,8 @@ src/f1_strategist/
   packets.py      Cabecera común de 29 bytes y nombres de tipos de paquete
   capture.py      Formato .f1cap v1: CaptureWriter, CaptureReader, CapturedPacket
   receiver.py     UdpReceiver (hilo + cola acotada), Stats y StatsSnapshot
-  session.py      CaptureSession: receptor -> cola -> consumidor (captura + estadísticas)
+  race_state.py   Estado de carrera de un solo escritor y snapshots inmutables
+  session.py      CaptureSession: receptor -> cola -> consumidor (captura + estado + estadísticas)
   diagnostics.py  Estado de conexión y causas probables cuando no llegan datos
   replay.py       Reemisión de una captura por UDP respetando los tiempos
   summary.py      Resumen de una captura (comando inspect)
@@ -301,15 +317,16 @@ uv run f1-strategist replay captures/<archivo>.f1cap --host 127.0.0.1 --port 207
 2.  **Parser, cerrado para el alcance acordado:** registro único de decodificadores y tamaños, con
     `struct` precompilados. Acepta formato 2025, año 25, juego 1.x y paquete v1; el minor no verificado
     genera un aviso y se valida el tamaño exacto. Los tipos omitidos se cuentan como ignorados por diseño.
-3.  **Estado de carrera:** modelos de sesión, coche del piloto y rivales; frescura por grupo de datos;
-    detección de cambio de sesión, de vuelta y de parada; panel de resumen de sesión en consola.
+3.  **Estado de carrera, implementado:** modelos de sesión y coches, incluyendo combustible, neumáticos
+    y daños recibidos; frescura por grupo; detección de cambio de sesión, vuelta y parada; panel de
+    resumen en consola. No se calculan métricas derivadas (Fase 2).
 4.  **Validación:** fixtures reales anonimizados, pruebas de propiedades y replay sintético con paquetes
-    soportados ya cubiertos. Queda el replay completo de la captura real sin excepciones.
+    soportados, más replay completo de la captura real con paradas y daños sin rechazos del parser.
+    CI de esta rama sigue pendiente.
 
 ## 11. Pendientes y decisiones abiertas
 
--   Comprobar si la captura de 5 vueltas incluye paradas en boxes (`m_numPitStops`).
--   Captura más variada: carrera con paradas en boxes, safety car y, si es posible, lluvia.
+-   Captura más variada: safety car y, si es posible, lluvia.
 -   Probar la topología de red local con dos PC; decidir envío dirigido o broadcast y política de
     filtrado por IP de origen.
 -   Esquema de SQLite; modelo local concreto del LLM; voz; framework del front-end de la GUI;

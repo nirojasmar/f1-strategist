@@ -1287,8 +1287,7 @@ def _parse_classification(header: PacketHeader, data: bytes) -> FinalClassificat
     if num_cars > MAX_CARS:
         raise PacketParseError("classification_count_exceeded")
     entries = tuple(
-        _classification(row) if any(row) else None
-        for row in _CLASSIFICATION.iter_unpack(data[30:])
+        _classification(row) if any(row) else None for row in _CLASSIFICATION.iter_unpack(data[30:])
     )
     return FinalClassificationPacket(header, num_cars, entries)
 
