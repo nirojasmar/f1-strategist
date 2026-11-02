@@ -25,6 +25,8 @@ _MAX_DATAGRAM = 65535
 _SEQUENCE_HISTORY_LIMIT = 4096
 _UINT32_MASK = 0xFFFFFFFF
 _UINT32_HALF = 0x80000000
+_MAX_PARSER_REJECTION_MESSAGES = 16
+_OTHER_PARSER_REJECTIONS = "Otros rechazos de parser (mensajes distintos limitados)"
 
 
 class ReceiverError(Exception):
@@ -73,6 +75,7 @@ class StatsSnapshot:
     packets_by_id: dict[int, int] = field(default_factory=dict)
     sequence_by_id: dict[int, PacketSequenceStats] = field(default_factory=dict)
     last_header: PacketHeader | None = None
+    parser_rejections: dict[str, int] = field(default_factory=dict)
     capture_packets: int = 0
     capture_bytes: int = 0
     capture_error: str | None = None
@@ -96,6 +99,7 @@ class Stats:
         self._sequence_counters: dict[int, _SequenceCounters] = {}
         self._sequences: dict[tuple[int, int], _FrameSequence] = {}
         self._header: PacketHeader | None = None
+        self._parser_rejections: Counter[str] = Counter()
         self._capture_packets = 0
         self._capture_bytes = 0
         self._capture_error: str | None = None
@@ -123,9 +127,7 @@ class Stats:
                 return
             self._by_id[header.packet_id] += 1
             self._header = header
-            counters = self._sequence_counters.setdefault(
-                header.packet_id, _SequenceCounters()
-            )
+            counters = self._sequence_counters.setdefault(header.packet_id, _SequenceCounters())
             sequence = self._sequences.setdefault(
                 (header.session_uid, header.packet_id), _FrameSequence()
             )
@@ -149,6 +151,15 @@ class Stats:
                 sequence.seen.remove(sequence.recent.popleft())
             sequence.recent.append(frame_key)
             sequence.seen.add(frame_key)
+
+    def record_parser_rejection(self, message: str) -> None:
+        with self._lock:
+            if (
+                message not in self._parser_rejections
+                and len(self._parser_rejections) >= _MAX_PARSER_REJECTION_MESSAGES
+            ):
+                message = _OTHER_PARSER_REJECTIONS
+            self._parser_rejections[message] += 1
 
     def set_capture(self, packets: int, nbytes: int) -> None:
         with self._lock:
@@ -181,6 +192,7 @@ class Stats:
                     for packet_id, counters in self._sequence_counters.items()
                 },
                 last_header=self._header,
+                parser_rejections=dict(self._parser_rejections),
                 capture_packets=self._capture_packets,
                 capture_bytes=self._capture_bytes,
                 capture_error=self._capture_error,

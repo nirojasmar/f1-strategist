@@ -12,6 +12,7 @@ from . import __version__
 from .capture import CapturedPacket, CaptureWriter
 from .config import AppConfig
 from .packets import parse_header
+from .parser import PacketParseError, parse_packet
 from .receiver import Stats, StatsSnapshot, UdpReceiver
 
 
@@ -75,6 +76,10 @@ class CaptureSession:
             except queue.Empty:
                 continue
             self.stats.record_header(parse_header(packet.payload))
+            try:
+                parse_packet(packet.payload)
+            except PacketParseError as exc:
+                self.stats.record_parser_rejection(str(exc))
             writer = self._writer
             if writer is None:
                 continue

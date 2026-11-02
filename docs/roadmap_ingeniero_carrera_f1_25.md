@@ -74,6 +74,15 @@ local.
 -   Escribir el parser propio con `struct` o `ctypes`, detrás de una
     interfaz, procesando solo los tipos de paquete necesarios. Contrastar
     los layouts con la librería `F1Game.UDP` como referencia.
+-   Por ahora, admitir únicamente formato UDP 2025, juego 1.26, versión
+    de paquete 1 y los tipos `Session`, `LapData`, `Participants`,
+    `CarStatus`, `CarDamage`, `TyreSets`, `SessionHistory`, `Event` y
+    `FinalClassification`. Rechazar otros formatos, versiones y tipos con
+    un diagnóstico claro; mapear enums desconocidos a `unknown`.
+-   Contrastar los tamaños de esos paquetes con la captura real:
+    `Session` 753, `LapData` 1285, `Participants` 1284, `CarStatus` 1239,
+    `CarDamage` 1041, `TyreSets` 231, `SessionHistory` 1460, `Event` 45
+    y `FinalClassification` 1042 bytes.
 -   Medir y mostrar por tipo de paquete los huecos de frame estimados,
     duplicados y paquetes fuera de orden, aislados por `session_uid`.
 -   Mantener la recepción en un hilo: con la carga observada, migrar a

@@ -65,6 +65,10 @@ def diagnose(cfg: TelemetryConfig, snap: StatsSnapshot, now_monotonic: float) ->
         )
     if snap.capture_error:
         messages.append(snap.capture_error)
+    if snap.parser_rejections:
+        rejected = sorted(snap.parser_rejections.items(), key=lambda item: (-item[1], item[0]))
+        for warning, count in rejected:
+            messages.append(f"Parser: {warning} ({count} paquetes rechazados)")
 
     sequence_issues = [
         (packet_id, stats)

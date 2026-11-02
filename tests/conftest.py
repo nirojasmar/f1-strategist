@@ -14,12 +14,12 @@ def make_packet(
     frame_identifier: int = 1,
     overall_frame_identifier: int = 1,
 ) -> bytes:
-    """Datagrama sintético: cabecera válida (formato 2025, año 25) más un cuerpo arbitrario."""
+    """Datagrama sintético: cabecera F1 25 1.26 más un cuerpo arbitrario."""
     header = HEADER_STRUCT.pack(
         2025,
         25,
         1,
-        5,
+        26,
         1,
         packet_id,
         session_uid,

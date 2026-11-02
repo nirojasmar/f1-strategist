@@ -51,14 +51,14 @@ Documentos de diseño:
 | Seguridad de red | Escucha solo en loopback por defecto; apertura a la LAN explícita | Requisito |
 | Receptor UDP | Hilo dedicado con socket bloqueante y cola acotada | Decisión cerrada; anomalías de secuencia medidas por tipo y `session_uid` |
 | Formato `.f1cap` v1 | Definido en `src/f1_strategist/capture.py` | Implementado en Sprint 1 |
-| Parser | Propio (`struct`), detrás de una interfaz | Acordado; aún no implementado |
+| Parser | Registro de decodificadores `struct` precompilados; modelos inmutables | Implementados los nueve tipos seleccionados; solo formato 2025, juego 1.26, paquete v1 |
 
 ## 4. Estado por fase del roadmap
 
 | Fase | Estado | Notas |
 | --- | --- | --- |
 | 0. Definición y entorno | Parcial | Repo, CI definido, config, receptor y guía de firewall listos. Falta validar la recepción desde otro PC de la red local y en Linux real. |
-| 1. Receptor, parser y estado | En curso | Receptor y captura listos. Parser por tipo de paquete y estado de carrera pendientes. |
+| 1. Receptor, parser y estado | En curso | Receptor y parser de nueve tipos listos; estado de carrera pendiente. |
 | 2. Métricas e histórico | No iniciada | |
 | 3. Grabación y replay | Parcial | Captura y reemisión UDP listas (se adelantaron en Sprint 1). Falta el replay interno hacia el pipeline y el registro en SQLite. |
 | 4--10 | No iniciadas | |
@@ -73,6 +73,14 @@ Documentos de diseño:
     ~13 minutos, sin paquetes inválidos.
 -   La cabecera de 29 bytes y los IDs de tipo de paquete (0 a 15) coinciden con la especificación oficial
     de EA (formato 2025) y funcionan con la versión 1.26 del Season Pack.
+-   El parser valida formato 2025, año 25, juego 1.26, versión de paquete 1 y tamaño exacto; rechaza
+    versiones/tipos no soportados con diagnóstico y no decodifica los tipos excluidos de la tarea.
+-   Los nueve tipos implementados (`Session`, `LapData`, `Participants`, `CarStatus`,
+    `CarDamage`, `TyreSets`, `SessionHistory`, `Event`, `FinalClassification`) se decodificaron contra
+    datagramas de la captura real; sus tamaños medidos son 753, 1285, 1284, 1239, 1041, 231, 1460,
+    45 y 1042 bytes, respectivamente.
+-   Los valores desconocidos en campos enumerados quedan representados como `EnumValue(name="unknown")`
+    y conservan el valor original. Los rechazos del parser se cuentan y aparecen en el diagnóstico.
 -   Los tamaños de los 14 tipos de paquete presentes en la captura coinciden exactamente con los de la
     especificación.
 -   El orden de campos de `LapData` de la especificación es consistente con los datos reales (sección 7).
@@ -253,10 +261,10 @@ uv run f1-strategist replay captures/<archivo>.f1cap --host 127.0.0.1 --port 207
 
 1.  **Receptor, cerrado:** hilo dedicado con socket bloqueante y cola acotada; anomalías de secuencia
     medidas y visibles por tipo de paquete. La prueba en red local con dos PC sigue pendiente.
-2.  **Parser:** interfaz y registro por tipo de paquete, layouts según la especificación de EA (formato 2025), validación de tamaños y rangos, y soporte
-    únicamente de los formatos conocidos (aviso ante formatos no soportados). Orden: `Session`,
-    `LapData`, `Participants`, `CarStatus`, `CarDamage`, `TyreSets`, `SessionHistory`, `Event`,
-    `FinalClassification`.
+2.  **Parser, cerrado para el alcance acordado:** registro tipado con `struct` precompilados; soporta
+    solo formato 2025 / juego 1.26 / paquete v1 y los nueve tipos requeridos. Las longitudes exactas
+    contrastan con la captura real; tipos/versiones no soportados se rechazan con diagnóstico y los
+    enums desconocidos se conservan como `unknown`.
 3.  **Estado de carrera:** modelos de sesión, coche del piloto y rivales; frescura por grupo de datos;
     detección de cambio de sesión, de vuelta y de parada; panel de resumen de sesión en consola.
 4.  **Validación:** pruebas con fixtures reales, pruebas de propiedades con paquetes corruptos y replay

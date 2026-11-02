@@ -53,6 +53,8 @@ def test_replay_is_received_and_recorded(tmp_path: Path) -> None:
     assert snap.received == 60
     assert snap.invalid == 0
     assert snap.packets_by_id == {0: 20, 1: 20, 2: 20}
+    assert sum(snap.parser_rejections.values()) == 60
+    assert any("sin decodificador" in warning for warning in snap.parser_rejections)
     assert snap.last_header is not None
     assert (snap.last_header.packet_format, snap.last_header.game_year) == (2025, 25)
 
@@ -61,7 +63,7 @@ def test_replay_is_received_and_recorded(tmp_path: Path) -> None:
     assert [p.payload for p in recorded] == payloads
     summary = summarize(session.capture_path)
     assert summary.packets == 60
-    assert summary.formats == {(2025, 25, 1, 5): 60}
+    assert summary.formats == {(2025, 25, 1, 26): 60}
 
 
 def test_replay_respects_original_timing(tmp_path: Path) -> None:
