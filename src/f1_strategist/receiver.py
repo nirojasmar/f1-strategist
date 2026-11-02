@@ -326,12 +326,21 @@ class UdpReceiver:
                     self.error = f"Error en el socket UDP: {exc}"
                 break
             recv_time_ns = time.time_ns()
+            recv_monotonic = time.monotonic()
             source_ip = str(addr[0])
             if self._allowed and normalize_ip(source_ip) not in self._allowed:
                 self._stats.record_rejected(source_ip)
                 continue
             self._stats.record_received(source_ip, len(data))
             try:
-                self._out.put_nowait(CapturedPacket(recv_time_ns, source_ip, int(addr[1]), data))
+                self._out.put_nowait(
+                    CapturedPacket(
+                        recv_time_ns,
+                        source_ip,
+                        int(addr[1]),
+                        data,
+                        recv_monotonic,
+                    )
+                )
             except queue.Full:
                 self._stats.record_dropped()

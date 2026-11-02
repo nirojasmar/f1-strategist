@@ -6,6 +6,7 @@ import logging
 import platform
 import queue
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -15,6 +16,7 @@ from .config import AppConfig
 from .messages import message
 from .packets import parse_header
 from .parser import PACKET_DECODERS, PacketParseError, parse_packet
+from .race_state import RaceState, RaceStateSnapshot
 from .receiver import Stats, StatsSnapshot, UdpReceiver
 
 _LOGGER = logging.getLogger(__name__)
@@ -24,6 +26,7 @@ class CaptureSession:
     def __init__(self, config: AppConfig, queue_size: int = 20000) -> None:
         self.config = config
         self.stats = Stats()
+        self._race_state = RaceState()
         self._queue: queue.Queue[CapturedPacket] = queue.Queue(maxsize=queue_size)
         self._receiver = UdpReceiver(config.telemetry, self._queue, self.stats)
         self._writer: CaptureWriter | None = None
@@ -73,6 +76,9 @@ class CaptureSession:
     def snapshot(self) -> StatsSnapshot:
         return self.stats.snapshot()
 
+    def race_snapshot(self) -> RaceStateSnapshot:
+        return self._race_state.snapshot()
+
     def _consume(self) -> None:
         while not (self._stop_consumer.is_set() and self._queue.empty()):
             try:
@@ -105,12 +111,23 @@ class CaptureSession:
                 self.stats.record_ignored_packet(header.packet_id)
                 continue
             try:
-                parse_packet(packet.payload)
+                parsed_packet = parse_packet(packet.payload)
             except PacketParseError as exc:
                 self.stats.record_parser_rejection(exc.issue)
             except Exception as exc:
                 _LOGGER.exception("Unexpected error while parsing UDP packet")
                 self.stats.record_consumer_error(message("consumer_parse_error", error=str(exc)))
+            else:
+                try:
+                    observed_at = packet.recv_monotonic
+                    if observed_at is None:
+                        observed_at = time.monotonic()
+                    self._race_state.apply(parsed_packet, observed_at)
+                except Exception as exc:
+                    _LOGGER.exception("Unexpected error while updating race state")
+                    self.stats.record_consumer_error(
+                        message("race_state_update_error", error=str(exc))
+                    )
         writer = self._writer
         if writer is not None:
             try:

@@ -3,9 +3,10 @@
 Ingeniero de carrera con IA para **F1 25 (2026 Season Pack)**: recibe la telemetría UDP del juego,
 calcula estrategia y se comunica con el piloto.
 
-**Estado:** Sprint 1 (Fase 0 y parte de Fase 1). La aplicación recibe y graba telemetría UDP, decodifica
-nueve tipos de paquete F1 25, muestra diagnósticos estructurados en consola y permite reemitir capturas.
-El estado de carrera, la estrategia y el LLM llegan en fases posteriores.
+**Estado:** Sprint 1 (Fase 0 y Fase 1). La aplicación recibe y graba telemetría UDP, decodifica nueve
+tipos de paquete F1 25, mantiene snapshots inmutables de la sesión y los 22 coches, detecta cambios de
+estado y muestra un resumen de carrera en consola. Las métricas derivadas, la estrategia y el LLM llegan
+en fases posteriores.
 
 La documentación de diseño está en [`docs/`](docs/): requerimientos, outline técnico y roadmap.
 

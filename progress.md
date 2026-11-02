@@ -52,13 +52,14 @@ Documentos de diseño:
 | Receptor UDP | Hilo dedicado con socket bloqueante y cola acotada | Decisión cerrada; `overall_frame_identifier`, cadencia observada y retención limitada |
 | Formato `.f1cap` v1 | Definido en `src/f1_strategist/capture.py` | Implementado en Sprint 1 |
 | Parser | Registro de decodificadores `struct` precompilados; modelos inmutables | Nueve tipos; formato 2025, año 25, juego 1.x y paquete v1; otras versiones menores se avisan y requieren tamaño exacto |
+| Estado de carrera | Un consumidor escritor publica snapshots inmutables | Datos de sesión y coches, frescura por grupo y eventos; las métricas derivadas quedan en Fase 2 |
 
 ## 4. Estado por fase del roadmap
 
 | Fase | Estado | Notas |
 | --- | --- | --- |
 | 0. Definición y entorno | Parcial | Repo, CI definido, config, receptor y guía de firewall listos. Falta validar la recepción desde otro PC de la red local y en Linux real. |
-| 1. Receptor, parser y estado | En curso | Receptor y parser de nueve tipos listos; estado de carrera pendiente. |
+| 1. Receptor, parser y estado | Implementada; validación en curso | Snapshots inmutables de sesión y coches, frescura por grupo, eventos y resumen de consola. |
 | 2. Métricas e histórico | No iniciada | |
 | 3. Grabación y replay | Parcial | Captura y reemisión UDP listas (se adelantaron en Sprint 1). Falta el replay interno hacia el pipeline y el registro en SQLite. |
 | 4--10 | No iniciadas | |
@@ -67,7 +68,9 @@ Documentos de diseño:
 
 **Verificado:**
 
--   La suite `pytest` (70 pruebas), Ruff (lint y formato) y Pyright pasan en Windows (2026-11-02).
+-   La suite `pytest` (78 pruebas), Ruff (lint y formato) y Pyright pasan en Windows (2026-11-02).
+-   El consumidor único aplica los paquetes parseados al estado y publica snapshots inmutables; la frescura
+    usa el reloj monotónico de recepción. La consola presenta vuelta, posición, combustible, compuesto y eventos.
 -   Flujo de extremo a extremo en Linux con procesos reales: `replay` -> `run` -> captura -> `inspect`.
 -   **Recepción de telemetría real en Windows 11** con el juego: captura de 68 541 paquetes en
     ~13 minutos, sin paquetes inválidos.
@@ -91,8 +94,8 @@ Documentos de diseño:
     especificación.
 -   El orden de campos de `LapData` de la especificación se verifica con el fixture de captura real
     (sección 7).
--   `LapCarData.grid_position_zero_based` conserva la base 0 del paquete; `FinalClassification.grid_position`
-    conserva la base 1. La normalización corresponde al futuro estado de carrera.
+-   `LapCarData.grid_position_zero_based` conserva la base 0 del paquete; el estado de carrera lo expone
+    como `grid_position` base 1, igual que `FinalClassification.grid_position`.
 -   La captura es una carrera de 5 vueltas con 22 coches.
 -   Ejecución en Linux en red local captura adecuadamente los paquetes del primer PC.
 
@@ -151,10 +154,20 @@ Documentos de diseño:
 -   Se completaron además los cambios de versión, clasificación de paquetes ignorados, secuencias UDP,
     límites de memoria, aislamiento del consumidor, modelos de mensajes/localización y documentación.
 -   Validación local en Windows: `pytest` (70 pruebas), Ruff (lint y formato) y Pyright pasan.
--   Replay de `captures/session-20261101-115103.f1cap`: se decodificaron 41 213 datagramas de los nueve
+-   Replay de `captures/session-20261101-115103.f1cap`: se decodificaron 41 214 datagramas de los nueve
     tipos implementados, sin errores de parser. Las ejecuciones recientes de GitHub Actions consultadas
     son de `main`; la CI de esta rama y estos cambios sigue pendiente.
+-   Replay de estado de la misma captura: los nueve tipos se aplicaron sin errores; se conservaron los 22
+    nombres de `Participants` y las muestras del piloto. Los eventos `Event` con `session_uid=0` no
+    alteran la sesión identificada por `Session`.
 -   Se realizó una prueba ejecutando el receptor en el segundo PC con Linux, mientras el   primer PC (Windows) corría el juego, prueba hecha sobre el código de `main`.
+-   Implementado el estado de carrera de un solo escritor: sesión, 22 coches con nombres de `Participants`,
+    coche del piloto, muestras desconocidas como `None`, frescura por grupo y hasta 50 eventos recientes.
+-   Se detectan cambio de sesión, inicio/final, vuelta y entrada/completado de parada en boxes. El panel
+    muestra vuelta, posición, combustible y compuesto; no calcula métricas derivadas (Fase 2).
+-   La prueba con la captura real confirmó que algunos eventos `buttons` traen `session_uid=0` mientras
+    los demás paquetes usan el UID de carrera; solo `Session` y eventos de ciclo de vida pueden cambiar
+    la identidad que mantiene el estado.
 
 ## 7. Hallazgos de la primera captura real
 

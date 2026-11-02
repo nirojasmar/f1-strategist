@@ -122,3 +122,39 @@ def test_replay_respects_original_timing(tmp_path: Path) -> None:
     finally:
         session.stop()
     assert elapsed >= 0.14
+
+
+def test_consumer_publishes_parsed_packets_to_race_state() -> None:
+    payload = (Path(__file__).parent / "fixtures" / "car_status.bin").read_bytes()
+    session = CaptureSession(
+        AppConfig(
+            telemetry=TelemetryConfig(listen_port=0),
+            capture=CaptureConfig(enabled=False),
+        )
+    )
+    session.start()
+    try:
+        session._queue.put(
+            CapturedPacket(
+                time.time_ns(),
+                "127.0.0.1",
+                4000,
+                payload,
+                recv_monotonic=10.0,
+            ),
+            timeout=1,
+        )
+        deadline = time.monotonic() + 3
+        while (
+            session.race_snapshot().freshness_for("car_status").updated_at_monotonic is None
+            and time.monotonic() < deadline
+        ):
+            time.sleep(0.01)
+    finally:
+        session.stop()
+
+    snapshot = session.race_snapshot()
+    assert snapshot.freshness_for("car_status").updated_at_monotonic == 10.0
+    assert snapshot.player_car is not None
+    assert snapshot.player_car.fuel_kg is not None
+    assert session.snapshot().parser_rejections == {}

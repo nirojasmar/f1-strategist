@@ -37,6 +37,7 @@ def test_receives_datagrams_in_order() -> None:
         receiver.stop()
     assert [p.payload for p in got] == [b"uno", b"dos", b"tres"]
     assert all(p.source_ip == "127.0.0.1" for p in got)
+    assert all(p.recv_monotonic is not None for p in got)
     snap = stats.snapshot()
     assert snap.received == 3
     assert snap.sources == {"127.0.0.1": 3}

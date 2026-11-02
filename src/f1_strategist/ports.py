@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Protocol
 
+from .race_state import RaceStateSnapshot
 from .receiver import StatsSnapshot
 
 
@@ -19,3 +20,5 @@ class SessionPort(Protocol):
     def capture_path(self) -> Path | None: ...
 
     def snapshot(self) -> StatsSnapshot: ...
+
+    def race_snapshot(self) -> RaceStateSnapshot: ...

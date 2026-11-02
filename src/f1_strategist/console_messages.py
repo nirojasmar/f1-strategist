@@ -5,6 +5,7 @@ from __future__ import annotations
 from .messages import DiagnosticMessage
 from .packets import packet_name
 from .parser import ParseIssue
+from .race_state import CarSnapshot, RaceEvent
 from .receiver import PacketSequenceStats
 
 
@@ -75,6 +76,27 @@ def _render_sequence_anomalies(
     return "Anomalías de secuencia UDP: " + "; ".join(details) + "."
 
 
+def render_race_event(event: RaceEvent, cars: tuple[CarSnapshot, ...]) -> str:
+    if event.kind == "session_changed":
+        return "Cambio de sesión"
+    if event.kind == "session_started":
+        return "Sesión iniciada"
+    if event.kind == "session_ended":
+        return "Sesión finalizada"
+    if event.kind == "lap_changed":
+        return f"Vuelta {event.lap_number}"
+    if event.kind in {"pit_entry", "pit_stop_completed"}:
+        car = cars[event.car_index] if event.car_index is not None else None
+        name = (
+            car.name
+            if car is not None and car.name
+            else (f"Coche {event.car_index + 1}" if event.car_index is not None else "Coche")
+        )
+        action = "entra en boxes" if event.kind == "pit_entry" else "completa parada"
+        return f"{name}: {action}"
+    return event.kind
+
+
 def render_diagnostic(item: DiagnosticMessage) -> str:
     key = item.key
     if key == "rejected_sources":
@@ -123,6 +145,7 @@ def render_diagnostic(item: DiagnosticMessage) -> str:
     if key in {
         "consumer_header_error",
         "consumer_parse_error",
+        "race_state_update_error",
         "capture_write_error",
         "capture_flush_error",
         "capture_close_error",
@@ -130,6 +153,7 @@ def render_diagnostic(item: DiagnosticMessage) -> str:
         labels = {
             "consumer_header_error": "Error al registrar una cabecera UDP",
             "consumer_parse_error": "Error inesperado en el parser UDP",
+            "race_state_update_error": "Error inesperado al actualizar el estado de carrera",
             "capture_write_error": "Error al escribir la captura",
             "capture_flush_error": "Error al vaciar la captura",
             "capture_close_error": "Error al cerrar la captura",
