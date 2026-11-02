@@ -59,7 +59,7 @@ Documentos de diseño:
 | Fase | Estado | Notas |
 | --- | --- | --- |
 | 0. Definición y entorno | Parcial | Repo, CI definido, config, receptor y guía de firewall listos. Falta validar la recepción desde otro PC de la red local y en Linux real. |
-| 1. Receptor, parser y estado | Implementada; CI pendiente | Snapshots inmutables de sesión y coches, daños, frescura por grupo, eventos y resumen de consola. |
+| 1. Receptor, parser y estado | Implementada; CI verde | Snapshots inmutables de sesión y coches, daños, frescura por grupo, eventos y resumen de consola. |
 | 2. Métricas e histórico | No iniciada | |
 | 3. Grabación y replay | Parcial | Captura y reemisión UDP listas (se adelantaron en Sprint 1). Falta el replay interno hacia el pipeline y el registro en SQLite. |
 | 4--10 | No iniciadas | |
@@ -69,6 +69,8 @@ Documentos de diseño:
 **Verificado:**
 
 -   La suite `pytest` (84 pruebas), Ruff (lint y formato) y Pyright pasan en Windows (2026-11-02).
+-   CI de GitHub Actions exitoso para `phase-1-udp-parser`, commit `096eceb`, en Ubuntu y Windows; también
+    pasaron Ruff (lint y formato) y Pyright (2026-11-02).
 -   El consumidor único aplica los paquetes parseados al estado y publica snapshots inmutables; la frescura
     usa el reloj monotónico de recepción. La consola presenta vuelta, posición, combustible, compuesto y eventos.
 -   Flujo de extremo a extremo en Linux con procesos reales: `replay` -> `run` -> captura -> `inspect`.
@@ -100,8 +102,6 @@ Documentos de diseño:
 -   Ejecución en Linux en red local captura adecuadamente los paquetes del primer PC.
 
 **No verificado todavía:**
-
--   CI de esta rama y de estos cambios (las ejecuciones recientes visibles corresponden a `main`, 2026-11-01).
 
 ## 6. Bitácora
 
@@ -153,8 +153,7 @@ Documentos de diseño:
     límites de memoria, aislamiento del consumidor, modelos de mensajes/localización y documentación.
 -   Validación local en Windows: `pytest` (70 pruebas), Ruff (lint y formato) y Pyright pasan.
 -   Replay de `captures/session-20261101-115103.f1cap`: se decodificaron 41 214 datagramas de los nueve
-    tipos implementados, sin errores de parser. Las ejecuciones recientes de GitHub Actions consultadas
-    son de `main`; la CI de esta rama y estos cambios sigue pendiente.
+    tipos implementados, sin errores de parser.
 -   Replay de `captures/session-20261101-233816.f1cap`: se verificó la captura y el estado (ver sección
     7). Los paquetes `CarDamage` quedan en los snapshots por coche, sin derivar métricas.
 -   Replay de estado de la misma captura: los nueve tipos se aplicaron sin errores; se conservaron los 22
@@ -321,8 +320,8 @@ uv run f1-strategist replay captures/<archivo>.f1cap --host 127.0.0.1 --port 207
     y daños recibidos; frescura por grupo; detección de cambio de sesión, vuelta y parada; panel de
     resumen en consola. No se calculan métricas derivadas (Fase 2).
 4.  **Validación:** fixtures reales anonimizados, pruebas de propiedades y replay sintético con paquetes
-    soportados, más replay completo de la captura real con paradas y daños sin rechazos del parser.
-    CI de esta rama sigue pendiente.
+    soportados, más replay completo de la captura real con paradas y daños sin rechazos del parser. CI
+    de GitHub Actions pasa en Ubuntu y Windows.
 
 ## 11. Pendientes y decisiones abiertas
 
