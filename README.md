@@ -35,9 +35,17 @@ uv run f1-strategist run --listen-address 0.0.0.0 --allow-source 192.168.1.20
 # Resumir una captura
 uv run f1-strategist inspect captures/session-YYYYMMDD-HHMMSS.f1cap
 
+# Crear una captura pequeña con paquetes seleccionados, rango de vueltas y datos anonimizados
+uv run f1-strategist trim captures/session-YYYYMMDD-HHMMSS.f1cap tests/fixtures/real.f1cap --types 2,4,7,10,11 --decimate 7=2 --laps 3-5 --anonymize
+
 # Reenviar una captura por UDP, sin abrir el juego
 uv run f1-strategist replay captures/session-YYYYMMDD-HHMMSS.f1cap --host 127.0.0.1 --port 20777
 ```
+
+El lector de capturas también acepta `.f1cap.gz` (por ejemplo, con `inspect`, `replay` y `trim`);
+`trim` escribe una salida `.f1cap` sin comprimir. El rango `--laps A-B` conserva los paquetes desde la primera muestra de la vuelta A hasta
+antes de la primera muestra de la vuelta B+1. `--decimate ID=N` conserva un paquete de cada N para ese ID.
+`--anonymize` reemplaza los nombres e identificadores de red y normaliza los orígenes de los datagramas.
 
 Las opciones también pueden ir en un archivo TOML (ver
 [`config/config.example.toml`](config/config.example.toml)):
@@ -82,7 +90,7 @@ sudo ufw allow from 192.168.1.20 to any port 20777 proto udp   # IP del PC del j
 
 Datagramas en bruto, tal como llegaron, con la hora de recepción, la IP y el puerto de origen. La
 estructura está documentada en [`src/f1_strategist/capture.py`](src/f1_strategist/capture.py). Las capturas
-se guardan en `captures/` (ignorado por git).
+se guardan en `captures/` (ignorado por git). El lector también acepta archivos gzip `.f1cap.gz`.
 
 ## Desarrollo
 
