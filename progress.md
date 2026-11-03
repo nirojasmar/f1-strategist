@@ -60,7 +60,7 @@ Documentos de diseño:
 | --- | --- | --- |
 | 0. Definición y entorno | Parcial | Repo, CI definido, config, receptor y guía de firewall listos. Falta validar la recepción desde otro PC de la red local y en Linux real. |
 | 1. Receptor, parser y estado | Implementada; CI verde | Snapshots inmutables de sesión y coches, daños, frescura por grupo, eventos y resumen de consola. |
-| 2. Métricas e histórico | En curso | A1, A2 y A3 implementados; faltan las demás tareas de la fase. |
+| 2. Métricas e histórico | En curso | A1, A2, A3 y A4 implementados; faltan las demás tareas de la fase. |
 | 3. Grabación y replay | Parcial | Captura y reemisión UDP listas (se adelantaron en Sprint 1). Falta el replay interno hacia el pipeline y el registro en SQLite. |
 | 4--10 | No iniciadas | |
 
@@ -100,6 +100,8 @@ Documentos de diseño:
     como `grid_position` base 1, igual que `FinalClassification.grid_position`.
 -   La captura es una carrera de 5 vueltas con 22 coches.
 -   Ejecución en Linux en red local captura adecuadamente los paquetes del primer PC.
+-   El constructor de escenarios sintéticos genera los tipos de paquete de carrera requeridos y puede
+    aplicar safety car, cambio de clima, vueltas inválidas y paradas programadas.
 -   El runner offline procesa `.f1cap` sin red, hilos ni esperas, entrega paquetes parseados a
     consumidores con tiempo monotónico simulado y cuenta rechazos, tipos ignorados y truncamiento.
 -   `MetricsConfig` ofrece valores predeterminados validados para métricas y parámetros opcionales
@@ -180,6 +182,8 @@ Documentos de diseño:
     la suite tenía 99 pruebas; Ruff y Pyright pasaban; el TOML de ejemplo cargaba correctamente.
 -   Implementados A3 (runner offline) y sus pruebas deterministas con fixtures, rechazos, paquetes
     ignorados y captura truncada. En ese punto, la suite tenía 90 pruebas; Ruff y Pyright pasaban.
+-   Implementados A4 (`tests/scenarios.py`) y pruebas de paquetes, determinismo, cabeceras, estado final
+    e invariantes de entrada. Suite completa: 93 pruebas; Ruff y Pyright pasan.
 
 ## 7. Hallazgos de la primera captura real
 
