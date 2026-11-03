@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import struct
+from collections import Counter
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, fields, is_dataclass
 from types import MappingProxyType
@@ -42,6 +43,16 @@ class PacketSizeError(PacketParseError):
 class ParseIssue:
     code: str
     parameters: tuple[tuple[str, str | int | float], ...] = ()
+
+
+_MAX_PARSER_REJECTION_MESSAGES = 16
+_OTHER_PARSER_REJECTIONS = "other_parser_rejections_limited"
+
+
+def _record_parser_rejection(rejections: Counter[ParseIssue], issue: ParseIssue) -> None:
+    if issue not in rejections and len(rejections) >= _MAX_PARSER_REJECTION_MESSAGES:
+        issue = ParseIssue(_OTHER_PARSER_REJECTIONS)
+    rejections[issue] += 1
 
 
 @dataclass(frozen=True, slots=True)

@@ -7,7 +7,14 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 
 class ConfigError(Exception):
@@ -56,11 +63,36 @@ class CaptureConfig(BaseModel):
     directory: Path = Path("captures")
 
 
+class MetricsConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    publish_interval_s: float = Field(default=0.5, gt=0)
+    history_max_laps: int = Field(default=100, ge=1)
+    pace_window_laps: int = Field(default=5, ge=1)
+    fuel_window_laps: int = Field(default=5, ge=1)
+    min_samples_low: int = Field(default=3, ge=1)
+    min_samples_ok: int = Field(default=5, ge=1)
+    traffic_gap_s: float = Field(default=1.0, ge=0)
+    traffic_lap_fraction: float = Field(default=0.5, ge=0, le=1)
+    gap_trend_window_s: float = Field(default=10.0, gt=0)
+    damage_change_threshold_pct: float = Field(default=5, ge=0, le=100)
+    fuel_effect_s_per_kg: float | None = Field(default=None, ge=0)
+    tyre_wear_limit_pct: float | None = Field(default=None, ge=0, le=100)
+    ers_capacity_joules: float | None = Field(default=None, gt=0)
+
+    @model_validator(mode="after")
+    def _validate_sample_thresholds(self) -> MetricsConfig:
+        if self.min_samples_ok < self.min_samples_low:
+            raise ValueError("min_samples_ok debe ser mayor o igual que min_samples_low")
+        return self
+
+
 class AppConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     telemetry: TelemetryConfig = Field(default_factory=TelemetryConfig)
     capture: CaptureConfig = Field(default_factory=CaptureConfig)
+    metrics: MetricsConfig = Field(default_factory=MetricsConfig)
 
 
 def load_config(path: Path | None) -> AppConfig:
