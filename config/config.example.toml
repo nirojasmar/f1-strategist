@@ -37,3 +37,13 @@ damage_change_threshold_pct = 5
 # fuel_effect_s_per_kg = 0.03
 # tyre_wear_limit_pct = 70
 # ers_capacity_joules = 4000000
+
+# Umbrales por familia (opcional; combustible usa 2/3 por defecto).
+[metrics.min_samples.fuel]
+low = 2
+ok = 3
+#
+# Para personalizar otra familia, añade otra sección:
+# [metrics.min_samples.pace]
+# low = 3
+# ok = 5

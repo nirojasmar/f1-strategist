@@ -26,7 +26,7 @@ from f1_strategist.metrics import (
         (4, False, Quality.LOW),
         (5, False, Quality.OK),
         (10, False, Quality.OK),
-        (0, True, Quality.STALE),
+        (0, True, Quality.INSUFFICIENT),
         (4, True, Quality.STALE),
     ],
 )
@@ -88,6 +88,24 @@ def test_missing_metric_helpers_set_value_quality_and_reason(
     assert metric.notes == ("metric_not_available",)
 
 
+@pytest.mark.parametrize("factory", [unavailable, insufficient])
+def test_missing_metric_helpers_preserve_context(factory: Callable[..., Metric]) -> None:
+    window = Window("laps", 5)
+    metric = factory(
+        "pace.last_lap_s",
+        "s",
+        "not_enough_laps",
+        12.5,
+        window=window,
+        sample_count=2,
+        sources=("lap_data",),
+    )
+
+    assert metric.window == window
+    assert metric.sample_count == 2
+    assert metric.sources == ("lap_data",)
+
+
 @pytest.mark.parametrize("quality", [Quality.INSUFFICIENT, Quality.UNAVAILABLE])
 def test_missing_quality_cannot_have_a_value(quality: Quality) -> None:
     with pytest.raises(ValueError, match="value=None"):
@@ -98,6 +116,34 @@ def test_missing_quality_cannot_have_a_value(quality: Quality) -> None:
             window=Window("instant"),
             quality=quality,
             sample_count=0,
+            computed_at_monotonic=1.0,
+        )
+
+
+@pytest.mark.parametrize("quality", [Quality.OK, Quality.LOW, Quality.STALE])
+def test_available_quality_requires_a_value(quality: Quality) -> None:
+    with pytest.raises(ValueError, match="debe tener un valor"):
+        Metric(
+            key="fuel.in_tank_kg",
+            value=None,
+            unit="kg",
+            window=Window("instant"),
+            quality=quality,
+            sample_count=1,
+            computed_at_monotonic=1.0,
+        )
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_metric_rejects_non_finite_values(value: float) -> None:
+    with pytest.raises(ValueError, match="finito"):
+        Metric(
+            key="fuel.in_tank_kg",
+            value=value,
+            unit="kg",
+            window=Window("instant"),
+            quality=Quality.OK,
+            sample_count=1,
             computed_at_monotonic=1.0,
         )
 
@@ -119,7 +165,14 @@ def test_window_kinds(kind: WindowKind, size: int | float | None) -> None:
 
 @pytest.mark.parametrize(
     ("kind", "size"),
-    [("unknown", None), ("laps", 0), ("seconds", float("inf")), ("samples", 1.5)],
+    [
+        ("unknown", None),
+        ("laps", 0),
+        ("seconds", float("inf")),
+        ("samples", 1.5),
+        ("instant", 5),
+        ("session", 1),
+    ],
 )
 def test_window_rejects_invalid_kind_or_size(kind: str, size: int | float | None) -> None:
     with pytest.raises(ValueError):

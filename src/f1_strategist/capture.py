@@ -7,7 +7,9 @@ Estructura (little-endian):
 
     archivo   = MAGIC (6 bytes: b"F1CAP\\x01")
                 uint32 longitud de los metadatos
-                metadatos (JSON UTF-8)
+                metadatos (JSON UTF-8: format_version, created_utc y los campos
+                opcionales tool, tool_version, platform, listen_address,
+                listen_port, allowed_sources y anonymized)
                 registro*
     registro  = uint64 recv_time_ns (reloj de pared del PC receptor)
                 uint8  longitud de la IP de origen
@@ -54,19 +56,34 @@ class CapturedPacket:
 
 class CaptureWriter:
     def __init__(
-        self, path: Path, metadata: dict[str, Any] | None = None, flush_every: int = 256
+        self,
+        path: Path,
+        metadata: dict[str, Any] | None = None,
+        flush_every: int = 256,
+        *,
+        include_created_utc: bool = True,
     ) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.packets_written = 0
         self.bytes_written = 0
         self._flush_every = flush_every
-        self._file: BinaryIO | None = self.path.open("wb")
-        meta = {
-            "format_version": FORMAT_VERSION,
-            "created_utc": datetime.now(UTC).isoformat(),
-            **(metadata or {}),
-        }
+        self._raw_file: BinaryIO | None = None
+        if self.path.name.lower().endswith(".f1cap.gz"):
+            self._raw_file = self.path.open("wb")
+            self._file: BinaryIO | gzip.GzipFile | None = gzip.GzipFile(
+                filename="",
+                mode="wb",
+                compresslevel=9,
+                fileobj=self._raw_file,
+                mtime=0,
+            )
+        else:
+            self._file = self.path.open("wb")
+        meta: dict[str, Any] = {"format_version": FORMAT_VERSION}
+        if include_created_utc:
+            meta["created_utc"] = datetime.now(UTC).isoformat()
+        meta.update(metadata or {})
         blob = json.dumps(meta, ensure_ascii=False).encode("utf-8")
         self._write(MAGIC + _LEN.pack(len(blob)) + blob)
 
@@ -97,6 +114,9 @@ class CaptureWriter:
         if self._file is not None:
             self._file.close()
             self._file = None
+        if self._raw_file is not None:
+            self._raw_file.close()
+            self._raw_file = None
 
     def __enter__(self) -> CaptureWriter:
         return self

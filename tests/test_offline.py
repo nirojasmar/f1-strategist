@@ -48,6 +48,7 @@ def test_offline_runner_is_deterministic_and_scales_observed_time(tmp_path: Path
     assert first.parser_rejections == {}
     assert first.ignored_packets_by_id == {}
     assert not first.truncated
+    assert first.last_observed_at == 1.0
     assert [observed_at for _, observed_at in first_consumer.received] == [0.0, 1.0]
     assert first_consumer.received == second_consumer.received
     assert first_state.snapshot() == second_state.snapshot()
@@ -69,6 +70,18 @@ def test_offline_runner_counts_rejections_and_ignored_packets(tmp_path: Path) ->
     assert sum(result.parser_rejections.values()) == 1
     assert result.ignored_packets_by_id == {0: 1}
     assert not result.truncated
+
+
+def test_offline_runner_reports_last_observed_time_and_zero_speed(tmp_path: Path) -> None:
+    path = tmp_path / "zero-speed.f1cap"
+    payload = (Path(__file__).parent / "fixtures" / "car_status.bin").read_bytes()
+    _write_capture(path, [payload, payload], [1_000_000_000, 8_000_000_000])
+    consumer = RecordingConsumer()
+
+    result = run_capture_offline(path, [consumer], speed=0)
+
+    assert result.last_observed_at == 0.0
+    assert [observed_at for _, observed_at in consumer.received] == [0.0, 0.0]
 
 
 def test_offline_runner_bounds_distinct_parser_rejections(

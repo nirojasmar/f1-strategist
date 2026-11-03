@@ -35,17 +35,25 @@ uv run f1-strategist run --listen-address 0.0.0.0 --allow-source 192.168.1.20
 # Resumir una captura
 uv run f1-strategist inspect captures/session-YYYYMMDD-HHMMSS.f1cap
 
-# Crear una captura pequeña con paquetes seleccionados, rango de vueltas y datos anonimizados
-uv run f1-strategist trim captures/session-YYYYMMDD-HHMMSS.f1cap tests/fixtures/real.f1cap --types 2,4,7,10,11 --decimate 7=2 --laps 3-5 --anonymize
+# Crear una captura pequeña comprimida con paquetes seleccionados, rango de vueltas y datos anonimizados
+uv run f1-strategist trim captures/session-YYYYMMDD-HHMMSS.f1cap tests/fixtures/real.f1cap.gz --types 2,4,7,10,11 --decimate 7=2 --decimate 11=2 --laps 3-5 --anonymize
 
 # Reenviar una captura por UDP, sin abrir el juego
 uv run f1-strategist replay captures/session-YYYYMMDD-HHMMSS.f1cap --host 127.0.0.1 --port 20777
 ```
 
-El lector de capturas también acepta `.f1cap.gz` (por ejemplo, con `inspect`, `replay` y `trim`);
-`trim` escribe una salida `.f1cap` sin comprimir. El rango `--laps A-B` conserva los paquetes desde la primera muestra de la vuelta A hasta
-antes de la primera muestra de la vuelta B+1. `--decimate ID=N` conserva un paquete de cada N para ese ID.
-`--anonymize` reemplaza los nombres e identificadores de red y normaliza los orígenes de los datagramas.
+El lector de capturas acepta `.f1cap.gz` (por ejemplo, con `inspect`, `replay` y `trim`), y `trim`
+puede escribir `.f1cap` o `.f1cap.gz`; la salida comprimida es determinista. El rango `--laps A-B`
+conserva los paquetes desde la primera muestra de la vuelta A hasta antes de la primera muestra de la
+vuelta B+1, e incluye el último paquete `Session` y `Participants` anteriores a la ventana. Por eso,
+la captura puede empezar hasta unos 5 segundos antes de la vuelta A.
+
+`--decimate ID=N` conserva un paquete de cada N para ese ID. Para los paquetes rotatorios 11
+(`SessionHistory`) y 12 (`TyreSets`), la cuenta se aplica independientemente por coche.
+`--anonymize` descarta `LobbyInfo`, reemplaza nombres de pilotos (salvo nombres de IA con
+`--keep-ai-names`), anonimiza los UID de sesión, elimina identificadores de enlace, metadatos de
+plataforma, tiempos absolutos y direcciones de origen. Se conservan las diferencias entre tiempos de
+recepción y los nombres públicos de IA solo si se solicita explícitamente.
 
 Las opciones también pueden ir en un archivo TOML (ver
 [`config/config.example.toml`](config/config.example.toml)):

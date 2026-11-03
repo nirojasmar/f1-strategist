@@ -18,6 +18,7 @@ from dataclasses import dataclass
 
 HEADER_STRUCT = struct.Struct("<HBBBBBQfIIBB")
 HEADER_SIZE = HEADER_STRUCT.size  # 29
+SESSION_UID_OFFSET = struct.calcsize("<HBBBBB")
 
 PACKET_NAMES: dict[int, str] = {
     0: "Motion",

@@ -89,7 +89,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     trim = sub.add_parser("trim", help="recorta y opcionalmente anonimiza una captura")
     trim.add_argument("input", type=Path, help="captura de entrada (.f1cap o .f1cap.gz)")
-    trim.add_argument("output", type=Path, help="captura de salida sin comprimir (.f1cap)")
+    trim.add_argument("output", type=Path, help="captura de salida (.f1cap o .f1cap.gz)")
     trim.add_argument(
         "--types",
         action="append",
@@ -102,7 +102,7 @@ def _build_parser() -> argparse.ArgumentParser:
         action="append",
         type=_parse_decimation,
         metavar="ID=N",
-        help="conservar un paquete de cada N para el ID (repetible)",
+        help="conservar un paquete de cada N para el ID (por coche para IDs 11 y 12)",
     )
     trim.add_argument(
         "--laps",
@@ -113,7 +113,12 @@ def _build_parser() -> argparse.ArgumentParser:
     trim.add_argument(
         "--anonymize",
         action="store_true",
-        help="anonimizar nombres, IDs de red, UID de sesión y dirección de origen",
+        help="eliminar LobbyInfo, anonimizar participantes, UID, enlaces, tiempos y origen",
+    )
+    trim.add_argument(
+        "--keep-ai-names",
+        action="store_true",
+        help="conservar nombres de participantes controlados por IA al anonimizar",
     )
     return parser
 
@@ -215,11 +220,16 @@ def _cmd_trim(args: argparse.Namespace, console: Console, err: Console) -> int:
         decimate=decimate,
         laps=args.laps,
         anonymize=args.anonymize,
+        keep_ai_names=args.keep_ai_names,
     )
     console.print(
         f"Captura recortada: {result.packets_written} de {result.packets_read} paquetes "
         f"guardados en {args.output}."
     )
+    if result.dropped_for_anonymization:
+        console.print(
+            f"Paquetes LobbyInfo omitidos al anonimizar: {result.dropped_for_anonymization}."
+        )
     if result.truncated:
         console.print("[yellow]La captura de entrada termina con un registro incompleto.[/]")
     return 0

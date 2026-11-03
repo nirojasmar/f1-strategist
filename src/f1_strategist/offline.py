@@ -13,15 +13,13 @@ from typing import Protocol
 from .capture import CaptureReader
 from .packets import parse_header
 from .parser import (
-    PACKET_DECODERS,
     PacketParseError,
     ParsedPacket,
     ParseIssue,
-    _record_parser_rejection,
+    is_ignored_by_design,
     parse_packet,
+    record_parser_rejection,
 )
-
-_SUPPORTED_HEADER_VERSION = (2025, 25, 1, 1)
 
 
 class PacketConsumer(Protocol):
@@ -35,6 +33,7 @@ class OfflineResult:
     parser_rejections: Mapping[ParseIssue, int]
     ignored_packets_by_id: Mapping[int, int]
     truncated: bool
+    last_observed_at: float = 0.0
 
 
 def run_capture_offline(
@@ -47,6 +46,8 @@ def run_capture_offline(
 
     `speed` escala el reloj simulado como en `replay`: 2.0 acelera el tiempo
     a la mitad y 0.0 asigna el mismo instante a todos los paquetes.
+    Las excepciones inesperadas de consumidores y parser se propagan; solo
+    `PacketParseError` se cuenta como rechazo, para no ocultar fallos offline.
     """
     playback_speed = 1.0 if speed is None else speed
     if not math.isfinite(playback_speed) or playback_speed < 0:
@@ -72,25 +73,14 @@ def run_capture_offline(
         last_observed_at = observed_at
 
         header = parse_header(captured.payload)
-        if (
-            header is not None
-            and 0 <= header.packet_id <= 15
-            and header.packet_id not in PACKET_DECODERS
-            and (
-                header.packet_format,
-                header.game_year,
-                header.game_major_version,
-                header.packet_version,
-            )
-            == _SUPPORTED_HEADER_VERSION
-        ):
+        if header is not None and is_ignored_by_design(header):
             ignored[header.packet_id] += 1
             continue
 
         try:
             packet = parse_packet(captured.payload)
         except PacketParseError as exc:
-            _record_parser_rejection(rejections, exc.issue)
+            record_parser_rejection(rejections, exc.issue)
             continue
 
         packets_parsed += 1
@@ -103,4 +93,5 @@ def run_capture_offline(
         parser_rejections=MappingProxyType(dict(rejections)),
         ignored_packets_by_id=MappingProxyType(dict(ignored)),
         truncated=reader.truncated,
+        last_observed_at=last_observed_at,
     )

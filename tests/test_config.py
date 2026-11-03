@@ -3,11 +3,13 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from f1_strategist.config import (
     AppConfig,
     ConfigError,
     MetricsConfig,
+    SampleThresholds,
     apply_overrides,
     load_config,
 )
@@ -25,6 +27,9 @@ def test_defaults_are_loopback_and_standard_port() -> None:
     assert cfg.metrics.fuel_window_laps == 5
     assert cfg.metrics.min_samples_low == 3
     assert cfg.metrics.min_samples_ok == 5
+    assert cfg.metrics.thresholds("fuel") == (2, 3)
+    assert cfg.metrics.thresholds("pace") == (3, 5)
+    assert cfg.metrics.thresholds("tyres") == (3, 5)
     assert cfg.metrics.traffic_gap_s == 1.0
     assert cfg.metrics.traffic_lap_fraction == 0.5
     assert cfg.metrics.gap_trend_window_s == 10.0
@@ -66,6 +71,40 @@ def test_load_toml(tmp_path: Path) -> None:
     assert cfg.metrics.ers_capacity_joules == 4000000
 
 
+def test_family_thresholds_override_only_the_selected_family(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text(
+        "[metrics]\npace_window_laps = 4\n[metrics.min_samples.pace]\nlow = 2\nok = 4\n",
+        encoding="utf-8",
+    )
+
+    metrics = load_config(path).metrics
+
+    assert metrics.thresholds("pace") == (2, 4)
+    assert metrics.thresholds("fuel") == (2, 3)
+    assert metrics.thresholds("tyres") == (3, 5)
+
+
+def test_example_config_loads_with_family_defaults() -> None:
+    config = load_config(Path(__file__).parents[1] / "config" / "config.example.toml")
+
+    assert config.metrics.thresholds("fuel") == (2, 3)
+    assert config.metrics.thresholds("pace") == (3, 5)
+
+
+def test_thresholds_rejects_unknown_family() -> None:
+    with pytest.raises(ValueError, match="unknown"):
+        MetricsConfig().thresholds("unknown")
+
+
+def test_sample_thresholds_are_immutable() -> None:
+    thresholds = SampleThresholds(low=2, ok=3)
+    field = "low"
+
+    with pytest.raises(ValidationError):
+        setattr(thresholds, field, 3)
+
+
 def test_optional_metrics_parameters_accept_none() -> None:
     cfg = MetricsConfig(
         fuel_effect_s_per_kg=None,
@@ -92,6 +131,12 @@ def test_optional_metrics_parameters_accept_none() -> None:
         "[metrics]\nfuel_window_laps = -1\n",
         "[metrics]\nmin_samples_low = 0\n",
         "[metrics]\nmin_samples_ok = 2\nmin_samples_low = 3\n",
+        "[metrics.min_samples.fuel]\nlow = 3\nok = 2\n",
+        "[metrics.min_samples.fuell]\nlow = 2\nok = 3\n",
+        "[metrics.min_samples.fuel]\nlow = 2\n",
+        "[metrics.min_samples.fuel]\nok = 3\n",
+        "[metrics.min_samples.fuel]\nlow = 0\nok = 3\n",
+        "[metrics.min_samples.fuel]\nlow = 2\nok = 3\nextra = 1\n",
         "[metrics]\ntraffic_gap_s = -0.1\n",
         "[metrics]\ntraffic_lap_fraction = 1.1\n",
         "[metrics]\ngap_trend_window_s = -1\n",
@@ -99,6 +144,13 @@ def test_optional_metrics_parameters_accept_none() -> None:
         "[metrics]\nfuel_effect_s_per_kg = -0.1\n",
         "[metrics]\ntyre_wear_limit_pct = -1\n",
         "[metrics]\ners_capacity_joules = 0\n",
+        "[metrics]\npublish_interval_s = inf\n",
+        "[metrics]\npublish_interval_s = nan\n",
+        "[metrics]\ngap_trend_window_s = inf\n",
+        "[metrics]\ners_capacity_joules = inf\n",
+        "[metrics]\nhistory_max_laps = 101\n",
+        "[metrics]\npace_window_laps = 4\n",
+        "[metrics]\nfuel_window_laps = 2\n",
     ],
 )
 def test_invalid_config_is_rejected(tmp_path: Path, toml: str) -> None:

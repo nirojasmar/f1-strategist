@@ -15,7 +15,7 @@ from .capture import CapturedPacket, CaptureWriter
 from .config import AppConfig
 from .messages import message
 from .packets import parse_header
-from .parser import PACKET_DECODERS, PacketParseError, parse_packet
+from .parser import PacketParseError, is_ignored_by_design, parse_packet
 from .race_state import RaceState, RaceStateSnapshot
 from .receiver import Stats, StatsSnapshot, UdpReceiver
 
@@ -96,18 +96,7 @@ class CaptureSession:
 
             self._write_packet(packet)
 
-            if (
-                header is not None
-                and 0 <= header.packet_id <= 15
-                and header.packet_id not in PACKET_DECODERS
-                and (
-                    header.packet_format,
-                    header.game_year,
-                    header.game_major_version,
-                    header.packet_version,
-                )
-                == (2025, 25, 1, 1)
-            ):
+            if header is not None and is_ignored_by_design(header):
                 self.stats.record_ignored_packet(header.packet_id)
                 continue
             try:
