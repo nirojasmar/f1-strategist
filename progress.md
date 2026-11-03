@@ -60,7 +60,7 @@ Documentos de diseño:
 | --- | --- | --- |
 | 0. Definición y entorno | Parcial | Repo, CI definido, config, receptor y guía de firewall listos. Falta validar la recepción desde otro PC de la red local y en Linux real. |
 | 1. Receptor, parser y estado | Implementada; CI verde | Snapshots inmutables de sesión y coches, daños, frescura por grupo, eventos y resumen de consola. |
-| 2. Métricas e histórico | No iniciada | |
+| 2. Métricas e histórico | En curso | A3: runner offline de capturas implementado; faltan las demás tareas de la fase. |
 | 3. Grabación y replay | Parcial | Captura y reemisión UDP listas (se adelantaron en Sprint 1). Falta el replay interno hacia el pipeline y el registro en SQLite. |
 | 4--10 | No iniciadas | |
 
@@ -100,6 +100,8 @@ Documentos de diseño:
     como `grid_position` base 1, igual que `FinalClassification.grid_position`.
 -   La captura es una carrera de 5 vueltas con 22 coches.
 -   Ejecución en Linux en red local captura adecuadamente los paquetes del primer PC.
+-   El runner offline procesa `.f1cap` sin red, hilos ni esperas, entrega paquetes parseados a
+    consumidores con tiempo monotónico simulado y cuenta rechazos, tipos ignorados y truncamiento.
 
 **No verificado todavía:**
 
@@ -167,6 +169,8 @@ Documentos de diseño:
 -   La prueba con la captura real confirmó que algunos eventos `buttons` traen `session_uid=0` mientras
     los demás paquetes usan el UID de carrera; solo `Session` y eventos de ciclo de vida pueden cambiar
     la identidad que mantiene el estado.
+-   Implementados A3 (runner offline) y sus pruebas deterministas con fixtures, rechazos, paquetes
+    ignorados y captura truncada. Suite completa: 90 pruebas; Ruff y Pyright pasan.
 
 ## 7. Hallazgos de la primera captura real
 
