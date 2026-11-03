@@ -16,6 +16,7 @@ from .parser import (
     ParsedPacket,
     ParticipantsPacket,
     SessionPacket,
+    TyreSetsPacket,
 )
 
 _EVENT_HISTORY_LIMIT = 50
@@ -68,6 +69,15 @@ class CarDamageSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class FittedTyreSnapshot:
+    actual_tyre_compound: str | None
+    visual_tyre_compound: str | None
+    wear_pct: float
+    lifespan_laps: int
+    usable_life_laps: int
+
+
+@dataclass(frozen=True, slots=True)
 class CarSnapshot:
     car_index: int
     name: str | None = None
@@ -96,6 +106,16 @@ class CarSnapshot:
     pit_lane_timer_active: bool | None = None
     pit_lane_time_ms: int | None = None
     pit_stop_timer_ms: int | None = None
+    fuel_capacity_kg: float | None = None
+    fuel_remaining_laps: float | None = None
+    ers_store_j: float | None = None
+    ers_deploy_mode: str | None = None
+    ers_harvested_mguk_j: float | None = None
+    ers_harvested_mguh_j: float | None = None
+    ers_deployed_this_lap_j: float | None = None
+    fia_flag: str | None = None
+    drs_allowed: bool | None = None
+    fitted_tyre: FittedTyreSnapshot | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -216,6 +236,8 @@ class RaceState:
             self._apply_lap_data(packet, observed_at)
         elif isinstance(packet, CarStatusPacket):
             self._apply_car_status(packet)
+        elif isinstance(packet, TyreSetsPacket):
+            self._apply_tyre_sets(packet)
         elif isinstance(packet, CarDamagePacket):
             self._apply_car_damage(packet)
         elif isinstance(packet, EventPacket):
@@ -341,13 +363,40 @@ class RaceState:
 
     def _apply_car_status(self, packet: CarStatusPacket) -> None:
         for index, status in enumerate(packet.cars):
+            restricted = status.fuel_capacity == 0
+            drs_allowed = {"allowed": True, "not_allowed": False}.get(status.drs_allowed.name)
             self._cars[index] = replace(
                 self._cars[index],
-                fuel_kg=status.fuel_in_tank,
+                fuel_kg=None if restricted else status.fuel_in_tank,
                 actual_tyre_compound=_known_enum(status.actual_tyre_compound),
                 visual_tyre_compound=_known_enum(status.visual_tyre_compound),
                 tyre_age_laps=status.tyres_age_laps,
+                fuel_capacity_kg=None if restricted else status.fuel_capacity,
+                fuel_remaining_laps=None if restricted else status.fuel_remaining_laps,
+                ers_store_j=None if restricted else status.ers_store_energy,
+                ers_deploy_mode=(None if restricted else _known_enum(status.ers_deploy_mode)),
+                ers_harvested_mguk_j=(None if restricted else status.ers_harvested_this_lap_mguk),
+                ers_harvested_mguh_j=(None if restricted else status.ers_harvested_this_lap_mguh),
+                ers_deployed_this_lap_j=None if restricted else status.ers_deployed_this_lap,
+                fia_flag=_known_enum(status.vehicle_fia_flags),
+                drs_allowed=drs_allowed,
             )
+
+    def _apply_tyre_sets(self, packet: TyreSetsPacket) -> None:
+        if not 0 <= packet.car_index < MAX_CARS:
+            return
+        fitted_tyre: FittedTyreSnapshot | None = None
+        if 0 <= packet.fitted_index < len(packet.tyre_sets):
+            tyre_set = packet.tyre_sets[packet.fitted_index]
+            fitted_tyre = FittedTyreSnapshot(
+                actual_tyre_compound=_known_enum(tyre_set.actual_tyre_compound),
+                visual_tyre_compound=_known_enum(tyre_set.visual_tyre_compound),
+                wear_pct=float(tyre_set.wear),
+                lifespan_laps=tyre_set.lifespan,
+                usable_life_laps=tyre_set.usable_life,
+            )
+        car = self._cars[packet.car_index]
+        self._cars[packet.car_index] = replace(car, fitted_tyre=fitted_tyre)
 
     def _apply_car_damage(self, packet: CarDamagePacket) -> None:
         for index, damage in enumerate(packet.cars):

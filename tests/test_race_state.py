@@ -16,6 +16,7 @@ from f1_strategist.parser import (
     ParsedPacket,
     ParticipantsPacket,
     SessionPacket,
+    TyreSetsPacket,
     parse_packet,
 )
 from f1_strategist.race_state import RaceState
@@ -257,6 +258,86 @@ def test_freshness_records_age_and_obsolete_data_by_packet_group() -> None:
     assert not freshness.is_stale(11.25)
     assert freshness.is_stale(12.0)
     assert state.snapshot().freshness_for("participants").age_seconds(12.0) is None
+
+
+def test_car_status_publishes_fuel_ers_flags_and_drs() -> None:
+    state = RaceState()
+    packet = _parsed_fixture("car_status.bin")
+    assert isinstance(packet, CarStatusPacket)
+
+    state.apply(_with_header(packet), observed_at=1.0)
+
+    car = state.snapshot().player_car
+    assert car is not None
+    assert car.fuel_kg == pytest.approx(10.426180839538574)
+    assert car.fuel_capacity_kg == 110.0
+    assert car.fuel_remaining_laps == pytest.approx(2.9225478172302246)
+    assert car.ers_store_j == 4_000_000.0
+    assert car.ers_deploy_mode == "medium"
+    assert car.ers_harvested_mguk_j == 0.0
+    assert car.ers_harvested_mguh_j == 0.0
+    assert car.ers_deployed_this_lap_j == 0.0
+    assert car.fia_flag == "none"
+    assert car.drs_allowed is False
+
+
+def test_restricted_fuel_and_ers_values_are_none() -> None:
+    packet = _parsed_fixture("car_status.bin")
+    assert isinstance(packet, CarStatusPacket)
+    restricted = replace(
+        packet.cars[0],
+        fuel_in_tank=0.0,
+        fuel_capacity=0.0,
+        fuel_remaining_laps=0.0,
+        ers_store_energy=0.0,
+        ers_deploy_mode=EnumValue(0, "none"),
+        ers_harvested_this_lap_mguk=0.0,
+        ers_harvested_this_lap_mguh=0.0,
+        ers_deployed_this_lap=0.0,
+    )
+    packet = _with_header(replace(packet, cars=(restricted, *packet.cars[1:])))
+
+    state = RaceState()
+    state.apply(packet, observed_at=1.0)
+
+    car = state.snapshot().player_car
+    assert car is not None
+    assert car.fuel_kg is None
+    assert car.fuel_capacity_kg is None
+    assert car.fuel_remaining_laps is None
+    assert car.ers_store_j is None
+    assert car.ers_deploy_mode is None
+    assert car.ers_harvested_mguk_j is None
+    assert car.ers_harvested_mguh_j is None
+    assert car.ers_deployed_this_lap_j is None
+    assert car.actual_tyre_compound == "c5"
+    assert car.fia_flag == "none"
+    assert car.drs_allowed is False
+
+
+def test_tyre_sets_packet_populates_the_fitted_tyre_for_its_car() -> None:
+    packet = _parsed_fixture("tyre_sets.bin")
+    assert isinstance(packet, TyreSetsPacket)
+
+    state = RaceState()
+    state.apply(_with_header(replace(packet, car_index=1)), observed_at=2.5)
+
+    snapshot = state.snapshot()
+    assert snapshot.cars[0].fitted_tyre is None
+    fitted = snapshot.cars[1].fitted_tyre
+    assert fitted is not None
+    assert fitted.actual_tyre_compound == "c5"
+    assert fitted.visual_tyre_compound == "soft"
+    assert fitted.wear_pct == 0.0
+    assert fitted.lifespan_laps == 18
+    assert fitted.usable_life_laps == 18
+    assert snapshot.freshness_for("tyre_sets").updated_at_monotonic == 2.5
+
+    state.apply(
+        _with_header(replace(packet, car_index=1, fitted_index=255)),
+        observed_at=3.0,
+    )
+    assert state.snapshot().cars[1].fitted_tyre is None
 
 
 def test_car_damage_packet_is_preserved_in_immutable_car_snapshot() -> None:
