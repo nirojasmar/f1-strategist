@@ -10,3 +10,5 @@ build/
 captures/
 # Configuración local
 config.toml
+# Planificación de tareas local
+plans/
