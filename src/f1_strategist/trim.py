@@ -142,7 +142,10 @@ def _anonymize_payload(payload: bytes) -> bytes:
     if header is None:
         return payload
     struct.pack_into("<Q", result, _SESSION_UID_OFFSET, 1)
-    if header.packet_id == 4 and len(result) == 29 + 1 + _PARTICIPANT_COUNT * _PARTICIPANT_SIZE:
+    if (
+        header.packet_id == 4
+        and len(result) == HEADER_SIZE + 1 + _PARTICIPANT_COUNT * _PARTICIPANT_SIZE
+    ):
         for index in range(_PARTICIPANT_COUNT):
             record_start = HEADER_SIZE + 1 + index * _PARTICIPANT_SIZE
             if not any(result[record_start : record_start + _PARTICIPANT_SIZE]):
