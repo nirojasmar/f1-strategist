@@ -365,6 +365,141 @@ def test_car_damage_packet_is_preserved_in_immutable_car_snapshot() -> None:
     assert snapshot.freshness_for("car_damage").updated_at_monotonic == 1.0
 
 
+def test_session_packet_publishes_environment_and_forecast() -> None:
+    state = RaceState()
+    session = _parsed_fixture("session.bin")
+    assert isinstance(session, SessionPacket)
+
+    state.apply(_with_header(session), observed_at=1.0)
+
+    snapshot = state.snapshot()
+    assert snapshot.session.weather == "clear"
+    assert snapshot.session.track_temperature_c == 40.0
+    assert snapshot.session.air_temperature_c == 26.0
+    assert snapshot.session.safety_car_status == "no_safety_car"
+    assert snapshot.session.session_time_left_s == 7200.0
+    assert snapshot.session.track_length_m == 5798.0
+    assert snapshot.session.pit_speed_limit_kph == 80.0
+    assert snapshot.session.pit_window_ideal_lap is None
+    assert snapshot.session.pit_window_latest_lap is None
+    assert snapshot.session.pit_rejoin_position is None
+    assert snapshot.session.game_paused is False
+    assert len(snapshot.session.forecast) == 3
+    first_sample = snapshot.session.forecast[0]
+    assert first_sample.offset_minutes == 0
+    assert first_sample.weather == "clear"
+    assert first_sample.track_temperature_c == 35.0
+    assert first_sample.air_temperature_c == 25.0
+    assert first_sample.rain_percentage == 6
+
+
+def test_session_environment_events_are_emitted_only_on_change() -> None:
+    state = RaceState()
+    session = _parsed_fixture("session.bin")
+    assert isinstance(session, SessionPacket)
+    state.apply(_with_header(session), observed_at=1.0)
+    assert state.snapshot().events == ()
+
+    state.apply(_with_header(session), observed_at=2.0)
+    assert state.snapshot().events == ()
+
+    state.apply(
+        _with_header(
+            replace(
+                session,
+                weather=EnumValue(3, "light_rain"),
+                safety_car_status=EnumValue(1, "full_safety_car"),
+            )
+        ),
+        observed_at=3.0,
+    )
+    assert [event.kind for event in state.snapshot().events] == [
+        "safety_car_changed",
+        "weather_changed",
+    ]
+
+    state.apply(
+        _with_header(
+            replace(
+                session,
+                weather=EnumValue(4, "heavy_rain"),
+                safety_car_status=EnumValue(1, "full_safety_car"),
+            )
+        ),
+        observed_at=4.0,
+    )
+    state.apply(
+        _with_header(
+            replace(
+                session,
+                weather=EnumValue(4, "heavy_rain"),
+                safety_car_status=EnumValue(1, "full_safety_car"),
+            )
+        ),
+        observed_at=5.0,
+    )
+
+    snapshot = state.snapshot()
+    assert snapshot.session.weather == "heavy_rain"
+    assert snapshot.session.safety_car_status == "full_safety_car"
+    assert [(event.kind, event.occurred_at_monotonic) for event in snapshot.events] == [
+        ("safety_car_changed", 3.0),
+        ("weather_changed", 3.0),
+        ("weather_changed", 4.0),
+    ]
+
+    state.apply(
+        _with_header(
+            replace(
+                session,
+                weather=EnumValue(0, "unknown"),
+                safety_car_status=EnumValue(0, "unknown"),
+            )
+        ),
+        observed_at=6.0,
+    )
+    snapshot = state.snapshot()
+    assert snapshot.session.weather is None
+    assert snapshot.session.safety_car_status is None
+    assert len(snapshot.events) == 3
+
+
+def test_session_uid_change_clears_environment_and_forecast() -> None:
+    state = RaceState()
+    session = _parsed_fixture("session.bin")
+    event = _parsed_fixture("event.bin")
+    assert isinstance(session, SessionPacket)
+    assert isinstance(event, EventPacket)
+    state.apply(_with_header(session), observed_at=1.0)
+    assert state.snapshot().session.forecast != ()
+
+    state.apply(
+        replace(
+            event,
+            header=replace(event.header, session_uid=2, player_car_index=0),
+            event_code=EnumValue("SSTA", "session_started"),
+            detail=NoEventDetail(),
+        ),
+        observed_at=2.0,
+    )
+
+    snapshot = state.snapshot()
+    assert snapshot.session.uid == 2
+    assert snapshot.session.weather is None
+    assert snapshot.session.track_temperature_c is None
+    assert snapshot.session.air_temperature_c is None
+    assert snapshot.session.safety_car_status is None
+    assert snapshot.session.session_time_left_s is None
+    assert snapshot.session.track_length_m is None
+    assert snapshot.session.pit_speed_limit_kph is None
+    assert snapshot.session.pit_window_ideal_lap is None
+    assert snapshot.session.pit_window_latest_lap is None
+    assert snapshot.session.pit_rejoin_position is None
+    assert snapshot.session.forecast == ()
+    assert snapshot.session.game_paused is None
+    assert [item.kind for item in snapshot.events] == ["session_changed", "session_started"]
+
+
 def test_session_uid_change_resets_old_state_and_records_transition() -> None:
     state = RaceState()
     participants = _parsed_fixture("participants.bin")

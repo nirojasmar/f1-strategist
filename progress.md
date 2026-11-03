@@ -1,6 +1,6 @@
 # Progreso del proyecto --- F1 Strategist
 
-**Última actualización:** 2026-11-02
+**Última actualización:** 2026-11-03
 **Propósito de este archivo:** llevar trazabilidad del avance importante y dejar el contexto
 necesario para que cualquier persona o agente que llegue al proyecto entienda dónde estamos, qué
 está decidido, qué está verificado y qué falta.
@@ -52,7 +52,7 @@ Documentos de diseño:
 | Receptor UDP | Hilo dedicado con socket bloqueante y cola acotada | Decisión cerrada; `overall_frame_identifier`, cadencia observada y retención limitada |
 | Formato `.f1cap` v1 | Definido en `src/f1_strategist/capture.py` | Implementado en Sprint 1 |
 | Parser | Registro de decodificadores `struct` precompilados; modelos inmutables | Nueve tipos; formato 2025, año 25, juego 1.x y paquete v1; otras versiones menores se avisan y requieren tamaño exacto |
-| Estado de carrera | Un consumidor escritor publica snapshots inmutables | Datos de sesión y coches, frescura por grupo y eventos; las métricas derivadas quedan en Fase 2 |
+| Estado de carrera | Un consumidor escritor publica snapshots inmutables | Sesión (entorno, pronóstico, safety car), coches (tiempos, intervalos, boxes, combustible/ERS, neumáticos), frescura por grupo y eventos; las métricas derivadas quedan en Fase 2 |
 
 ## 4. Estado por fase del roadmap
 
@@ -60,7 +60,7 @@ Documentos de diseño:
 | --- | --- | --- |
 | 0. Definición y entorno | Parcial | Repo, CI definido, config, receptor y guía de firewall listos. Falta validar la recepción desde otro PC de la red local y en Linux real. |
 | 1. Receptor, parser y estado | Implementada; CI verde | Snapshots inmutables de sesión y coches, daños, frescura por grupo, eventos y resumen de consola. |
-| 2. Métricas e histórico | En curso | Ola 0 implementada; faltan las demás tareas de la fase. |
+| 2. Métricas e histórico | En curso | Ola 0 (A1--A4) y ola 1 (B1--B3) implementadas; faltan histórico (C), métricas (D), integración (E) y cierre (F). |
 | 3. Grabación y replay | Parcial | Captura y reemisión UDP listas (se adelantaron en Sprint 1). Falta el replay interno hacia el pipeline y el registro en SQLite. |
 | 4--10 | No iniciadas | |
 
@@ -68,7 +68,7 @@ Documentos de diseño:
 
 **Verificado:**
 
--   La suite `pytest` (132 pruebas), Ruff (lint y formato) y Pyright pasan en Windows (2026-11-02).
+-   La suite `pytest` (221 pruebas), Ruff (lint y formato) y Pyright pasan en Windows (2026-11-03).
 -   CI de GitHub Actions exitoso para `phase-1-udp-parser`, commit `096eceb`, en Ubuntu y Windows; también
     pasaron Ruff (lint y formato) y Pyright (2026-11-02).
 -   El consumidor único aplica los paquetes parseados al estado y publica snapshots inmutables; la frescura
@@ -110,6 +110,18 @@ Documentos de diseño:
     desactivados por defecto.
 -   Los tipos base de métricas (`Quality`, `Window`, `Metric`) y sus helpers están implementados
     con invariantes de calidad y pruebas unitarias.
+-   B1: `CarSnapshot` publica tiempos de vuelta y sectores, intervalos, distancia, invalidación de vuelta,
+    penalizaciones, estado de resultado y estado/tiempos de boxes. Los ceros de tiempo y los deltas del
+    líder se normalizan a `None`; los coches `invalid`/`inactive` no publican valores de vuelta.
+-   B2: `CarSnapshot` publica capacidad y combustible restante, ERS (almacén, modo, cosechado y desplegado),
+    bandera FIA, permiso de DRS y el neumático montado (`FittedTyreSnapshot`). `TyreSets` ya puebla el
+    coche indicado por `car_index`; un `fitted_index` ausente deja `fitted_tyre=None`. Con capacidad de
+    combustible 0, combustible y ERS quedan en `None` en lugar de publicarse como 0.
+-   B3: `RaceSessionSnapshot` publica clima, temperaturas, estado de safety car, tiempo restante, longitud
+    del circuito, límite de velocidad en boxes, ventanas de parada, posición de reincorporación,
+    `game_paused` y el pronóstico por muestras (`WeatherForecastSnapshot`). `safety_car_changed` y
+    `weather_changed` se emiten solo ante transiciones entre valores conocidos; un cambio de sesión limpia
+    todo el entorno y el pronóstico.
 
 **No verificado todavía:**
 
@@ -188,6 +200,36 @@ Documentos de diseño:
     ignorados y captura truncada. En ese punto, la suite tenía 90 pruebas; Ruff y Pyright pasaban.
 -   Implementados A4 (`tests/scenarios.py`) y pruebas de paquetes, determinismo, cabeceras, estado final
     e invariantes de entrada. Suite completa: 93 pruebas; Ruff y Pyright pasan.
+
+### 2026-11-03
+
+-   Implementada B1 (estado de tiempos, intervalos y boxes): `CarSnapshot` añade `last_lap_time_ms`,
+    `current_lap_time_ms`, `sector1_time_ms`, `sector2_time_ms`, `delta_to_car_in_front_ms`,
+    `delta_to_leader_ms`, `lap_distance_m`, `current_lap_invalid`, `penalties_s`, `result_status`,
+    `pit_lane_timer_active`, `pit_lane_time_ms` y `pit_stop_timer_ms`. Los tiempos y timers a 0 se
+    normalizan a `None`, el delta del líder no se publica para la posición 1 y los coches `invalid` o
+    `inactive` no publican datos de vuelta.
+-   Implementada B2 (combustible, ERS y neumáticos montados): `CarSnapshot` añade `fuel_capacity_kg`,
+    `fuel_remaining_laps`, `ers_store_j`, `ers_deploy_mode`, `ers_harvested_mguk_j`,
+    `ers_harvested_mguh_j`, `ers_deployed_this_lap_j`, `fia_flag`, `drs_allowed` y `fitted_tyre`.
+    `FittedTyreSnapshot` expone compuestos, `wear_pct`, `lifespan_laps` y `usable_life_laps`.
+    `TyreSetsPacket` se aplica al coche de `car_index` usando `fitted_index`; `255` o un índice inválido
+    dejan `fitted_tyre=None`. Con `fuel_capacity == 0`, combustible y ERS quedan en `None`.
+-   Implementada B3 (entorno de sesión): `RaceSessionSnapshot` añade `weather`, `track_temperature_c`,
+    `air_temperature_c`, `safety_car_status`, `session_time_left_s`, `track_length_m`,
+    `pit_speed_limit_kph`, `pit_window_ideal_lap`, `pit_window_latest_lap`, `pit_rejoin_position`,
+    `forecast` y `game_paused`; `WeatherForecastSnapshot` representa cada muestra del pronóstico. Las
+    ventanas de boxes y la posición de reincorporación con valor 0 se publican como `None`.
+-   Añadidos los eventos `safety_car_changed` y `weather_changed`, emitidos solo al cambiar entre valores
+    conocidos; los paquetes repetidos y los valores `unknown` no generan eventos duplicados. Un cambio de
+    `session_uid` limpia el entorno, el pronóstico y los eventos de la sesión anterior.
+-   Añadidas 9 pruebas a `tests/test_race_state.py` para B1, B2 y B3: valores reales de los fixtures,
+    casos `None` por ceros restringidos o datos ausentes, transiciones de safety car y clima, no
+    duplicación de eventos y reinicio completo por `session_uid`.
+-   Validación local en Windows: `uv run ruff check .`, `uv run ruff format --check .`, `uv run pyright`
+    y `uv run pytest` pasan; suite completa con 221 pruebas.
+-   Los cambios de B1--B3 están en el árbol de trabajo de la rama `f2-wave1-wide-state`, sin commit. No se
+    modificó el panel de consola y `progress.md` se actualiza con esta entrada.
 
 ## 7. Hallazgos de la primera captura real
 
@@ -331,18 +373,16 @@ uv run f1-strategist replay captures/<archivo>.f1cap --host 127.0.0.1 --port 207
 
 ## 10. Siguiente paso: completar la Fase 2
 
-La Fase 2 está **en curso**. A1 (tipos), A2 (configuración) y A3 (runner offline) están implementados;
-el siguiente bloque es:
+La Fase 2 está **en curso**. A1--A4 (cimientos y escenarios) y B1--B3 (estado ampliado) están
+implementados; el siguiente bloque es:
 
-1.  **Cimientos:** completar A4 con escenarios sintéticos de carrera para validar métricas de forma
-    determinista.
-2.  **Estado e histórico:** ampliar `RaceState` (B1--B3) y construir el histórico por vuelta (C1--C4),
-    incluyendo el cierre de vueltas y la detección de vueltas no comparables.
-3.  **Métricas:** implementar progreso, combustible, neumáticos, ritmo, intervalos, boxes, ERS, daños y
-    entorno (D1--D9).
-4.  **Integración:** añadir `MetricsEngine` y snapshots; integrarlos en la sesión, la consola y la
+1.  **Histórico:** construir el histórico por vuelta (C1--C4), incluyendo el cierre de vueltas, la
+    detección de vueltas no comparables y el uso de `SessionHistory`/`TyreSets`.
+2.  **Métricas:** implementar progreso, combustible, neumáticos, ritmo, intervalos, boxes, ERS, daños y
+    entorno (D1--D9), consumiendo los nuevos campos de `RaceState`.
+3.  **Integración:** añadir `MetricsEngine` y snapshots; integrarlos en la sesión, la consola y la
     exportación JSON/CSV (E1--E4).
-5.  **Validación y cierre:** recortar y anonimizar una captura, incorporar un fixture real cuando esté
+4.  **Validación y cierre:** recortar y anonimizar una captura, incorporar un fixture real cuando esté
     disponible y verificar las tolerancias, invariantes y documentación (F1--F4).
 
 ## 11. Pendientes y decisiones abiertas

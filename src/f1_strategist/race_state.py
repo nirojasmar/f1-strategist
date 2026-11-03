@@ -148,6 +148,15 @@ class RaceEvent:
 
 
 @dataclass(frozen=True, slots=True)
+class WeatherForecastSnapshot:
+    offset_minutes: int
+    weather: str | None
+    track_temperature_c: float
+    air_temperature_c: float
+    rain_percentage: int
+
+
+@dataclass(frozen=True, slots=True)
 class RaceSessionSnapshot:
     uid: int | None
     session_type: str | None
@@ -155,6 +164,18 @@ class RaceSessionSnapshot:
     total_laps: int | None
     started: bool | None
     ended: bool | None
+    weather: str | None = None
+    track_temperature_c: float | None = None
+    air_temperature_c: float | None = None
+    safety_car_status: str | None = None
+    session_time_left_s: float | None = None
+    track_length_m: float | None = None
+    pit_speed_limit_kph: float | None = None
+    pit_window_ideal_lap: int | None = None
+    pit_window_latest_lap: int | None = None
+    pit_rejoin_position: int | None = None
+    forecast: tuple[WeatherForecastSnapshot, ...] = ()
+    game_paused: bool | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -187,6 +208,18 @@ class RaceState:
         self._session_type: str | None = None
         self._track: str | None = None
         self._total_laps: int | None = None
+        self._weather: str | None = None
+        self._track_temperature_c: float | None = None
+        self._air_temperature_c: float | None = None
+        self._safety_car_status: str | None = None
+        self._session_time_left_s: float | None = None
+        self._track_length_m: float | None = None
+        self._pit_speed_limit_kph: float | None = None
+        self._pit_window_ideal_lap: int | None = None
+        self._pit_window_latest_lap: int | None = None
+        self._pit_rejoin_position: int | None = None
+        self._forecast: tuple[WeatherForecastSnapshot, ...] = ()
+        self._game_paused: bool | None = None
         self._current_lap: int | None = None
         self._player_car_index: int | None = None
         self._session_started: bool | None = None
@@ -227,9 +260,7 @@ class RaceState:
         self._updated_at[group] = observed_at
 
         if isinstance(packet, SessionPacket):
-            self._session_type = _known_enum(packet.session_type)
-            self._track = _known_enum(packet.track_id)
-            self._total_laps = packet.total_laps or None
+            self._apply_session(packet, observed_at)
         elif isinstance(packet, ParticipantsPacket):
             self._apply_participants(packet)
         elif isinstance(packet, LapDataPacket):
@@ -258,6 +289,18 @@ class RaceState:
         self._session_type = None
         self._track = None
         self._total_laps = None
+        self._weather = None
+        self._track_temperature_c = None
+        self._air_temperature_c = None
+        self._safety_car_status = None
+        self._session_time_left_s = None
+        self._track_length_m = None
+        self._pit_speed_limit_kph = None
+        self._pit_window_ideal_lap = None
+        self._pit_window_latest_lap = None
+        self._pit_rejoin_position = None
+        self._forecast = ()
+        self._game_paused = None
         self._current_lap = None
         self._player_car_index = None
         self._session_started = None
@@ -267,6 +310,45 @@ class RaceState:
             self._updated_at[group] = None
         self._events.clear()
         self._append_event("session_changed", observed_at, session_uid=session_uid)
+
+    def _apply_session(self, packet: SessionPacket, observed_at: float) -> None:
+        weather = _known_enum(packet.weather)
+        safety_car_status = _known_enum(packet.safety_car_status)
+        if (
+            self._safety_car_status is not None
+            and safety_car_status is not None
+            and safety_car_status != self._safety_car_status
+        ):
+            self._append_event("safety_car_changed", observed_at)
+        if self._weather is not None and weather is not None and weather != self._weather:
+            self._append_event("weather_changed", observed_at)
+
+        self._session_type = _known_enum(packet.session_type)
+        self._track = _known_enum(packet.track_id)
+        self._total_laps = packet.total_laps or None
+        self._weather = weather
+        self._track_temperature_c = float(packet.track_temperature)
+        self._air_temperature_c = float(packet.air_temperature)
+        self._safety_car_status = safety_car_status
+        self._session_time_left_s = float(packet.session_time_left)
+        self._track_length_m = float(packet.track_length) if packet.track_length > 0 else None
+        self._pit_speed_limit_kph = (
+            float(packet.pit_speed_limit) if packet.pit_speed_limit > 0 else None
+        )
+        self._pit_window_ideal_lap = _positive_int(packet.pit_stop_window_ideal_lap)
+        self._pit_window_latest_lap = _positive_int(packet.pit_stop_window_latest_lap)
+        self._pit_rejoin_position = _positive_int(packet.pit_stop_rejoin_position)
+        self._forecast = tuple(
+            WeatherForecastSnapshot(
+                offset_minutes=sample.time_offset_minutes,
+                weather=_known_enum(sample.weather),
+                track_temperature_c=float(sample.track_temperature),
+                air_temperature_c=float(sample.air_temperature),
+                rain_percentage=sample.rain_percentage,
+            )
+            for sample in packet.weather_forecast
+        )
+        self._game_paused = packet.game_paused.value
 
     def _apply_participants(self, packet: ParticipantsPacket) -> None:
         for index, participant in enumerate(packet.participants):
@@ -463,6 +545,18 @@ class RaceState:
                 total_laps=self._total_laps,
                 started=self._session_started,
                 ended=self._session_ended,
+                weather=self._weather,
+                track_temperature_c=self._track_temperature_c,
+                air_temperature_c=self._air_temperature_c,
+                safety_car_status=self._safety_car_status,
+                session_time_left_s=self._session_time_left_s,
+                track_length_m=self._track_length_m,
+                pit_speed_limit_kph=self._pit_speed_limit_kph,
+                pit_window_ideal_lap=self._pit_window_ideal_lap,
+                pit_window_latest_lap=self._pit_window_latest_lap,
+                pit_rejoin_position=self._pit_rejoin_position,
+                forecast=self._forecast,
+                game_paused=self._game_paused,
             ),
             current_lap=self._current_lap,
             player_car_index=self._player_car_index,
