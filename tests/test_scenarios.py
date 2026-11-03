@@ -16,6 +16,7 @@ from f1_strategist.parser import (
 )
 from f1_strategist.race_state import RaceState
 
+from . import scenarios as scenarios_module
 from .scenarios import ScenarioCar, build_race
 
 
@@ -143,6 +144,51 @@ def test_same_scenario_produces_equal_packet_sequences(
     second = list(build_race(race_cars, total_laps=3, hz=1))
 
     assert first == second
+
+
+@pytest.mark.parametrize(
+    ("compound", "visual_raw"),
+    [("intermediate", 7), ("wet", 8)],
+)
+def test_scenario_preserves_wet_visual_compound_codes(
+    compound: str,
+    visual_raw: int,
+) -> None:
+    car = ScenarioCar(0, "Driver A", 1, 90.0, 20.0, 1.0, 2.0, compounds=(compound,))
+    packets = list(build_race((car,), total_laps=1, hz=1))
+
+    status = next(packet for packet in packets if isinstance(packet, CarStatusPacket))
+    tyre_sets = next(packet for packet in packets if isinstance(packet, TyreSetsPacket))
+    history = next(packet for packet in packets if isinstance(packet, SessionHistoryPacket))
+    classification = next(
+        packet for packet in packets if isinstance(packet, FinalClassificationPacket)
+    )
+    classified_car = next(row for row in classification.classification if row is not None)
+
+    assert status.cars[0].visual_tyre_compound.raw == visual_raw
+    assert tyre_sets.tyre_sets[0].visual_tyre_compound.raw == visual_raw
+    assert history.tyre_stint_history[0].visual_compound.raw == visual_raw
+    assert classified_car.tyre_stints_visual[0].raw == visual_raw
+
+
+def test_scenario_reports_fixture_packet_type_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_fixture = scenarios_module._fixture
+
+    def wrong_session_fixture(name: str) -> scenarios_module.ParsedPacket:
+        if name == "session.bin":
+            return original_fixture("participants.bin")
+        return original_fixture(name)
+
+    monkeypatch.setattr(scenarios_module, "_fixture", wrong_session_fixture)
+    car = ScenarioCar(0, "Driver A", 1, 90.0, 20.0, 1.0, 2.0)
+
+    with pytest.raises(
+        TypeError,
+        match="session.bin: expected SessionPacket, got ParticipantsPacket",
+    ):
+        list(build_race((car,), total_laps=1))
 
 
 def test_scenario_car_inputs_are_immutable() -> None:

@@ -42,6 +42,13 @@ _COMPOUNDS: dict[str, tuple[int, str]] = {
     "c0": (21, "hard"),
     "c6": (22, "soft"),
 }
+_VISUAL_COMPOUND_RAW = {
+    "soft": 16,
+    "medium": 17,
+    "hard": 18,
+    "intermediate": 7,
+    "wet": 8,
+}
 _WEATHER = {
     "clear": 0,
     "light_cloud": 1,
@@ -99,6 +106,13 @@ class ScenarioCar:
 def _fixture(name: str) -> ParsedPacket:
     parsed = parse_packet((_FIXTURES / name).read_bytes())
     return parsed
+
+
+def _expect_fixture[PacketT: ParsedPacket](name: str, packet_type: type[PacketT]) -> PacketT:
+    packet = _fixture(name)
+    if not isinstance(packet, packet_type):
+        raise TypeError(f"{name}: expected {packet_type.__name__}, got {type(packet).__name__}")
+    return packet
 
 
 def _enum(raw: int, name: str) -> EnumValue:
@@ -189,22 +203,14 @@ def _generate_race(
     weather_change: tuple[int, str] | None,
     invalid_laps: frozenset[tuple[int, int]],
 ) -> Iterator[ParsedPacket]:
-    session_template = _fixture("session.bin")
-    participants_template = _fixture("participants.bin")
-    lap_template = _fixture("lap_data.bin")
-    status_template = _fixture("car_status.bin")
-    damage_template = _fixture("car_damage.bin")
-    tyres_template = _fixture("tyre_sets.bin")
-    history_template = _fixture("session_history.bin")
-    classification_template = _fixture("final_classification.bin")
-    assert isinstance(session_template, SessionPacket)
-    assert isinstance(participants_template, ParticipantsPacket)
-    assert isinstance(lap_template, LapDataPacket)
-    assert isinstance(status_template, CarStatusPacket)
-    assert isinstance(damage_template, CarDamagePacket)
-    assert isinstance(tyres_template, TyreSetsPacket)
-    assert isinstance(history_template, SessionHistoryPacket)
-    assert isinstance(classification_template, FinalClassificationPacket)
+    session_template = _expect_fixture("session.bin", SessionPacket)
+    participants_template = _expect_fixture("participants.bin", ParticipantsPacket)
+    lap_template = _expect_fixture("lap_data.bin", LapDataPacket)
+    status_template = _expect_fixture("car_status.bin", CarStatusPacket)
+    damage_template = _expect_fixture("car_damage.bin", CarDamagePacket)
+    tyres_template = _expect_fixture("tyre_sets.bin", TyreSetsPacket)
+    history_template = _expect_fixture("session_history.bin", SessionHistoryPacket)
+    classification_template = _expect_fixture("final_classification.bin", FinalClassificationPacket)
 
     player_index = cars[0].index
     frame = 0
@@ -344,13 +350,7 @@ def _generate_race(
                 )
                 compound_name = car.compounds[stint_index]
                 actual_raw, visual_name = _COMPOUNDS[compound_name]
-                visual_raw = {
-                    "soft": 16,
-                    "medium": 17,
-                    "hard": 18,
-                    "intermediate": 7,
-                    "wet": 8,
-                }.get(visual_name, 18)
+                visual_raw = _VISUAL_COMPOUND_RAW[visual_name]
                 wear = min(100.0, car.tyre_wear_per_lap_pct * tyre_age)
                 status_cars[car.index] = replace(
                     status_cars[car.index],
@@ -385,7 +385,7 @@ def _generate_race(
                 stint_index = sum(stop_lap <= lap for stop_lap in car.pit_laps)
                 compound = car.compounds[stint_index]
                 actual_raw, visual_name = _COMPOUNDS[compound]
-                visual_raw = _visual_compound_raw(visual_name)
+                visual_raw = _VISUAL_COMPOUND_RAW[visual_name]
                 stint_start_lap = car.pit_laps[stint_index - 1] if stint_index else 0
                 tyre_age = max(0, lap - stint_start_lap - int(lap in car.pit_laps and sample == 0))
                 fitted_set = replace(
@@ -483,7 +483,7 @@ def _stint_history(car: ScenarioCar) -> tuple[TyreStintHistory, ...]:
     stints = []
     for index, compound in enumerate(car.compounds):
         raw, visual = _COMPOUNDS[compound]
-        visual_raw = _visual_compound_raw(visual)
+        visual_raw = _VISUAL_COMPOUND_RAW[visual]
         end_lap = car.pit_laps[index] if index < len(car.pit_laps) else None
         stints.append(
             TyreStintHistory(
@@ -493,10 +493,6 @@ def _stint_history(car: ScenarioCar) -> tuple[TyreStintHistory, ...]:
             )
         )
     return tuple(stints)
-
-
-def _visual_compound_raw(name: str) -> int:
-    return {"soft": 16, "medium": 17, "hard": 18}.get(name, 18)
 
 
 def _elapsed_race_time(
