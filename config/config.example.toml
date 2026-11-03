@@ -15,3 +15,25 @@ no_data_warning_s = 3.0
 [capture]
 enabled = true
 directory = "captures"
+
+[metrics]
+# Intervalo mínimo entre publicaciones de métricas.
+publish_interval_s = 0.5
+# Máximo de vueltas retenidas por coche.
+history_max_laps = 100
+# Ventanas de cálculo para ritmo y consumo de combustible.
+pace_window_laps = 5
+fuel_window_laps = 5
+# Muestras mínimas para las calidades low y ok.
+min_samples_low = 3
+min_samples_ok = 5
+# Umbral de tráfico y ventana de tendencia de intervalos.
+traffic_gap_s = 1.0
+traffic_lap_fraction = 0.5
+gap_trend_window_s = 10.0
+# Cambio de daño que marca una vuelta como no comparable.
+damage_change_threshold_pct = 5
+# Parámetros opcionales: omítelos para dejarlos desactivados (None).
+# fuel_effect_s_per_kg = 0.03
+# tyre_wear_limit_pct = 70
+# ers_capacity_joules = 4000000
