@@ -75,6 +75,7 @@ class FittedTyreSnapshot:
     wear_pct: float
     lifespan_laps: int
     usable_life_laps: int
+    observed_at_monotonic: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,6 +117,7 @@ class CarSnapshot:
     fia_flag: str | None = None
     drs_allowed: bool | None = None
     fitted_tyre: FittedTyreSnapshot | None = None
+    telemetry_restricted: bool | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,6 +147,8 @@ class RaceEvent:
     car_index: int | None = None
     lap_number: int | None = None
     session_uid: int | None = None
+    value: str | None = None
+    previous_value: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,6 +158,7 @@ class WeatherForecastSnapshot:
     track_temperature_c: float
     air_temperature_c: float
     rain_percentage: int
+    session_type: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -176,6 +181,10 @@ class RaceSessionSnapshot:
     pit_rejoin_position: int | None = None
     forecast: tuple[WeatherForecastSnapshot, ...] = ()
     game_paused: bool | None = None
+    forecast_accuracy: str | None = None
+    safety_car_periods: int | None = None
+    virtual_safety_car_periods: int | None = None
+    red_flag_periods: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -219,6 +228,10 @@ class RaceState:
         self._pit_window_latest_lap: int | None = None
         self._pit_rejoin_position: int | None = None
         self._forecast: tuple[WeatherForecastSnapshot, ...] = ()
+        self._forecast_accuracy: str | None = None
+        self._safety_car_periods: int | None = None
+        self._virtual_safety_car_periods: int | None = None
+        self._red_flag_periods: int | None = None
         self._game_paused: bool | None = None
         self._current_lap: int | None = None
         self._player_car_index: int | None = None
@@ -256,6 +269,13 @@ class RaceState:
         if self._player_car_index != player_car_index:
             self._current_lap = None
         self._player_car_index = player_car_index
+        if player_car_index is not None:
+            player_car = self._cars[player_car_index]
+            if player_car.telemetry_restricted is True:
+                self._cars[player_car_index] = replace(
+                    player_car,
+                    telemetry_restricted=False,
+                )
         group, _ = _PACKET_GROUPS[header.packet_id]
         self._updated_at[group] = observed_at
 
@@ -300,6 +320,10 @@ class RaceState:
         self._pit_window_latest_lap = None
         self._pit_rejoin_position = None
         self._forecast = ()
+        self._forecast_accuracy = None
+        self._safety_car_periods = None
+        self._virtual_safety_car_periods = None
+        self._red_flag_periods = None
         self._game_paused = None
         self._current_lap = None
         self._player_car_index = None
@@ -312,16 +336,33 @@ class RaceState:
         self._append_event("session_changed", observed_at, session_uid=session_uid)
 
     def _apply_session(self, packet: SessionPacket, observed_at: float) -> None:
+        """Only changes between known weather/SC states emit transition events."""
         weather = _known_enum(packet.weather)
         safety_car_status = _known_enum(packet.safety_car_status)
+        previous_safety_car_status = self._safety_car_status
         if (
-            self._safety_car_status is not None
+            previous_safety_car_status is not None
             and safety_car_status is not None
-            and safety_car_status != self._safety_car_status
+            and safety_car_status != previous_safety_car_status
         ):
-            self._append_event("safety_car_changed", observed_at)
-        if self._weather is not None and weather is not None and weather != self._weather:
-            self._append_event("weather_changed", observed_at)
+            self._append_event(
+                "safety_car_changed",
+                observed_at,
+                value=safety_car_status,
+                previous_value=previous_safety_car_status,
+            )
+        previous_weather = self._weather
+        if previous_weather is not None and weather is not None and weather != previous_weather:
+            self._append_event(
+                "weather_changed",
+                observed_at,
+                value=weather,
+                previous_value=previous_weather,
+            )
+
+        red_flag_periods = packet.session_settings.red_flag_periods
+        if self._red_flag_periods is not None and red_flag_periods > self._red_flag_periods:
+            self._append_event("red_flag", observed_at)
 
         self._session_type = _known_enum(packet.session_type)
         self._track = _known_enum(packet.track_id)
@@ -345,9 +386,14 @@ class RaceState:
                 track_temperature_c=float(sample.track_temperature),
                 air_temperature_c=float(sample.air_temperature),
                 rain_percentage=sample.rain_percentage,
+                session_type=_known_enum(sample.session_type),
             )
             for sample in packet.weather_forecast
         )
+        self._forecast_accuracy = _known_enum(packet.forecast_accuracy)
+        self._safety_car_periods = packet.session_settings.safety_car_periods
+        self._virtual_safety_car_periods = packet.session_settings.virtual_safety_car_periods
+        self._red_flag_periods = red_flag_periods
         self._game_paused = packet.game_paused.value
 
     def _apply_participants(self, packet: ParticipantsPacket) -> None:
@@ -355,10 +401,28 @@ class RaceState:
             if participant is None:
                 continue
             car = self._cars[index]
+            telemetry_restricted = (
+                False
+                if index == self._player_car_index
+                else {"restricted": True, "public": False}.get(participant.your_telemetry.name)
+            )
             self._cars[index] = replace(
                 car,
                 name=participant.name or None,
                 team=_known_enum(participant.team_id),
+                telemetry_restricted=telemetry_restricted,
+                fuel_kg=None if telemetry_restricted else car.fuel_kg,
+                fuel_capacity_kg=None if telemetry_restricted else car.fuel_capacity_kg,
+                fuel_remaining_laps=None if telemetry_restricted else car.fuel_remaining_laps,
+                ers_store_j=None if telemetry_restricted else car.ers_store_j,
+                ers_deploy_mode=None if telemetry_restricted else car.ers_deploy_mode,
+                ers_harvested_mguk_j=(None if telemetry_restricted else car.ers_harvested_mguk_j),
+                ers_harvested_mguh_j=(None if telemetry_restricted else car.ers_harvested_mguh_j),
+                ers_deployed_this_lap_j=(
+                    None if telemetry_restricted else car.ers_deployed_this_lap_j
+                ),
+                damage=None if telemetry_restricted else car.damage,
+                fitted_tyre=None if telemetry_restricted else car.fitted_tyre,
             )
 
     def _apply_lap_data(self, packet: LapDataPacket, observed_at: float) -> None:
@@ -445,10 +509,13 @@ class RaceState:
 
     def _apply_car_status(self, packet: CarStatusPacket) -> None:
         for index, status in enumerate(packet.cars):
-            restricted = status.fuel_capacity == 0
+            car = self._cars[index]
+            restricted = car.telemetry_restricted is True or (
+                car.telemetry_restricted is None and status.fuel_capacity == 0
+            )
             drs_allowed = {"allowed": True, "not_allowed": False}.get(status.drs_allowed.name)
             self._cars[index] = replace(
-                self._cars[index],
+                car,
                 fuel_kg=None if restricted else status.fuel_in_tank,
                 actual_tyre_compound=_known_enum(status.actual_tyre_compound),
                 visual_tyre_compound=_known_enum(status.visual_tyre_compound),
@@ -468,7 +535,11 @@ class RaceState:
         if not 0 <= packet.car_index < MAX_CARS:
             return
         fitted_tyre: FittedTyreSnapshot | None = None
-        if 0 <= packet.fitted_index < len(packet.tyre_sets):
+        if not self._is_telemetry_restricted(packet.car_index) and 0 <= packet.fitted_index < len(
+            packet.tyre_sets
+        ):
+            updated_at = self._updated_at["tyre_sets"]
+            assert updated_at is not None
             tyre_set = packet.tyre_sets[packet.fitted_index]
             fitted_tyre = FittedTyreSnapshot(
                 actual_tyre_compound=_known_enum(tyre_set.actual_tyre_compound),
@@ -476,12 +547,16 @@ class RaceState:
                 wear_pct=float(tyre_set.wear),
                 lifespan_laps=tyre_set.lifespan,
                 usable_life_laps=tyre_set.usable_life,
+                observed_at_monotonic=updated_at,
             )
         car = self._cars[packet.car_index]
         self._cars[packet.car_index] = replace(car, fitted_tyre=fitted_tyre)
 
     def _apply_car_damage(self, packet: CarDamagePacket) -> None:
         for index, damage in enumerate(packet.cars):
+            if self._is_telemetry_restricted(index):
+                self._cars[index] = replace(self._cars[index], damage=None)
+                continue
             self._cars[index] = replace(
                 self._cars[index],
                 damage=CarDamageSnapshot(
@@ -510,6 +585,14 @@ class RaceState:
                 ),
             )
 
+    def _is_telemetry_restricted(self, car_index: int) -> bool:
+        if car_index == self._player_car_index:
+            return False
+        return (
+            car_index != self._player_car_index
+            and self._cars[car_index].telemetry_restricted is True
+        )
+
     def _apply_event(self, packet: EventPacket, observed_at: float) -> None:
         event_name = packet.event_code.name
         if event_name == "session_started":
@@ -533,8 +616,20 @@ class RaceState:
         car_index: int | None = None,
         lap_number: int | None = None,
         session_uid: int | None = None,
+        value: str | None = None,
+        previous_value: str | None = None,
     ) -> None:
-        self._events.append(RaceEvent(kind, observed_at, car_index, lap_number, session_uid))
+        self._events.append(
+            RaceEvent(
+                kind,
+                observed_at,
+                car_index,
+                lap_number,
+                session_uid,
+                value,
+                previous_value,
+            )
+        )
 
     def _build_snapshot(self) -> RaceStateSnapshot:
         return RaceStateSnapshot(
@@ -557,6 +652,10 @@ class RaceState:
                 pit_rejoin_position=self._pit_rejoin_position,
                 forecast=self._forecast,
                 game_paused=self._game_paused,
+                forecast_accuracy=self._forecast_accuracy,
+                safety_car_periods=self._safety_car_periods,
+                virtual_safety_car_periods=self._virtual_safety_car_periods,
+                red_flag_periods=self._red_flag_periods,
             ),
             current_lap=self._current_lap,
             player_car_index=self._player_car_index,
