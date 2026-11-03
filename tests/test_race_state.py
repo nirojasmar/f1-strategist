@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from f1_strategist.parser import (
+    BooleanValue,
     CarDamagePacket,
     CarStatusPacket,
     EnumValue,
@@ -135,6 +136,113 @@ def test_packets_update_pilot_and_named_car_snapshots_without_filling_missing_da
     assert isinstance(snapshot.cars, tuple)
     with pytest.raises(FrozenInstanceError):
         _set_attribute(snapshot.cars[0], "name", "Modified")
+
+
+def test_lap_data_publishes_timing_interval_and_pit_fields() -> None:
+    packet = _lap_packet(lap=4, position=2)
+    first_car = replace(
+        packet.cars[0],
+        last_lap_time_ms=91_234,
+        current_lap_time_ms=12_345,
+        sector1_time_ms=30_111,
+        sector2_time_ms=31_222,
+        delta_to_car_in_front_ms=1_234,
+        delta_to_race_leader_ms=5_678,
+        lap_distance=0.42,
+        current_lap_invalid=BooleanValue(1, True),
+        penalties=3,
+        result_status=EnumValue(2, "active"),
+        pit_lane_timer_active=BooleanValue(1, True),
+        pit_lane_time_ms=2_500,
+        pit_stop_timer_ms=1_000,
+    )
+    packet = replace(packet, cars=(first_car, *packet.cars[1:]))
+
+    state = RaceState()
+    state.apply(packet, observed_at=1.0)
+
+    car = state.snapshot().player_car
+    assert car is not None
+    assert car.last_lap_time_ms == 91_234
+    assert car.current_lap_time_ms == 12_345
+    assert car.sector1_time_ms == 30_111
+    assert car.sector2_time_ms == 31_222
+    assert car.delta_to_car_in_front_ms == 1_234
+    assert car.delta_to_leader_ms == 5_678
+    assert car.lap_distance_m == 0.42
+    assert car.current_lap_invalid is True
+    assert car.penalties_s == 3.0
+    assert car.result_status == "active"
+    assert car.pit_lane_timer_active is True
+    assert car.pit_lane_time_ms == 2_500
+    assert car.pit_stop_timer_ms == 1_000
+
+
+def test_lap_data_unknown_values_are_none_for_active_leader() -> None:
+    state = RaceState()
+    state.apply(_lap_packet(lap=1, position=1), observed_at=1.0)
+
+    car = state.snapshot().player_car
+    assert car is not None
+    assert car.result_status == "active"
+    assert car.last_lap_time_ms is None
+    assert car.current_lap_time_ms is None
+    assert car.sector1_time_ms is None
+    assert car.sector2_time_ms is None
+    assert car.delta_to_car_in_front_ms is None
+    assert car.delta_to_leader_ms is None
+    assert car.current_lap_invalid is False
+    assert car.penalties_s == 0.0
+    assert car.pit_lane_timer_active is False
+    assert car.pit_lane_time_ms is None
+    assert car.pit_stop_timer_ms is None
+
+
+def test_invalid_and_inactive_cars_do_not_publish_lap_values() -> None:
+    packet = _lap_packet(lap=2, position=2)
+    invalid = replace(
+        packet.cars[0],
+        last_lap_time_ms=80_000,
+        current_lap_time_ms=10_000,
+        sector1_time_ms=20_000,
+        sector2_time_ms=21_000,
+        delta_to_car_in_front_ms=1_000,
+        delta_to_race_leader_ms=2_000,
+        lap_distance=0.5,
+        current_lap_invalid=BooleanValue(1, True),
+        penalties=2,
+        result_status=EnumValue(0, "invalid"),
+        pit_lane_timer_active=BooleanValue(1, True),
+        pit_lane_time_ms=1_500,
+        pit_stop_timer_ms=900,
+    )
+    inactive = replace(
+        packet.cars[1],
+        last_lap_time_ms=81_000,
+        result_status=EnumValue(1, "inactive"),
+    )
+    packet = replace(packet, cars=(invalid, inactive, *packet.cars[2:]))
+
+    state = RaceState()
+    state.apply(packet, observed_at=1.0)
+
+    snapshot = state.snapshot()
+    invalid_car = snapshot.cars[0]
+    assert invalid_car.result_status == "invalid"
+    assert invalid_car.last_lap_time_ms is None
+    assert invalid_car.current_lap_time_ms is None
+    assert invalid_car.sector1_time_ms is None
+    assert invalid_car.sector2_time_ms is None
+    assert invalid_car.delta_to_car_in_front_ms is None
+    assert invalid_car.delta_to_leader_ms is None
+    assert invalid_car.lap_distance_m is None
+    assert invalid_car.current_lap_invalid is None
+    assert invalid_car.penalties_s is None
+    assert invalid_car.pit_lane_timer_active is None
+    assert invalid_car.pit_lane_time_ms is None
+    assert invalid_car.pit_stop_timer_ms is None
+    assert snapshot.cars[1].result_status == "inactive"
+    assert snapshot.cars[1].last_lap_time_ms is None
 
 
 def test_freshness_records_age_and_obsolete_data_by_packet_group() -> None:

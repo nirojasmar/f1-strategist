@@ -37,6 +37,10 @@ def _known_enum(value: EnumValue) -> str | None:
     return value.name if value.name != "unknown" else None
 
 
+def _positive_int(value: int) -> int | None:
+    return value if value > 0 else None
+
+
 @dataclass(frozen=True, slots=True)
 class CarDamageSnapshot:
     tyres_wear: tuple[float, ...]
@@ -79,6 +83,19 @@ class CarSnapshot:
     visual_tyre_compound: str | None = None
     tyre_age_laps: int | None = None
     damage: CarDamageSnapshot | None = None
+    last_lap_time_ms: int | None = None
+    current_lap_time_ms: int | None = None
+    sector1_time_ms: int | None = None
+    sector2_time_ms: int | None = None
+    delta_to_car_in_front_ms: int | None = None
+    delta_to_leader_ms: int | None = None
+    lap_distance_m: float | None = None
+    current_lap_invalid: bool | None = None
+    penalties_s: float | None = None
+    result_status: str | None = None
+    pit_lane_timer_active: bool | None = None
+    pit_lane_time_ms: int | None = None
+    pit_stop_timer_ms: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -246,6 +263,9 @@ class RaceState:
             previous = self._cars[index]
             pit_status = _known_enum(lap_data.pit_status)
             current_lap = lap_data.current_lap_number or None
+            position = lap_data.car_position or None
+            result_status = _known_enum(lap_data.result_status)
+            publishes_values = result_status not in {"invalid", "inactive"}
             current = replace(
                 previous,
                 grid_position=(
@@ -253,11 +273,46 @@ class RaceState:
                     if 0 <= lap_data.grid_position_zero_based < MAX_CARS
                     else None
                 ),
-                position=lap_data.car_position or None,
+                position=position,
                 current_lap=current_lap,
                 pit_status=pit_status,
                 pit_stops=lap_data.pit_stops,
                 driver_status=_known_enum(lap_data.driver_status),
+                last_lap_time_ms=(
+                    _positive_int(lap_data.last_lap_time_ms) if publishes_values else None
+                ),
+                current_lap_time_ms=(
+                    _positive_int(lap_data.current_lap_time_ms) if publishes_values else None
+                ),
+                sector1_time_ms=(
+                    _positive_int(lap_data.sector1_time_ms) if publishes_values else None
+                ),
+                sector2_time_ms=(
+                    _positive_int(lap_data.sector2_time_ms) if publishes_values else None
+                ),
+                delta_to_car_in_front_ms=(
+                    _positive_int(lap_data.delta_to_car_in_front_ms) if publishes_values else None
+                ),
+                delta_to_leader_ms=(
+                    _positive_int(lap_data.delta_to_race_leader_ms)
+                    if publishes_values and position != 1
+                    else None
+                ),
+                lap_distance_m=lap_data.lap_distance if publishes_values else None,
+                current_lap_invalid=(
+                    lap_data.current_lap_invalid.value if publishes_values else None
+                ),
+                penalties_s=float(lap_data.penalties) if publishes_values else None,
+                result_status=result_status,
+                pit_lane_timer_active=(
+                    lap_data.pit_lane_timer_active.value if publishes_values else None
+                ),
+                pit_lane_time_ms=(
+                    _positive_int(lap_data.pit_lane_time_ms) if publishes_values else None
+                ),
+                pit_stop_timer_ms=(
+                    _positive_int(lap_data.pit_stop_timer_ms) if publishes_values else None
+                ),
             )
             self._cars[index] = current
 
