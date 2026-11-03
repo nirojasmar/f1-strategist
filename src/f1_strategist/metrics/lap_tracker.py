@@ -152,9 +152,7 @@ class LapTracker:
             return
 
         periods = state.session.red_flag_periods
-        self._red_flag_pending = (
-            periods is not None and periods > (self._red_flag_periods or 0)
-        )
+        self._red_flag_pending = periods is not None and periods > (self._red_flag_periods or 0)
 
         for index, car in enumerate(state.cars):
             previous = self._last_cars[index] if index < len(self._last_cars) else None
