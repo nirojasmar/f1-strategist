@@ -21,7 +21,7 @@ from .capture import CapturedPacket
 from .config import TelemetryConfig
 from .messages import DiagnosticMessage
 from .packets import PacketHeader
-from .parser import ParseIssue
+from .parser import ParseIssue, _record_parser_rejection
 
 _RECV_BUFFER = 4 * 1024 * 1024
 _MAX_DATAGRAM = 65535
@@ -35,10 +35,6 @@ _UINT32_HALF = 0x80000000
 _MAX_PACKET_ID = 15
 _SUPPORTED_HEADER_VERSION = (2025, 25, 1, 1)
 _VERIFIED_GAME_MINOR = 26
-_MAX_PARSER_REJECTION_MESSAGES = 16
-_OTHER_PARSER_REJECTIONS = "other_parser_rejections_limited"
-
-
 class ReceiverError(Exception):
     """No se pudo abrir el socket UDP."""
 
@@ -209,12 +205,7 @@ class Stats:
 
     def record_parser_rejection(self, issue: ParseIssue) -> None:
         with self._lock:
-            if (
-                issue not in self._parser_rejections
-                and len(self._parser_rejections) >= _MAX_PARSER_REJECTION_MESSAGES
-            ):
-                issue = ParseIssue(_OTHER_PARSER_REJECTIONS)
-            self._parser_rejections[issue] += 1
+            _record_parser_rejection(self._parser_rejections, issue)
 
     def set_capture(self, packets: int, nbytes: int) -> None:
         with self._lock:

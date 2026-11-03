@@ -7,6 +7,7 @@ import pytest
 
 from f1_strategist.capture import CapturedPacket, CaptureWriter
 from f1_strategist.offline import run_capture_offline
+from f1_strategist.parser import PacketParseError, ParseIssue
 from f1_strategist.race_state import RaceState
 
 from .conftest import make_packet
@@ -68,6 +69,25 @@ def test_offline_runner_counts_rejections_and_ignored_packets(tmp_path: Path) ->
     assert sum(result.parser_rejections.values()) == 1
     assert result.ignored_packets_by_id == {0: 1}
     assert not result.truncated
+
+
+def test_offline_runner_bounds_distinct_parser_rejections(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "many-rejections.f1cap"
+    payloads = [f"issue-{index}".encode() for index in range(20)]
+    _write_capture(path, payloads, list(range(1_000_000_000, 1_000_000_000 + len(payloads))))
+
+    def reject_with_unique_issue(payload: bytes) -> None:
+        raise PacketParseError(payload.decode())
+
+    monkeypatch.setattr("f1_strategist.offline.parse_packet", reject_with_unique_issue)
+    result = run_capture_offline(path, [])
+
+    assert len(result.parser_rejections) == 17
+    assert result.parser_rejections[ParseIssue("other_parser_rejections_limited")] == 4
+    assert sum(result.parser_rejections.values()) == len(payloads)
 
 
 def test_offline_runner_reports_truncated_capture(tmp_path: Path) -> None:

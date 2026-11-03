@@ -12,7 +12,14 @@ from typing import Protocol
 
 from .capture import CaptureReader
 from .packets import parse_header
-from .parser import PACKET_DECODERS, PacketParseError, ParsedPacket, ParseIssue, parse_packet
+from .parser import (
+    PACKET_DECODERS,
+    PacketParseError,
+    ParsedPacket,
+    ParseIssue,
+    _record_parser_rejection,
+    parse_packet,
+)
 
 _SUPPORTED_HEADER_VERSION = (2025, 25, 1, 1)
 
@@ -83,7 +90,7 @@ def run_capture_offline(
         try:
             packet = parse_packet(captured.payload)
         except PacketParseError as exc:
-            rejections[exc.issue] += 1
+            _record_parser_rejection(rejections, exc.issue)
             continue
 
         packets_parsed += 1
