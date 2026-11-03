@@ -50,10 +50,7 @@ _OTHER_PARSER_REJECTIONS = "other_parser_rejections_limited"
 
 
 def _record_parser_rejection(rejections: Counter[ParseIssue], issue: ParseIssue) -> None:
-    if (
-        issue not in rejections
-        and len(rejections) >= _MAX_PARSER_REJECTION_MESSAGES
-    ):
+    if issue not in rejections and len(rejections) >= _MAX_PARSER_REJECTION_MESSAGES:
         issue = ParseIssue(_OTHER_PARSER_REJECTIONS)
     rejections[issue] += 1
 

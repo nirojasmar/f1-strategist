@@ -35,6 +35,8 @@ _UINT32_HALF = 0x80000000
 _MAX_PACKET_ID = 15
 _SUPPORTED_HEADER_VERSION = (2025, 25, 1, 1)
 _VERIFIED_GAME_MINOR = 26
+
+
 class ReceiverError(Exception):
     """No se pudo abrir el socket UDP."""
 
