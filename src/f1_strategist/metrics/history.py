@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from types import MappingProxyType
 from typing import Literal, Protocol, runtime_checkable
 
@@ -12,6 +12,26 @@ from ..race_state import CarSnapshot, RaceStateSnapshot
 from .types import Metric
 
 LapTimeSource = Literal["session_history", "lap_data"]
+
+
+@dataclass(frozen=True, slots=True)
+class _LapTimingUpdate:
+    lap_time_s: float
+    sector1_s: float | None
+    sector2_s: float | None
+    sector3_s: float | None
+    valid: bool
+
+    def apply(self, record: LapRecord) -> LapRecord:
+        return replace(
+            record,
+            lap_time_s=self.lap_time_s,
+            lap_time_source="session_history",
+            sector1_s=self.sector1_s,
+            sector2_s=self.sector2_s,
+            sector3_s=self.sector3_s,
+            valid=self.valid,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,6 +141,7 @@ class LapHistory:
         self._session_uid: int | None = None
         self._records: dict[int, dict[int, LapRecord]] = {}
         self._tyre_stints: dict[int, tuple[TyreStint, ...]] = {}
+        self._pending_timing: dict[int, dict[int, _LapTimingUpdate]] = {}
 
     @property
     def session_uid(self) -> int | None:
@@ -135,13 +156,54 @@ class LapHistory:
         self._session_uid = session_uid
         self._records.clear()
         self._tyre_stints.clear()
+        self._pending_timing.clear()
 
     def upsert(self, record: LapRecord) -> None:
         """Inserta o reemplaza una vuelta, descartando primero las más antiguas."""
+        pending = self._pending_timing.get(record.car_index)
+        if pending is not None:
+            update = pending.pop(record.lap_number, None)
+            if not pending:
+                del self._pending_timing[record.car_index]
+            if update is not None:
+                record = update.apply(record)
         car_records = self._records.setdefault(record.car_index, {})
         car_records[record.lap_number] = record
         while len(car_records) > self._history_max_laps:
             del car_records[min(car_records)]
+
+    def update_lap_timing(
+        self,
+        car_index: int,
+        lap_number: int,
+        *,
+        lap_time_s: float,
+        sector1_s: float | None,
+        sector2_s: float | None,
+        sector3_s: float | None,
+        valid: bool,
+    ) -> None:
+        """Aplica o pospone los tiempos oficiales sin crear un registro de vuelta."""
+        if car_index < 0:
+            raise ValueError("car_index no puede ser negativo")
+        if lap_number < 1:
+            raise ValueError("lap_number debe ser positivo")
+        update = _LapTimingUpdate(
+            lap_time_s=lap_time_s,
+            sector1_s=sector1_s,
+            sector2_s=sector2_s,
+            sector3_s=sector3_s,
+            valid=valid,
+        )
+        record = self.get(car_index, lap_number)
+        if record is not None:
+            self.upsert(update.apply(record))
+            return
+
+        pending = self._pending_timing.setdefault(car_index, {})
+        pending[lap_number] = update
+        while len(pending) > self._history_max_laps:
+            del pending[min(pending)]
 
     def get(self, car_index: int, lap_number: int) -> LapRecord | None:
         return self._records.get(car_index, {}).get(lap_number)
@@ -149,13 +211,19 @@ class LapHistory:
     def discard_after(self, car_index: int, lap_number: int) -> None:
         """Descarta las vueltas posteriores, por ejemplo tras un flashback."""
         car_records = self._records.get(car_index)
-        if car_records is None:
-            return
-        for recorded_lap in tuple(car_records):
-            if recorded_lap > lap_number:
-                del car_records[recorded_lap]
-        if not car_records:
-            del self._records[car_index]
+        if car_records is not None:
+            for recorded_lap in tuple(car_records):
+                if recorded_lap > lap_number:
+                    del car_records[recorded_lap]
+            if not car_records:
+                del self._records[car_index]
+        pending = self._pending_timing.get(car_index)
+        if pending is not None:
+            for pending_lap in tuple(pending):
+                if pending_lap > lap_number:
+                    del pending[pending_lap]
+            if not pending:
+                del self._pending_timing[car_index]
 
     def replace_tyre_stints(self, car_index: int, stints: Iterable[TyreStint]) -> None:
         """Reemplaza los stints conocidos de un coche."""
