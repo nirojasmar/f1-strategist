@@ -60,7 +60,7 @@ Documentos de diseño:
 | --- | --- | --- |
 | 0. Definición y entorno | Parcial | Repo, CI definido, config, receptor y guía de firewall listos. Falta validar la recepción desde otro PC de la red local y en Linux real. |
 | 1. Receptor, parser y estado | Implementada; CI verde | Snapshots inmutables de sesión y coches, daños, frescura por grupo, eventos y resumen de consola. |
-| 2. Métricas e histórico | En curso | A1: tipos base de métricas implementados; faltan las demás tareas de la fase. |
+| 2. Métricas e histórico | En curso | A1: tipos base de métricas implementados, A2: configuración de métricas implementada; faltan las demás tareas de la fase. |
 | 3. Grabación y replay | Parcial | Captura y reemisión UDP listas (se adelantaron en Sprint 1). Falta el replay interno hacia el pipeline y el registro en SQLite. |
 | 4--10 | No iniciadas | |
 
@@ -100,6 +100,8 @@ Documentos de diseño:
     como `grid_position` base 1, igual que `FinalClassification.grid_position`.
 -   La captura es una carrera de 5 vueltas con 22 coches.
 -   Ejecución en Linux en red local captura adecuadamente los paquetes del primer PC.
+-   `MetricsConfig` ofrece valores predeterminados validados para métricas y parámetros opcionales
+    desactivados por defecto.
 -   Los tipos base de métricas (`Quality`, `Window`, `Metric`) y sus helpers están implementados
     con invariantes de calidad y pruebas unitarias.
 
@@ -171,6 +173,9 @@ Documentos de diseño:
     la identidad que mantiene el estado.
 -   Implementados A1 (tipos base de métricas) y pruebas de umbrales, inmutabilidad, helpers y ventanas.
     Suite completa: 110 pruebas; Ruff y Pyright pasan.
+-   Implementada A2: configuración Pydantic para métricas, sección `[metrics]` de ejemplo y pruebas de
+    valores por defecto, TOML válido, parámetros opcionales y rechazo de valores inválidos. Suite completa:
+    99 pruebas; Ruff y Pyright pasan; el TOML de ejemplo carga correctamente.
 
 ## 7. Hallazgos de la primera captura real
 
