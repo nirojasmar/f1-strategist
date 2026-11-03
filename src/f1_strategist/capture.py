@@ -19,8 +19,10 @@ Estructura (little-endian):
 
 from __future__ import annotations
 
+import gzip
 import json
 import struct
+import zlib
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -109,13 +111,13 @@ class CaptureWriter:
 
 
 class CaptureReader:
-    """Lee una captura. Un registro final incompleto se ignora y marca `truncated`."""
+    """Lee `.f1cap` o `.f1cap.gz`; ignora un registro final incompleto y marca `truncated`."""
 
     def __init__(self, path: Path) -> None:
         self.path = Path(path)
         self.truncated = False
         try:
-            with self.path.open("rb") as handle:
+            with self._open() as handle:
                 if handle.read(len(MAGIC)) != MAGIC:
                     raise CaptureError(f"{self.path} no es una captura .f1cap v1")
                 raw_len = handle.read(_LEN.size)
@@ -126,7 +128,7 @@ class CaptureReader:
                 if len(blob) < meta_len:
                     raise CaptureError(f"{self.path}: metadatos incompletos")
                 self._data_start = handle.tell()
-        except OSError as exc:
+        except (OSError, EOFError, zlib.error) as exc:
             raise CaptureError(f"No se pudo leer {self.path}: {exc}") from exc
         try:
             self.metadata: dict[str, Any] = json.loads(blob.decode("utf-8"))
@@ -135,24 +137,38 @@ class CaptureReader:
 
     def __iter__(self) -> Iterator[CapturedPacket]:
         self.truncated = False
-        with self.path.open("rb") as handle:
-            handle.seek(self._data_start)
-            while True:
-                head = handle.read(_REC_HEAD.size)
-                if not head:
-                    return
-                if len(head) < _REC_HEAD.size:
-                    self.truncated = True
-                    return
-                recv_time_ns, ip_len = _REC_HEAD.unpack(head)
-                ip_raw = handle.read(ip_len)
-                tail = handle.read(_REC_TAIL.size)
-                if len(ip_raw) < ip_len or len(tail) < _REC_TAIL.size:
-                    self.truncated = True
-                    return
-                port, size = _REC_TAIL.unpack(tail)
-                payload = handle.read(size)
-                if len(payload) < size:
-                    self.truncated = True
-                    return
-                yield CapturedPacket(recv_time_ns, ip_raw.decode("ascii"), port, payload)
+        try:
+            with self._open() as handle:
+                handle.seek(self._data_start)
+                while True:
+                    head = handle.read(_REC_HEAD.size)
+                    if not head:
+                        return
+                    if len(head) < _REC_HEAD.size:
+                        self.truncated = True
+                        return
+                    recv_time_ns, ip_len = _REC_HEAD.unpack(head)
+                    ip_raw = handle.read(ip_len)
+                    tail = handle.read(_REC_TAIL.size)
+                    if len(ip_raw) < ip_len or len(tail) < _REC_TAIL.size:
+                        self.truncated = True
+                        return
+                    port, size = _REC_TAIL.unpack(tail)
+                    payload = handle.read(size)
+                    if len(payload) < size:
+                        self.truncated = True
+                        return
+                    try:
+                        source_ip = ip_raw.decode("ascii")
+                    except UnicodeDecodeError as exc:
+                        raise CaptureError(f"{self.path}: IP de origen ilegible") from exc
+                    yield CapturedPacket(recv_time_ns, source_ip, port, payload)
+        except CaptureError:
+            raise
+        except (OSError, EOFError, zlib.error) as exc:
+            raise CaptureError(f"No se pudo leer {self.path}: {exc}") from exc
+
+    def _open(self) -> BinaryIO | gzip.GzipFile:
+        if self.path.name.lower().endswith(".f1cap.gz"):
+            return gzip.open(self.path, "rb")
+        return self.path.open("rb")

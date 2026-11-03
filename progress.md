@@ -60,7 +60,7 @@ Documentos de diseño:
 | --- | --- | --- |
 | 0. Definición y entorno | Parcial | Repo, CI definido, config, receptor y guía de firewall listos. Falta validar la recepción desde otro PC de la red local y en Linux real. |
 | 1. Receptor, parser y estado | Implementada; CI verde | Snapshots inmutables de sesión y coches, daños, frescura por grupo, eventos y resumen de consola. |
-| 2. Métricas e histórico | En curso | A1, A2, A3 y A4 implementados; faltan las demás tareas de la fase. |
+| 2. Métricas e histórico | En curso | Ola 0 implementada; faltan las demás tareas de la fase. |
 | 3. Grabación y replay | Parcial | Captura y reemisión UDP listas (se adelantaron en Sprint 1). Falta el replay interno hacia el pipeline y el registro en SQLite. |
 | 4--10 | No iniciadas | |
 
@@ -100,6 +100,8 @@ Documentos de diseño:
     como `grid_position` base 1, igual que `FinalClassification.grid_position`.
 -   La captura es una carrera de 5 vueltas con 22 coches.
 -   Ejecución en Linux en red local captura adecuadamente los paquetes del primer PC.
+-   `CaptureReader` acepta entradas `.f1cap.gz`; `trim` conserva el tiempo de recepción y permite filtrar
+    por tipo, decimar paquetes, seleccionar un rango de vueltas y anonimizar identificadores.
 -   El constructor de escenarios sintéticos genera los tipos de paquete de carrera requeridos y puede
     aplicar safety car, cambio de clima, vueltas inválidas y paradas programadas.
 -   El runner offline procesa `.f1cap` sin red, hilos ni esperas, entrega paquetes parseados a
@@ -175,6 +177,8 @@ Documentos de diseño:
 -   La prueba con la captura real confirmó que algunos eventos `buttons` traen `session_uid=0` mientras
     los demás paquetes usan el UID de carrera; solo `Session` y eventos de ciclo de vida pueden cambiar
     la identidad que mantiene el estado.
+-   Implementados F1 y pruebas de recorte, decimación, rango de vueltas, anonimización y lectura gzip.
+    Suite completa: 90 pruebas; Ruff y Pyright pasan; `trim --help` muestra las opciones esperadas.
 -   Implementados A1 (tipos base de métricas) y pruebas de umbrales, inmutabilidad, helpers y ventanas.
     En ese punto, la suite tenía 110 pruebas; Ruff y Pyright pasaban.
 -   Implementada A2: configuración Pydantic para métricas, sección `[metrics]` de ejemplo y pruebas de
