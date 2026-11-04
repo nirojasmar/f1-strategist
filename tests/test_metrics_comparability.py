@@ -39,6 +39,14 @@ from f1_strategist.metrics.history import LapRecord
             frozenset({"flashback"}),
         ),
         (
+            LapRecord(car_index=0, lap_number=2, flags=frozenset({"partial_lap"})),
+            frozenset({"partial_lap"}),
+        ),
+        (
+            LapRecord(car_index=0, lap_number=2, flags=frozenset({"incomplete"})),
+            frozenset({"incomplete"}),
+        ),
+        (
             LapRecord(
                 car_index=0,
                 lap_number=2,
@@ -159,6 +167,8 @@ def test_traffic_threshold_is_inclusive(
         (frozenset({"traffic"}), True, True),
         (frozenset({"invalid", "traffic"}), True, False),
         (frozenset({"first_lap"}), True, False),
+        (frozenset({"partial_lap"}), False, False),
+        (frozenset({"incomplete"}), False, False),
     ],
 )
 def test_is_clean_only_allows_traffic_when_requested(

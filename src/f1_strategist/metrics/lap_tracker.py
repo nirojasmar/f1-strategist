@@ -9,8 +9,13 @@ from ..race_state import CarDamageSnapshot, CarSnapshot, RaceStateSnapshot
 from .history import LapHistory, LapRecord
 
 _INVALID_RESULT_STATUSES = frozenset({"invalid", "inactive"})
+_NON_TRACKING_RESULT_STATUSES = _INVALID_RESULT_STATUSES | {"retired"}
 _PIT_STATUSES = frozenset({"pitting", "in_pit_area"})
-_DAMAGE_TUPLE_FIELDS = ("tyres_damage", "brakes_damage", "tyre_blisters")
+_TRACKED_FRESHNESS_GROUPS = ("lap_data", "car_status", "car_damage", "tyre_sets", "session")
+PARTIAL_LAP_MIN_TIME_S = 3.0
+PARTIAL_LAP_MIN_DISTANCE_M = 50.0
+_FLASHBACK_TIME_DELTA_MS = 1_000
+_FLASHBACK_DISTANCE_DELTA_M = 50.0
 _DAMAGE_SCALAR_FIELDS = (
     "front_left_wing_damage",
     "front_right_wing_damage",
@@ -20,12 +25,6 @@ _DAMAGE_SCALAR_FIELDS = (
     "sidepod_damage",
     "gearbox_damage",
     "engine_damage",
-    "engine_mguh_wear",
-    "engine_es_wear",
-    "engine_ce_wear",
-    "engine_ice_wear",
-    "engine_mguk_wear",
-    "engine_tc_wear",
 )
 
 
@@ -85,13 +84,10 @@ def _wear(car: CarSnapshot | None) -> tuple[float, ...] | None:
 
 
 def _damage_values(damage: CarDamageSnapshot | None) -> tuple[float, ...] | None:
+    """Return impact-related damage, excluding gradual wear and tyre/brake degradation."""
     if damage is None:
         return None
-    values = [
-        float(value) for field_name in _DAMAGE_TUPLE_FIELDS for value in getattr(damage, field_name)
-    ]
-    values.extend(float(getattr(damage, field_name)) for field_name in _DAMAGE_SCALAR_FIELDS)
-    return tuple(values)
+    return tuple(float(getattr(damage, field_name)) for field_name in _DAMAGE_SCALAR_FIELDS)
 
 
 def _max_damage_delta(
@@ -133,7 +129,9 @@ class LapTracker:
         self._last_cars: list[CarSnapshot | None] = []
         self._red_flag_periods: int | None = None
         self._red_flag_pending = False
+        self._red_flag_restart_pending: set[int] = set()
         self._pending_flashback_laps: dict[int, int] = {}
+        self._last_freshness_signature: tuple[float | None, ...] | None = None
 
     @property
     def history(self) -> LapHistory:
@@ -146,13 +144,28 @@ class LapTracker:
     def observe(self, state: RaceStateSnapshot, now: float) -> None:
         """Actualiza el histórico con una nueva instantánea del estado de carrera."""
         self._sync_session(state)
+        freshness_signature = tuple(
+            state.freshness_for(group).updated_at_monotonic for group in _TRACKED_FRESHNESS_GROUPS
+        )
         if state.session.ended is True:
             self._close_open_laps(state, now)
             self._remember_cars(state)
+            self._last_freshness_signature = freshness_signature
             return
 
         periods = state.session.red_flag_periods
         self._red_flag_pending = periods is not None and periods > (self._red_flag_periods or 0)
+        if self._red_flag_pending:
+            self._red_flag_restart_pending = {
+                index
+                for index, car in enumerate(state.cars)
+                if car.result_status not in _NON_TRACKING_RESULT_STATUSES
+            }
+            for open_lap in self._open_laps.values():
+                open_lap.track_statuses.add("red_flag")
+
+        if freshness_signature == self._last_freshness_signature and not self._red_flag_pending:
+            return
 
         for index, car in enumerate(state.cars):
             previous = self._last_cars[index] if index < len(self._last_cars) else None
@@ -165,6 +178,7 @@ class LapTracker:
 
             if car.result_status in _INVALID_RESULT_STATUSES:
                 self._open_laps.pop(index, None)
+                self._red_flag_restart_pending.discard(index)
                 continue
 
             if car.current_lap is None:
@@ -173,6 +187,7 @@ class LapTracker:
                         self._finish_retired_lap(open_lap, car, now)
                         del self._open_laps[index]
                     self._retired_cars.add(index)
+                    self._red_flag_restart_pending.discard(index)
                 continue
 
             if open_lap is None:
@@ -200,7 +215,6 @@ class LapTracker:
                     previous or car,
                     now,
                     lap_time_s=lap_time_s,
-                    tyre_age_end=new_open.start_tyre_age,
                 )
                 self._open_laps[index] = new_open
                 if car.result_status == "retired":
@@ -215,6 +229,7 @@ class LapTracker:
 
         self._red_flag_periods = periods
         self._remember_cars(state)
+        self._last_freshness_signature = freshness_signature
 
     def _sync_session(self, state: RaceStateSnapshot) -> None:
         session_uid = state.session.uid
@@ -228,7 +243,9 @@ class LapTracker:
         self._last_cars = [None] * len(state.cars)
         self._red_flag_periods = state.session.red_flag_periods
         self._red_flag_pending = False
+        self._red_flag_restart_pending.clear()
         self._pending_flashback_laps.clear()
+        self._last_freshness_signature = None
 
     def _remember_cars(self, state: RaceStateSnapshot) -> None:
         self._last_cars = list(state.cars)
@@ -274,6 +291,20 @@ class LapTracker:
             open_lap.flags.add("first_lap")
         if self._pending_flashback_laps.pop(car_index, None) == open_lap.lap_number:
             open_lap.flags.add("flashback")
+        if car_index in self._red_flag_restart_pending:
+            open_lap.track_statuses.add("red_flag")
+            self._red_flag_restart_pending.discard(car_index)
+        if (
+            previous is None
+            and open_lap.lap_number > 1
+            and (
+                car.current_lap_time_ms is not None
+                and car.current_lap_time_ms / 1000 > PARTIAL_LAP_MIN_TIME_S
+                or car.lap_distance_m is not None
+                and car.lap_distance_m > PARTIAL_LAP_MIN_DISTANCE_M
+            )
+        ):
+            open_lap.flags.add("partial_lap")
         if previous is not None:
             open_lap.damage_baseline = _damage_values(previous.damage)
         self._add_session_context(open_lap, state)
@@ -292,6 +323,12 @@ class LapTracker:
         previous: CarSnapshot | None,
         state: RaceStateSnapshot,
     ) -> None:
+        if self._tyres_changed(car, previous):
+            open_lap.start_tyre_age = 0
+            wear = _wear(car)
+            open_lap.start_wear = tuple(0.0 for _ in wear) if wear is not None else None
+            open_lap.start_compound = _compound(car)
+
         if open_lap.start_fuel_kg is None and car.fuel_kg is not None:
             open_lap.start_fuel_kg = car.fuel_kg
         if open_lap.start_tyre_age is None and car.tyre_age_laps is not None:
@@ -305,6 +342,9 @@ class LapTracker:
         if open_lap.start_compound is None:
             open_lap.start_compound = _compound(car)
 
+        if self._is_in_lap_flashback(car, previous):
+            self._reset_lap_accumulators(open_lap, car)
+
         self._add_session_context(open_lap, state)
         self._update_pit(open_lap, car, previous)
         self._update_traffic(open_lap, car, state)
@@ -312,6 +352,36 @@ class LapTracker:
         self._update_ers(open_lap, car)
         self._remember_car_values(open_lap, car)
         self._mark_progress(open_lap, car, previous)
+
+    def _is_in_lap_flashback(
+        self,
+        car: CarSnapshot,
+        previous: CarSnapshot | None,
+    ) -> bool:
+        if previous is None or car.current_lap != previous.current_lap:
+            return False
+        time_rewound = (
+            car.current_lap_time_ms is not None
+            and previous.current_lap_time_ms is not None
+            and previous.current_lap_time_ms - car.current_lap_time_ms > _FLASHBACK_TIME_DELTA_MS
+        )
+        distance_rewound = (
+            car.lap_distance_m is not None
+            and previous.lap_distance_m is not None
+            and previous.lap_distance_m - car.lap_distance_m > _FLASHBACK_DISTANCE_DELTA_M
+        )
+        return time_rewound or distance_rewound
+
+    def _reset_lap_accumulators(self, open_lap: _OpenLap, car: CarSnapshot) -> None:
+        open_lap.flags.add("flashback")
+        open_lap.damage_baseline = _damage_values(car.damage)
+        open_lap.damage_max_delta_pct = None
+        open_lap.traffic_samples = 0
+        open_lap.traffic_samples_ahead = 0
+        open_lap.traffic_sample_seen = False
+        open_lap.last_traffic_sample_at = None
+        open_lap.ers_harvested_j = None
+        open_lap.ers_deployed_j = None
 
     def _add_session_context(
         self,
@@ -476,10 +546,11 @@ class LapTracker:
 
     def _close_open_laps(self, state: RaceStateSnapshot, now: float) -> None:
         total_laps = state.session.total_laps
+        if total_laps is None:
+            self._open_laps.clear()
+            return
         for car_index, open_lap in tuple(self._open_laps.items()):
             if not open_lap.saw_progress:
-                continue
-            if total_laps is not None and open_lap.lap_number != total_laps:
                 continue
             car = state.cars[car_index]
             previous = self._last_cars[car_index] if car_index < len(self._last_cars) else None
@@ -498,6 +569,7 @@ class LapTracker:
                 now,
                 lap_time_s=lap_time_s,
                 tyre_age_end=tyre_age_end,
+                extra_flags=("incomplete",),
             )
         self._open_laps.clear()
 
@@ -525,6 +597,8 @@ class LapTracker:
             gap_ahead_end_s = open_lap.last_gap_ahead_s
         compound = _compound(end_car) or open_lap.last_compound or open_lap.start_compound
         age_end = tyre_age_end
+        if age_end is None and open_lap.start_tyre_age is not None:
+            age_end = open_lap.start_tyre_age + 1
         if age_end is None:
             age_end = end_car.tyre_age_laps
         if age_end is None:

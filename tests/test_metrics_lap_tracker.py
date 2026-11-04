@@ -2,10 +2,15 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import replace
+from pathlib import Path
+
+import pytest
 
 from f1_strategist.config import MetricsConfig
+from f1_strategist.metrics.comparability import classify_lap, is_clean
 from f1_strategist.metrics.lap_tracker import LapTracker
-from f1_strategist.race_state import RaceState, RaceStateSnapshot
+from f1_strategist.parser import CarDamagePacket, parse_packet
+from f1_strategist.race_state import CarDamageSnapshot, CarSnapshot, RaceState, RaceStateSnapshot
 from tests.scenarios import ScenarioCar, build_race_timed
 
 
@@ -65,6 +70,47 @@ def _car(
     )
 
 
+def _snapshot_with_car(
+    car: CarSnapshot,
+    *,
+    uid: int = 42,
+    total_laps: int | None = 5,
+    ended: bool = False,
+    red_flag_periods: int | None = 0,
+    freshness_updates: Mapping[str, float] | None = None,
+) -> RaceStateSnapshot:
+    snapshot = RaceState().snapshot()
+    cars = list(snapshot.cars)
+    cars[car.car_index] = car
+    updates = freshness_updates or {}
+    freshness = tuple(
+        replace(item, updated_at_monotonic=updates[item.group]) if item.group in updates else item
+        for item in snapshot.freshness
+    )
+    return replace(
+        snapshot,
+        session=replace(
+            snapshot.session,
+            uid=uid,
+            total_laps=total_laps,
+            ended=ended,
+            red_flag_periods=red_flag_periods,
+        ),
+        cars=tuple(cars),
+        freshness=freshness,
+    )
+
+
+def _damage_snapshot() -> CarDamageSnapshot:
+    packet = parse_packet((Path(__file__).parent / "fixtures" / "car_damage.bin").read_bytes())
+    assert isinstance(packet, CarDamagePacket)
+    race = RaceState()
+    race.apply(packet, 1.0)
+    damage = race.snapshot().cars[0].damage
+    assert damage is not None
+    return damage
+
+
 def test_closes_completed_laps_once_with_boundary_samples() -> None:
     _, tracker = _run_race(
         cars=(_car(ers_harvest_per_lap_j=150.0, ers_deploy_per_lap_j=60.0),),
@@ -108,6 +154,81 @@ def test_records_pit_entry_exit_and_pit_times_on_their_laps() -> None:
     assert records[2].pit_entry is False
     assert records[2].pit_exit is True
     assert records[2].tyre_age_start == 0
+    assert records[1].tyre_age_start is not None
+    assert records[1].tyre_age_end == records[1].tyre_age_start + 1
+
+
+@pytest.mark.parametrize("new_tyre_at_boundary", [True, False])
+def test_tyre_age_is_correct_when_new_tyre_appears_at_or_after_lap_change(
+    new_tyre_at_boundary: bool,
+) -> None:
+    tracker = LapTracker(config=MetricsConfig())
+    freshness = {"lap_data": 1.0, "car_status": 1.0}
+    old_tyre = CarSnapshot(
+        car_index=0,
+        current_lap=2,
+        current_lap_time_ms=90_000,
+        lap_distance_m=5_000.0,
+        fuel_kg=40.0,
+        actual_tyre_compound="soft",
+        tyre_age_laps=2,
+        pit_stops=0,
+    )
+    tracker.observe(_snapshot_with_car(old_tyre, freshness_updates=freshness), 1.0)
+
+    at_boundary = replace(
+        old_tyre,
+        current_lap=3,
+        current_lap_time_ms=1_000,
+        lap_distance_m=50.0,
+        fuel_kg=38.5,
+        actual_tyre_compound="medium" if new_tyre_at_boundary else "soft",
+        tyre_age_laps=0 if new_tyre_at_boundary else 2,
+        pit_stops=1,
+    )
+    freshness["lap_data"] = 2.0
+    tracker.observe(_snapshot_with_car(at_boundary, freshness_updates=freshness), 2.0)
+
+    if not new_tyre_at_boundary:
+        freshness["car_status"] = 3.0
+        tracker.observe(
+            _snapshot_with_car(
+                replace(
+                    at_boundary,
+                    actual_tyre_compound="medium",
+                    tyre_age_laps=0,
+                ),
+                freshness_updates=freshness,
+            ),
+            3.0,
+        )
+
+    freshness["lap_data"] = 4.0
+    tracker.observe(
+        _snapshot_with_car(
+            replace(
+                at_boundary,
+                current_lap=4,
+                current_lap_time_ms=1_000,
+                lap_distance_m=50.0,
+                fuel_kg=37.0,
+                actual_tyre_compound="medium",
+                tyre_age_laps=0,
+            ),
+            freshness_updates=freshness,
+        ),
+        4.0,
+    )
+
+    in_lap = tracker.history.get(0, 2)
+    out_lap = tracker.history.get(0, 3)
+    assert in_lap is not None
+    assert out_lap is not None
+    assert in_lap.tyre_age_start == 2
+    assert in_lap.tyre_age_start is not None
+    assert in_lap.tyre_age_end == 3
+    assert out_lap.tyre_age_start == 0
+    assert out_lap.compound == "medium"
 
 
 def test_records_safety_car_status_seen_during_a_lap() -> None:
@@ -209,16 +330,335 @@ def test_session_change_resets_history() -> None:
     assert tracker.history.snapshot().records_for(0) == ()
 
 
-def test_missing_samples_remain_none_in_closed_record() -> None:
-    initial = RaceState().snapshot()
-    session = replace(initial.session, uid=42, total_laps=2)
-    cars = list(initial.cars)
-    cars[0] = replace(cars[0], current_lap=1)
+def test_connection_mid_lap_marks_partial_lap_only() -> None:
     tracker = LapTracker(config=MetricsConfig())
-    tracker.observe(replace(initial, session=session, cars=tuple(cars)), 1.0)
+    freshness = {"lap_data": 1.0}
+    tracker.observe(
+        _snapshot_with_car(
+            CarSnapshot(
+                car_index=0,
+                current_lap=2,
+                current_lap_time_ms=4_000,
+                lap_distance_m=100.0,
+                fuel_kg=40.0,
+            ),
+            freshness_updates=freshness,
+        ),
+        1.0,
+    )
+    freshness["lap_data"] = 2.0
+    tracker.observe(
+        _snapshot_with_car(
+            CarSnapshot(
+                car_index=0,
+                current_lap=3,
+                current_lap_time_ms=1_000,
+                lap_distance_m=20.0,
+                fuel_kg=38.5,
+            ),
+            freshness_updates=freshness,
+        ),
+        2.0,
+    )
+    partial = tracker.history.get(0, 2)
+    assert partial is not None
+    assert "partial_lap" in partial.flags
+    assert not is_clean(classify_lap(partial, tracker.config))
 
-    cars[0] = replace(cars[0], current_lap=2)
-    tracker.observe(replace(initial, session=session, cars=tuple(cars)), 2.0)
+    freshness["lap_data"] = 3.0
+    tracker.observe(
+        _snapshot_with_car(
+            CarSnapshot(
+                car_index=0,
+                current_lap=4,
+                current_lap_time_ms=1_000,
+                lap_distance_m=20.0,
+                fuel_kg=37.0,
+            ),
+            freshness_updates=freshness,
+        ),
+        3.0,
+    )
+    complete = tracker.history.get(0, 3)
+    assert complete is not None
+    assert "partial_lap" not in complete.flags
+
+
+@pytest.mark.parametrize(
+    ("lap_time_ms", "distance_m", "is_partial"),
+    [(3_000, 50.0, False), (3_001, 50.0, True), (1_000, 50.1, True)],
+)
+def test_partial_lap_thresholds(
+    lap_time_ms: int,
+    distance_m: float,
+    is_partial: bool,
+) -> None:
+    tracker = LapTracker(config=MetricsConfig())
+    tracker.observe(
+        _snapshot_with_car(
+            CarSnapshot(
+                car_index=0,
+                current_lap=2,
+                current_lap_time_ms=lap_time_ms,
+                lap_distance_m=distance_m,
+            ),
+            freshness_updates={"lap_data": 1.0},
+        ),
+        1.0,
+    )
+
+    open_lap = tracker._open_laps[0]
+    assert ("partial_lap" in open_lap.flags) is is_partial
+
+
+def test_gradual_tyre_and_component_wear_is_not_counted_as_damage() -> None:
+    tracker = LapTracker(config=MetricsConfig())
+    baseline = _damage_snapshot()
+    gradual_wear = replace(
+        baseline,
+        tyre_blisters=tuple(value + 20 for value in baseline.tyre_blisters),
+        brakes_damage=tuple(value + 20 for value in baseline.brakes_damage),
+        engine_mguh_wear=min(100, baseline.engine_mguh_wear + 20),
+        engine_es_wear=min(100, baseline.engine_es_wear + 20),
+        engine_ce_wear=min(100, baseline.engine_ce_wear + 20),
+        engine_ice_wear=min(100, baseline.engine_ice_wear + 20),
+        engine_mguk_wear=min(100, baseline.engine_mguk_wear + 20),
+        engine_tc_wear=min(100, baseline.engine_tc_wear + 20),
+    )
+    tracker.observe(
+        _snapshot_with_car(
+            CarSnapshot(car_index=0, current_lap=2, damage=baseline),
+            freshness_updates={"lap_data": 1.0, "car_damage": 1.0},
+        ),
+        1.0,
+    )
+    tracker.observe(
+        _snapshot_with_car(
+            CarSnapshot(
+                car_index=0,
+                current_lap=2,
+                current_lap_time_ms=50_000,
+                damage=gradual_wear,
+            ),
+            freshness_updates={"lap_data": 2.0, "car_damage": 2.0},
+        ),
+        2.0,
+    )
+    tracker.observe(
+        _snapshot_with_car(
+            CarSnapshot(car_index=0, current_lap=3, current_lap_time_ms=1_000, damage=gradual_wear),
+            freshness_updates={"lap_data": 3.0, "car_damage": 3.0},
+        ),
+        3.0,
+    )
+
+    record = tracker.history.get(0, 2)
+    assert record is not None
+    assert record.damage_max_delta_pct == 0.0
+    assert "damage_change" not in classify_lap(record, tracker.config)
+
+
+def test_session_end_marks_laps_incomplete_and_timed_sessions_do_not_close() -> None:
+    tracker = LapTracker(config=MetricsConfig())
+    car = CarSnapshot(car_index=0, current_lap=4, current_lap_time_ms=30_000, fuel_kg=30.0)
+    snapshot = _snapshot_with_car(
+        car,
+        total_laps=5,
+        ended=False,
+        freshness_updates={"lap_data": 1.0},
+    )
+    tracker.observe(snapshot, 1.0)
+    ended = replace(snapshot, session=replace(snapshot.session, ended=True))
+    tracker.observe(ended, 2.0)
+
+    incomplete = tracker.history.get(0, 4)
+    assert incomplete is not None
+    assert "incomplete" in classify_lap(incomplete, tracker.config)
+    assert not is_clean(classify_lap(incomplete, tracker.config))
+
+    timed_tracker = LapTracker(config=MetricsConfig())
+    timed_state = _snapshot_with_car(
+        car,
+        total_laps=None,
+        ended=False,
+        freshness_updates={"lap_data": 1.0},
+    )
+    timed_tracker.observe(timed_state, 1.0)
+    timed_tracker.observe(
+        replace(timed_state, session=replace(timed_state.session, ended=True)),
+        2.0,
+    )
+    assert timed_tracker.history.snapshot().records_for(0) == ()
+
+
+def test_in_lap_flashback_marks_lap_and_resets_traffic_damage_and_ers() -> None:
+    tracker = LapTracker(config=MetricsConfig())
+    damage = _damage_snapshot()
+    impact_damage = replace(
+        damage,
+        front_left_wing_damage=min(100, damage.front_left_wing_damage + 10),
+    )
+    base_car = CarSnapshot(
+        car_index=0,
+        position=2,
+        current_lap=2,
+        current_lap_time_ms=20_000,
+        lap_distance_m=1_000.0,
+        delta_to_car_in_front_ms=100,
+        ers_harvested_mguk_j=800.0,
+        ers_deployed_this_lap_j=700.0,
+        damage=damage,
+    )
+    tracker.observe(
+        _snapshot_with_car(
+            base_car,
+            freshness_updates={"lap_data": 1.0, "car_damage": 1.0, "car_status": 1.0},
+        ),
+        1.0,
+    )
+    tracker.observe(
+        _snapshot_with_car(
+            replace(
+                base_car,
+                current_lap_time_ms=25_000,
+                lap_distance_m=1_500.0,
+                damage=impact_damage,
+            ),
+            freshness_updates={"lap_data": 2.0, "car_damage": 2.0, "car_status": 2.0},
+        ),
+        2.0,
+    )
+    tracker.observe(
+        _snapshot_with_car(
+            replace(
+                base_car,
+                current_lap_time_ms=23_000,
+                lap_distance_m=1_400.0,
+                delta_to_car_in_front_ms=2_000,
+                ers_harvested_mguk_j=100.0,
+                ers_deployed_this_lap_j=80.0,
+                damage=impact_damage,
+            ),
+            freshness_updates={"lap_data": 3.0, "car_damage": 3.0, "car_status": 3.0},
+        ),
+        3.0,
+    )
+    tracker.observe(
+        _snapshot_with_car(
+            replace(
+                base_car,
+                current_lap_time_ms=30_000,
+                lap_distance_m=2_000.0,
+                delta_to_car_in_front_ms=2_000,
+                ers_harvested_mguk_j=200.0,
+                ers_deployed_this_lap_j=150.0,
+                damage=impact_damage,
+            ),
+            freshness_updates={"lap_data": 4.0, "car_damage": 4.0, "car_status": 4.0},
+        ),
+        4.0,
+    )
+    tracker.observe(
+        _snapshot_with_car(
+            replace(
+                base_car,
+                current_lap=3,
+                current_lap_time_ms=1_000,
+                lap_distance_m=20.0,
+                delta_to_car_in_front_ms=2_000,
+                ers_harvested_mguk_j=0.0,
+                ers_deployed_this_lap_j=0.0,
+                damage=impact_damage,
+            ),
+            freshness_updates={"lap_data": 5.0, "car_damage": 5.0, "car_status": 5.0},
+        ),
+        5.0,
+    )
+
+    record = tracker.history.get(0, 2)
+    assert record is not None
+    assert "flashback" in record.flags
+    assert record.traffic_fraction == 0.0
+    assert record.ers_harvested_j == 200.0
+    assert record.ers_deployed_j == 150.0
+    assert record.damage_max_delta_pct == 0.0
+
+
+def test_red_flag_restart_lap_is_marked() -> None:
+    tracker = LapTracker(config=MetricsConfig())
+    car = CarSnapshot(car_index=0, current_lap=2, current_lap_time_ms=20_000, lap_distance_m=1_000)
+    tracker.observe(
+        _snapshot_with_car(
+            car,
+            freshness_updates={"lap_data": 1.0, "session": 1.0},
+        ),
+        1.0,
+    )
+    tracker.observe(
+        _snapshot_with_car(
+            car,
+            red_flag_periods=1,
+            freshness_updates={"lap_data": 1.0, "session": 2.0},
+        ),
+        2.0,
+    )
+    tracker.observe(
+        _snapshot_with_car(
+            replace(car, current_lap=3, current_lap_time_ms=1_000, lap_distance_m=20),
+            red_flag_periods=1,
+            freshness_updates={"lap_data": 2.0, "session": 2.0},
+        ),
+        3.0,
+    )
+    tracker.observe(
+        _snapshot_with_car(
+            replace(car, current_lap=4, current_lap_time_ms=1_000, lap_distance_m=20),
+            red_flag_periods=1,
+            freshness_updates={"lap_data": 3.0, "session": 2.0},
+        ),
+        4.0,
+    )
+
+    restart_lap = tracker.history.get(0, 3)
+    assert restart_lap is not None
+    assert "red_flag" in restart_lap.track_status_seen
+
+
+def test_observe_skips_car_work_when_freshness_is_unchanged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tracker = LapTracker(config=MetricsConfig())
+    state = _snapshot_with_car(
+        CarSnapshot(car_index=0, current_lap=2, current_lap_time_ms=10_000),
+        freshness_updates={"lap_data": 1.0},
+    )
+    tracker.observe(state, 1.0)
+
+    def fail_if_processed(*args: object, **kwargs: object) -> None:
+        pytest.fail("No debe procesar coches si la frescura no cambió")
+
+    monkeypatch.setattr(tracker, "_update_lap", fail_if_processed)
+    tracker.observe(state, 2.0)
+
+
+def test_missing_samples_remain_none_in_closed_record() -> None:
+    tracker = LapTracker(config=MetricsConfig())
+    tracker.observe(
+        _snapshot_with_car(
+            CarSnapshot(car_index=0, current_lap=1),
+            total_laps=2,
+            freshness_updates={"lap_data": 1.0},
+        ),
+        1.0,
+    )
+    tracker.observe(
+        _snapshot_with_car(
+            CarSnapshot(car_index=0, current_lap=2),
+            total_laps=2,
+            freshness_updates={"lap_data": 2.0},
+        ),
+        2.0,
+    )
 
     record = tracker.history.get(0, 1)
     assert record is not None
