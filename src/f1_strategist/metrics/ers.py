@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from ..race_state import PacketFreshness
+from .comparability import classify_lap
 from .history import MetricInputs
 from .types import Metric, Quality, Window, unavailable
 
@@ -94,7 +95,13 @@ class ERSMetrics:
             )
         )
 
-        records = tuple(record for record in inputs.history.records.get(inputs.car_index, ()))
+        records = tuple(
+            record
+            for record in inputs.history.records_for(inputs.car_index)
+            if record.closed
+            and not {"incomplete", "partial_lap", "retired"} & record.flags
+            and "invalid" not in classify_lap(record, inputs.config)
+        )
         latest = records[-1] if records else None
         harvested = latest.ers_harvested_j if latest is not None else None
         deployed = latest.ers_deployed_j if latest is not None else None

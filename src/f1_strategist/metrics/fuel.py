@@ -21,8 +21,10 @@ class FuelMetrics:
         car = inputs.car
         tank_freshness = inputs.state.freshness_for("car_status")
         lap_freshness = inputs.state.freshness_for("lap_data")
+        session_freshness = inputs.state.freshness_for("session")
         sources = ("car_status", "lap_data")
         stale = tank_freshness.is_stale(inputs.now) or lap_freshness.is_stale(inputs.now)
+        margin_stale = stale or session_freshness.is_stale(inputs.now)
 
         tank = car.fuel_kg if car is not None else None
         tank_metric = (
@@ -192,7 +194,7 @@ class FuelMetrics:
                 laps_of_fuel - laps_remaining,
                 "lap",
                 inputs.now,
-                stale,
+                margin_stale,
                 len(consumptions),
                 ("car_status", "lap_data", "session"),
                 estimate_quality,
@@ -202,7 +204,7 @@ class FuelMetrics:
                 tank - consumption * laps_remaining,
                 "kg",
                 inputs.now,
-                stale,
+                margin_stale,
                 len(consumptions),
                 ("car_status", "lap_data", "session"),
                 estimate_quality,
@@ -269,6 +271,8 @@ def _laps_remaining(inputs: MetricInputs) -> float | None:
         return None
     if session.ended is True:
         return 0.0
+    if session.safety_car_status == "formation_lap":
+        return float(session.total_laps)
     car = inputs.car
     if (
         car is None

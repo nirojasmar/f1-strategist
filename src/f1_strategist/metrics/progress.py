@@ -17,6 +17,7 @@ class ProgressMetrics:
         session = inputs.state.session
         lap_freshness = inputs.state.freshness_for("lap_data")
         session_freshness = inputs.state.freshness_for("session")
+        formation_lap = session.safety_car_status == "formation_lap"
 
         current_lap = car.current_lap if car is not None else None
         current_lap_metric = (
@@ -40,6 +41,8 @@ class ProgressMetrics:
 
         if session.ended is True and session.total_laps is not None:
             laps_completed = session.total_laps
+        elif formation_lap:
+            laps_completed = 0
         elif current_lap is not None:
             laps_completed = max(0, current_lap - 1)
             if session.total_laps is not None:
@@ -70,6 +73,8 @@ class ProgressMetrics:
         if session.total_laps is not None:
             if session.ended is True:
                 laps_remaining = 0.0
+            elif formation_lap:
+                laps_remaining = float(session.total_laps)
             elif current_lap is not None:
                 distance = car.lap_distance_m if car is not None else None
                 if (
@@ -126,6 +131,8 @@ class ProgressMetrics:
         if session.total_laps is not None and session.total_laps > 0:
             if session.ended is True:
                 race_progress = 100.0
+            elif formation_lap:
+                race_progress = 0.0
             elif current_lap is not None:
                 distance = car.lap_distance_m if car is not None else None
                 if (

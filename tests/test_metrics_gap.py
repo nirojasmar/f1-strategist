@@ -22,12 +22,14 @@ def _inputs(
     history: LapHistorySnapshot | None = None,
     player_index: int = 0,
     freshness: tuple[PacketFreshness, ...] | None = None,
+    session_uid: int | None = None,
 ) -> MetricInputs:
     state = RaceState().snapshot()
     state = replace(
         state,
         cars=cars,
         player_car_index=player_index,
+        session=replace(state.session, uid=session_uid),
         freshness=freshness if freshness is not None else state.freshness,
     )
     config = MetricsConfig(min_samples={"gap": SampleThresholds(low=2, ok=3)})
@@ -81,6 +83,7 @@ def test_gap_trends_are_negative_when_intervals_close() -> None:
     tracker = GapTracker()
     tracker.add_sample(GapSample(1.0, 5.0, 4.0, 5.0))
     tracker.add_sample(GapSample(3.0, 4.0, 3.0, 4.0))
+    tracker.add_sample(GapSample(5.0, 3.0, 2.0, 3.0))
     cars = list(_cars())
     cars[0] = replace(cars[0], delta_to_car_in_front_ms=3000)
 
@@ -203,3 +206,130 @@ def test_stale_gap_telemetry_marks_available_intervals_stale() -> None:
 
     assert metrics["gap.ahead_s"].quality is Quality.STALE
     assert compare_car(inputs, 2).quality is Quality.STALE
+
+
+def test_gap_series_is_isolated_by_session_and_car_and_restarts_monotonic_time() -> None:
+    tracker = GapTracker()
+    module = GapMetrics(tracker)
+
+    def run(*, uid: int, car_index: int, timestamp: float, now: float) -> None:
+        module.compute(
+            _inputs(
+                _cars(),
+                now=now,
+                player_index=car_index,
+                session_uid=uid,
+                freshness=(PacketFreshness("lap_data", timestamp, 2.0),),
+            )
+        )
+
+    run(uid=1, car_index=0, timestamp=10.0, now=10.0)
+    run(uid=1, car_index=0, timestamp=11.0, now=11.0)
+    assert len(tracker.window(11.0, 10.0, session_uid=1, car_index=0)) == 2
+
+    run(uid=2, car_index=0, timestamp=0.0, now=0.0)
+    run(uid=2, car_index=2, timestamp=0.1, now=0.1)
+
+    assert len(tracker.window(0.1, 10.0, session_uid=2, car_index=0)) == 1
+    assert len(tracker.window(0.1, 10.0, session_uid=2, car_index=2)) == 1
+    assert len(tracker.window(11.0, 10.0, session_uid=1, car_index=0)) == 0
+
+
+def test_gap_trend_requires_three_distinct_updates_and_neighbor_continuity() -> None:
+    tracker = GapTracker()
+    module = GapMetrics(tracker)
+
+    def run(timestamp: float, now: float, cars: tuple[CarSnapshot, ...]):
+        return _metric_map(
+            module.compute(
+                _inputs(
+                    cars,
+                    now=now,
+                    session_uid=9,
+                    freshness=(PacketFreshness("lap_data", timestamp, 2.0),),
+                )
+            )
+        )
+
+    for now in (1.0, 2.0, 3.0):
+        metrics = run(1.0, now, _cars())
+    assert metrics["gap.ahead_trend_s_per_s"].quality is Quality.INSUFFICIENT
+    assert metrics["gap.ahead_trend_s_per_s"].sample_count == 1
+
+    cars = _cars()
+    for timestamp, now, ahead_ms in ((2.0, 4.0, 3000), (3.0, 5.0, 2500), (4.0, 6.0, 2000)):
+        cars = (replace(cars[0], delta_to_car_in_front_ms=ahead_ms), *cars[1:])
+        metrics = run(timestamp, now, cars)
+    assert metrics["gap.ahead_trend_s_per_s"].sample_count == 4
+    assert metrics["gap.ahead_trend_s_per_s"].value is not None
+
+    leader_cars = (
+        replace(cars[0], position=1, delta_to_car_in_front_ms=None),
+        replace(cars[1], position=2, delta_to_car_in_front_ms=2000),
+        replace(cars[2], position=3),
+    )
+    metrics = run(5.0, 7.0, leader_cars)
+    assert metrics["gap.ahead_s"].quality is Quality.UNAVAILABLE
+    assert metrics["gap.ahead_trend_s_per_s"].quality is Quality.INSUFFICIENT
+
+
+def test_compare_car_uses_freshness_of_tyre_and_lap_history_inputs() -> None:
+    inputs = _inputs(
+        _cars(),
+        freshness=(
+            PacketFreshness("lap_data", 10.0, 2.0),
+            PacketFreshness("car_status", 1.0, 2.0),
+            PacketFreshness("session_history", 1.0, 2.0),
+        ),
+    )
+
+    assert compare_car(inputs, 2).quality is Quality.STALE
+
+
+def test_rival_pace_uses_the_stint_containing_the_current_lap() -> None:
+    cars = list(_cars())
+    cars[0] = replace(
+        cars[0],
+        current_lap=5,
+        actual_tyre_compound="soft",
+        tyre_age_laps=4,
+    )
+    cars[2] = replace(
+        cars[2],
+        current_lap=5,
+        actual_tyre_compound="hard",
+        tyre_age_laps=4,
+    )
+    history = LapHistorySnapshot(
+        records={
+            0: tuple(
+                LapRecord(
+                    0,
+                    lap,
+                    lap_time_s=90.0,
+                    compound="soft",
+                    closed=True,
+                )
+                for lap in (2, 3, 4)
+            ),
+            2: tuple(
+                LapRecord(
+                    2,
+                    lap,
+                    lap_time_s=89.0,
+                    compound="hard",
+                    closed=True,
+                )
+                for lap in (2, 3, 4)
+            ),
+        },
+        tyre_stints={
+            0: (TyreStint("soft", 2, 5), TyreStint("soft", 6)),
+            2: (TyreStint("hard", 2, 5), TyreStint("hard", 6)),
+        },
+    )
+    inputs = _inputs(tuple(cars), history=history)
+
+    comparison = compare_car(inputs, 2)
+
+    assert comparison.pace_delta_s == -1.0

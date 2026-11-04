@@ -117,7 +117,7 @@ def test_progress_handles_finished_race_time_session_and_formation() -> None:
 
     formation = _metrics(
         _inputs(
-            car=CarSnapshot(car_index=0),
+            car=CarSnapshot(car_index=0, current_lap=1, lap_distance_m=2500.0),
             session=RaceSessionSnapshot(
                 uid=4,
                 session_type="race",
@@ -125,11 +125,15 @@ def test_progress_handles_finished_race_time_session_and_formation() -> None:
                 total_laps=20,
                 started=False,
                 ended=False,
+                safety_car_status="formation_lap",
+                track_length_m=5000.0,
             ),
         )
     )
-    assert formation["progress.current_lap"].quality is Quality.UNAVAILABLE
-    assert formation["progress.laps_remaining"].quality is Quality.UNAVAILABLE
+    assert formation["progress.current_lap"].value == 1
+    assert formation["progress.laps_completed"].value == 0
+    assert formation["progress.laps_remaining"].value == 20.0
+    assert formation["progress.race_progress_pct"].value == 0.0
 
 
 def test_progress_marks_stale_inputs_and_missing_time() -> None:

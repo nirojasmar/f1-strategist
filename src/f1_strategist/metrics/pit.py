@@ -10,6 +10,7 @@ from .history import LapRecord, MetricInputs
 from .types import Metric, Quality, Window, insufficient
 
 _SAFETY_FLAGS = frozenset({"safety_car", "virtual_safety_car", "red_flag"})
+_INELIGIBLE_STOP_FLAGS = frozenset({"incomplete", "partial_lap", "retired", "invalid", "flashback"})
 # Field-wide evidence needs at least three observed stops to be considered representative.
 _MIN_FIELD_STOPS = 3
 
@@ -44,7 +45,7 @@ def _stop_pairs(
                 (
                     record
                     for record in exits
-                    if record.lap_number >= entry.lap_number
+                    if record.lap_number > entry.lap_number
                     and not any(
                         entry.lap_number < other.lap_number < record.lap_number for other in entries
                     )
@@ -56,6 +57,10 @@ def _stop_pairs(
             entry_flags = classify_lap(entry, inputs.config)
             exit_flags = classify_lap(exit_record, inputs.config)
             if _SAFETY_FLAGS.intersection(entry_flags | exit_flags):
+                continue
+            if _INELIGIBLE_STOP_FLAGS.intersection(entry_flags | exit_flags):
+                continue
+            if entry.valid is False or exit_record.valid is False:
                 continue
             if entry.lap_time_s is None or exit_record.lap_time_s is None:
                 continue

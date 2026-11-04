@@ -109,6 +109,36 @@ def test_incomplete_lap_history_is_low_quality_and_missing_state_is_unavailable(
     assert missing.quality is Quality.UNAVAILABLE
 
 
+def test_ers_lap_totals_skip_open_partial_incomplete_and_retired_records() -> None:
+    records = (
+        LapRecord(
+            car_index=0,
+            lap_number=1,
+            ers_harvested_j=1000.0,
+            ers_deployed_j=500.0,
+            closed=True,
+        ),
+        LapRecord(
+            car_index=0,
+            lap_number=2,
+            ers_harvested_j=5000.0,
+            ers_deployed_j=0.0,
+            closed=True,
+            flags=frozenset({"incomplete"}),
+        ),
+        LapRecord(
+            car_index=0,
+            lap_number=3,
+            ers_harvested_j=7000.0,
+            ers_deployed_j=0.0,
+            closed=False,
+        ),
+    )
+
+    assert _metric(_inputs(records=records), "ers.net_last_lap_j").value == 500.0
+    assert _metric(_inputs(records=records), "ers.net_mean_3_laps_j").value == 500.0
+
+
 def test_stale_live_and_history_values_are_marked_stale() -> None:
     record = LapRecord(
         car_index=0,

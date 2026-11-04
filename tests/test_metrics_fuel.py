@@ -182,3 +182,17 @@ def test_fuel_margins_are_unavailable_without_laps_remaining() -> None:
     )
     assert metrics["fuel.margin_laps_at_finish"].quality is Quality.UNAVAILABLE
     assert metrics["fuel.margin_kg_at_finish"].quality is Quality.UNAVAILABLE
+
+
+def test_fuel_margin_uses_session_freshness_without_staling_tank_metric() -> None:
+    inputs = _inputs(
+        (_record(2, 20, 18), _record(3, 18, 16), _record(4, 16, 14)),
+        car=CarSnapshot(car_index=0, current_lap=5, lap_distance_m=1000, fuel_kg=10),
+        stale_group="session",
+    )
+
+    metrics = _metrics(inputs)
+
+    assert metrics["fuel.margin_laps_at_finish"].quality is Quality.STALE
+    assert metrics["fuel.margin_kg_at_finish"].quality is Quality.STALE
+    assert metrics["fuel.in_tank_kg"].quality is Quality.OK

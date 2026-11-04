@@ -141,13 +141,25 @@ Documentos de diseño:
     las métricas que dependen de ellos quedan `unavailable` hasta configurarlos.
 -   Validación local Windows tras D1--D9: `uv run pytest -q` (351 pruebas), Ruff (lint y formato),
     Pyright y `git diff --check` pasan.
+-   Aplicadas las correcciones pertinentes de `review_fase_2_ola_3.md` (R1--R10): aislamiento y
+    continuidad de las tendencias por sesión/coche/rival; selección del stint actual sin tomar stints
+    futuros ni vueltas del juego anterior; exclusión de paradas con vueltas duplicadas o no comparables;
+    ERS limitado a vueltas completas; frescura de sesión en márgenes de combustible; vuelta de formación
+    excluida del progreso; y temperatura muestreada una vez por actualización fresca de sesión con memoria
+    constante por vuelta.
+-   Añadidas regresiones para los casos R1--R10, incluidos paquetes repetidos, cambio de rival, stint
+    futuro o reinicio de neumático, datos obsoletos, vueltas inválidas y temperatura repetida/obsoleta.
+-   Validación local Windows tras la review: `uv run --group dev pytest -q` (370 pruebas),
+    `uv run --group dev ruff check .`, `uv run --group dev ruff format --check .` (70 archivos),
+    `uv run --group dev pyright` (0 errores/avisos) y `git diff --check` pasan.
 
 **No verificado todavía:**
 
 -   C2b usa escenarios sintéticos; falta contrastar con una captura real en F3 el orden de cambio de
     neumáticos, el tiempo de la vuelta final y la ausencia de `damage_change` en vueltas sin incidentes.
 -   Las métricas D1--D9 se validaron con escenarios sintéticos; falta calibrarlas con una captura real.
--   No se volvió a ejecutar CI de GitHub Actions tras los cambios de C2b y D1--D9.
+-   No se validó todavía la integración E1--E4 ni se volvió a ejecutar CI de GitHub Actions tras las
+    correcciones de esta review.
 
 ## 6. Bitácora
 

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+import pytest
+
 from f1_strategist.config import MetricsConfig
 from f1_strategist.metrics.history import LapHistorySnapshot, LapRecord, MetricInputs
 from f1_strategist.metrics.pit import PitMetrics
@@ -157,3 +159,47 @@ def test_stale_pit_telemetry_marks_available_values_stale() -> None:
     )
 
     assert metrics["pit.last_lane_time_s"].quality is Quality.STALE
+
+
+def test_same_lap_entry_and_exit_are_not_counted_as_a_complete_stop_pair() -> None:
+    records = (
+        LapRecord(0, 1, lap_time_s=90.0, valid=True, closed=True),
+        LapRecord(
+            0,
+            2,
+            lap_time_s=110.0,
+            valid=True,
+            pit_entry=True,
+            pit_exit=True,
+            closed=True,
+        ),
+        LapRecord(0, 3, lap_time_s=90.0, valid=True, closed=True),
+    )
+    inputs = _inputs({0: records})
+
+    metrics = _metric_map(PitMetrics().compute(inputs))
+
+    assert metrics["pit.sample_count"].value == 0
+    assert metrics["pit.loss_estimate_s"].quality is Quality.INSUFFICIENT
+
+
+@pytest.mark.parametrize(
+    ("flags", "valid"),
+    [
+        (frozenset({"incomplete"}), True),
+        (frozenset({"partial_lap"}), True),
+        (frozenset({"retired"}), True),
+        (frozenset(), False),
+    ],
+)
+def test_ineligible_entry_or_exit_lap_is_not_a_pit_loss_sample(
+    flags: frozenset[str],
+    valid: bool,
+) -> None:
+    records = list(_event_records(0))
+    records[1] = replace(records[1], flags=flags, valid=valid)
+    records[2] = replace(records[2], flags=flags, valid=valid)
+
+    metrics = _metric_map(PitMetrics().compute(_inputs({0: tuple(records)})))
+
+    assert metrics["pit.sample_count"].value == 0

@@ -709,3 +709,50 @@ def test_closed_lap_records_mean_track_temperature() -> None:
 
     assert record is not None
     assert record.track_temperature_c == 31.0
+
+
+def test_track_temperature_is_sampled_once_per_fresh_session_update() -> None:
+    tracker = LapTracker(config=MetricsConfig())
+    for step in range(10):
+        tracker.observe(
+            _snapshot_with_car(
+                CarSnapshot(
+                    car_index=0,
+                    current_lap=2 if step < 9 else 3,
+                    current_lap_time_ms=10_000 + step * 1000,
+                ),
+                track_temperature_c=30.0,
+                freshness_updates={"lap_data": 1.0 + step, "session": 1.0},
+            ),
+            1.0 + step,
+        )
+
+    record = tracker.history.get(0, 2)
+
+    assert record is not None
+    assert record.track_temperature_c == 30.0
+
+
+def test_stale_session_temperature_is_not_added_to_lap_history() -> None:
+    tracker = LapTracker(config=MetricsConfig())
+    tracker.observe(
+        _snapshot_with_car(
+            CarSnapshot(car_index=0, current_lap=2, current_lap_time_ms=10_000),
+            track_temperature_c=30.0,
+            freshness_updates={"lap_data": 1.0, "session": 1.0},
+        ),
+        10.0,
+    )
+    tracker.observe(
+        _snapshot_with_car(
+            CarSnapshot(car_index=0, current_lap=3, current_lap_time_ms=1_000),
+            track_temperature_c=32.0,
+            freshness_updates={"lap_data": 11.0, "session": 1.0},
+        ),
+        11.0,
+    )
+
+    record = tracker.history.get(0, 2)
+
+    assert record is not None
+    assert record.track_temperature_c is None

@@ -184,3 +184,61 @@ def test_tyre_metrics_mark_stale_sources_and_missing_stint_samples() -> None:
     assert metrics["tyres.wear_mean_pct"].quality is Quality.STALE
     assert metrics["tyres.wear_rate_pct_per_lap"].quality is Quality.INSUFFICIENT
     assert metrics["tyres.game_lifespan_laps"].quality is Quality.UNAVAILABLE
+
+
+def test_tyre_regression_does_not_use_future_official_stint() -> None:
+    records = tuple(_record(lap, "soft", lap, lap * 10) for lap in (2, 3, 4))
+    car = CarSnapshot(
+        car_index=0,
+        current_lap=4,
+        actual_tyre_compound="soft",
+        tyre_age_laps=2,
+        damage=_damage(),
+    )
+
+    metrics = _metrics(
+        _inputs(
+            records=records,
+            stints=(TyreStint("soft", 1, 4), TyreStint("medium", 5)),
+            car=car,
+        )
+    )
+
+    assert metrics["tyres.wear_rate_pct_per_lap"].value == 10.0
+    assert metrics["tyres.wear_rate_pct_per_lap"].sample_count == 3
+
+
+def test_same_compound_tyre_reset_does_not_reuse_previous_stint() -> None:
+    old_records = tuple(_record(lap, "soft", lap, lap * 10) for lap in (1, 2, 3, 4))
+    before_first_lap = _metrics(
+        _inputs(
+            records=old_records,
+            stints=(TyreStint("soft", 1),),
+            car=CarSnapshot(
+                car_index=0,
+                current_lap=5,
+                actual_tyre_compound="soft",
+                tyre_age_laps=0,
+                damage=_damage(),
+            ),
+        )
+    )
+    assert before_first_lap["tyres.wear_rate_pct_per_lap"].sample_count == 0
+
+    after_first_lap = _metrics(
+        _inputs(
+            records=(
+                *old_records,
+                _record(5, "soft", 1, 50),
+            ),
+            stints=(TyreStint("soft", 1),),
+            car=CarSnapshot(
+                car_index=0,
+                current_lap=6,
+                actual_tyre_compound="soft",
+                tyre_age_laps=1,
+                damage=_damage(),
+            ),
+        )
+    )
+    assert after_first_lap["tyres.wear_rate_pct_per_lap"].sample_count == 1

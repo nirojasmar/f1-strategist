@@ -16,13 +16,25 @@ def _inputs(
     *,
     config: MetricsConfig | None = None,
     freshness: tuple[PacketFreshness, ...] | None = None,
+    stints: tuple[TyreStint, ...] = (TyreStint("soft", 1),),
+    current_lap: int | None = None,
+    tyre_age_laps: int | None = None,
+    compound: str | None = None,
 ) -> MetricInputs:
     state = RaceState().snapshot()
+    cars = list(state.cars)
+    cars[0] = replace(
+        cars[0],
+        current_lap=current_lap,
+        tyre_age_laps=tyre_age_laps,
+        actual_tyre_compound=compound,
+    )
+    state = replace(state, cars=tuple(cars))
     if freshness is not None:
         state = replace(state, freshness=freshness)
     history = LapHistorySnapshot(
         records={0: records},
-        tyre_stints={0: (TyreStint("soft", 1),)},
+        tyre_stints={0: stints},
     )
     return MetricInputs(state, history, config or MetricsConfig(), 10.0, 0)
 
@@ -124,3 +136,21 @@ def test_missing_history_is_insufficient_and_stale_inputs_are_marked() -> None:
     )
     stale = _by_key(PaceMetrics().compute(_inputs((_record(1, 90.0),), freshness=freshness)))
     assert stale["pace.last_lap_s"].quality is Quality.STALE
+
+
+def test_pace_uses_stint_containing_current_lap_not_future_stint() -> None:
+    records = tuple(replace(_record(lap, 90.0 + lap), compound="soft") for lap in (2, 3, 4))
+    metrics = _by_key(
+        PaceMetrics().compute(
+            _inputs(
+                records,
+                stints=(TyreStint("soft", 1, 4), TyreStint("medium", 5)),
+                current_lap=4,
+                tyre_age_laps=2,
+                compound="soft",
+            )
+        )
+    )
+
+    assert metrics["pace.clean_mean_s"].value == 93.0
+    assert metrics["pace.clean_laps_used"].value == 3

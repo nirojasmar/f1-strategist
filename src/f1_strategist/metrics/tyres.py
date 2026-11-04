@@ -6,7 +6,7 @@ from statistics import StatisticsError, fmean, linear_regression
 
 from ..race_state import PacketFreshness
 from .comparability import classify_lap, is_clean
-from .history import LapRecord, MetricInputs
+from .history import LapRecord, MetricInputs, current_stint_bounds
 from .types import Metric, Quality, Window, assess_quality, insufficient, unavailable
 
 
@@ -276,25 +276,20 @@ def _current_stint_clean_samples(
     inputs: MetricInputs, compound: str | None
 ) -> tuple[LapRecord, ...]:
     records = sorted(inputs.history.records_for(inputs.car_index), key=lambda item: item.lap_number)
-    stints = inputs.history.stints_for(inputs.car_index)
-    latest_stint = stints[-1] if stints else None
-    start_lap = latest_stint.start_lap if latest_stint is not None else None
-    if start_lap is None:
-        latest_reset = next(
-            (record.lap_number for record in reversed(records) if record.tyre_age_start == 0),
-            None,
-        )
-        start_lap = latest_reset
+    bounds = current_stint_bounds(inputs, inputs.car_index)
+    if bounds is None:
+        return ()
+    start_lap, end_lap = bounds
+    car = inputs.car
+    current_lap = car.current_lap if car is not None else None
+    if current_lap is None:
+        current_lap = max((record.lap_number for record in records), default=0) + 1
 
     samples: list[LapRecord] = []
     for record in records:
         if not record.closed or (start_lap is not None and record.lap_number < start_lap):
             continue
-        if (
-            latest_stint is not None
-            and latest_stint.end_lap is not None
-            and record.lap_number > latest_stint.end_lap
-        ):
+        if record.lap_number > current_lap or (end_lap is not None and record.lap_number > end_lap):
             continue
         if compound is not None and record.compound != compound:
             continue

@@ -7,7 +7,7 @@ from statistics import mean
 
 from ..race_state import PacketFreshness
 from .comparability import classify_lap, is_clean
-from .history import LapRecord, MetricInputs
+from .history import LapRecord, MetricInputs, current_stint_bounds
 from .types import Metric, Quality, Window, insufficient
 
 _NEVER_PACE_FLAGS = frozenset({"partial_lap", "incomplete", "retired"})
@@ -96,23 +96,19 @@ class PaceMetrics:
             and not _NEVER_PACE_FLAGS.intersection(classify_lap(record, inputs.config))
         )
         stale, sources = _freshness(inputs)
-        stint_start: int | None = None
-        stint_end: int | None = None
-        stints = inputs.history.stints_for(inputs.car_index)
-        if stints:
-            stint_start = stints[-1].start_lap
-            stint_end = stints[-1].end_lap
-        elif records:
-            latest_compound = records[-1].compound
-            stint_start = records[-1].lap_number
-            for record in reversed(records[:-1]):
-                if record.compound != latest_compound:
-                    break
-                stint_start = record.lap_number
+        bounds = current_stint_bounds(inputs, inputs.car_index)
+        stint_start, stint_end = bounds if bounds is not None else (None, None)
+        car = inputs.car
+        current_lap = (
+            car.current_lap
+            if car is not None and car.current_lap is not None
+            else max((record.lap_number for record in records), default=0) + 1
+        )
 
         current_stint = tuple(
             record
             for record in records
+            if record.lap_number <= current_lap
             if (stint_start is None or record.lap_number >= stint_start)
             and (stint_end is None or record.lap_number <= stint_end)
         )

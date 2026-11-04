@@ -10,7 +10,7 @@ from typing import Literal
 
 from ..race_state import CarSnapshot, PacketFreshness
 from .comparability import classify_lap, is_clean
-from .history import LapRecord, MetricInputs
+from .history import LapRecord, MetricInputs, current_stint_bounds
 from .types import Metric, Quality, Window, insufficient, unavailable
 
 _RETIRED_STATUSES = frozenset({"retired", "inactive", "invalid"})
@@ -24,6 +24,11 @@ class GapSample:
     ahead_s: float | None
     behind_s: float | None
     leader_s: float | None
+    session_uid: int | None = None
+    car_index: int = 0
+    updated_at_monotonic: float | None = None
+    ahead_car_index: int | None = None
+    behind_car_index: int | None = None
 
     def __post_init__(self) -> None:
         if not math.isfinite(self.observed_at_monotonic):
@@ -39,38 +44,104 @@ class GapTracker:
     def __init__(self, max_samples: int = 120) -> None:
         if max_samples < 2:
             raise ValueError("max_samples debe ser al menos 2")
-        self._samples: deque[GapSample] = deque(maxlen=max_samples)
+        self._max_samples = max_samples
+        self._samples: dict[tuple[int | None, int], deque[GapSample]] = {}
+        self._last_updates: dict[tuple[int | None, int], float | None] = {}
+        self._neighbors: dict[tuple[int | None, int], tuple[int | None, int | None]] = {}
+        self._session_uid: int | None = None
+        self._session_initialized = False
 
     @property
     def samples(self) -> tuple[GapSample, ...]:
-        return tuple(self._samples)
+        return tuple(self._samples.get((None, 0), ()))
+
+    def reset(self) -> None:
+        """Descarta todas las series, por ejemplo al iniciar una sesión nueva."""
+        self._samples.clear()
+        self._last_updates.clear()
+        self._neighbors.clear()
+        self._session_initialized = False
 
     def add_sample(self, sample: GapSample) -> None:
         """Añade una muestra; una marca temporal repetida reemplaza la anterior."""
-        if self._samples and sample.observed_at_monotonic < self._samples[-1].observed_at_monotonic:
-            raise ValueError("Las muestras deben estar ordenadas por tiempo monotónico")
-        if (
-            self._samples
-            and sample.observed_at_monotonic == self._samples[-1].observed_at_monotonic
-        ):
-            self._samples[-1] = sample
+        key = (sample.session_uid, sample.car_index)
+        samples = self._samples.setdefault(key, deque(maxlen=self._max_samples))
+        if samples and sample.observed_at_monotonic < samples[-1].observed_at_monotonic:
+            samples.clear()
+            self._last_updates.pop(key, None)
+        if samples and sample.observed_at_monotonic == samples[-1].observed_at_monotonic:
+            samples[-1] = sample
         else:
-            self._samples.append(sample)
+            samples.append(sample)
 
     def record(self, inputs: MetricInputs) -> GapSample:
         """Lee el estado actual y guarda sus intervalos para el motor o el módulo."""
-        ahead, behind, leader, _ = _current_gaps(inputs)
-        sample = GapSample(inputs.now, ahead, behind, leader)
+        session_uid = inputs.state.session.uid
+        if self._session_initialized and session_uid != self._session_uid:
+            self.reset()
+        self._session_uid = session_uid
+        self._session_initialized = True
+        key = (session_uid, inputs.car_index)
+        ahead, behind, leader, _, ahead_index, behind_index = _current_gaps(inputs)
+        neighbors = (ahead_index, behind_index)
+        if key in self._neighbors and self._neighbors[key] != neighbors:
+            self._samples.pop(key, None)
+            self._last_updates.pop(key, None)
+        self._neighbors[key] = neighbors
+        try:
+            updated_at = inputs.state.freshness_for("lap_data").updated_at_monotonic
+        except KeyError:
+            updated_at = None
+        previous_update = self._last_updates.get(key)
+        if updated_at is None:
+            return GapSample(
+                inputs.now,
+                ahead,
+                behind,
+                leader,
+                session_uid,
+                inputs.car_index,
+                None,
+                ahead_index,
+                behind_index,
+            )
+        if previous_update == updated_at:
+            samples = self._samples.get(key)
+            if samples:
+                return samples[-1]
+        if previous_update is not None and updated_at < previous_update:
+            self._samples.pop(key, None)
+        self._last_updates[key] = updated_at
+        sample = GapSample(
+            inputs.now,
+            ahead,
+            behind,
+            leader,
+            session_uid,
+            inputs.car_index,
+            updated_at,
+            ahead_index,
+            behind_index,
+        )
         self.add_sample(sample)
         return sample
 
-    def window(self, now: float, seconds: float) -> tuple[GapSample, ...]:
+    def window(
+        self,
+        now: float,
+        seconds: float,
+        *,
+        session_uid: int | None = None,
+        car_index: int = 0,
+    ) -> tuple[GapSample, ...]:
         """Devuelve las muestras dentro de la ventana móvil solicitada."""
         if seconds <= 0:
             raise ValueError("seconds debe ser positivo")
         cutoff = now - seconds
         return tuple(
-            sample for sample in self._samples if cutoff <= sample.observed_at_monotonic <= now
+            sample
+            for sample in self._samples.get((session_uid, car_index), ())
+            if cutoff <= sample.observed_at_monotonic <= now
         )
 
 
@@ -102,6 +173,16 @@ def _freshness(inputs: MetricInputs) -> tuple[bool, tuple[str, ...]]:
     return freshness.is_stale(inputs.now), ("race_state", "lap_data")
 
 
+def _comparison_stale(inputs: MetricInputs) -> bool:
+    for group in ("lap_data", "car_status", "session_history"):
+        try:
+            if inputs.state.freshness_for(group).is_stale(inputs.now):
+                return True
+        except KeyError:
+            continue
+    return False
+
+
 def _active(car: CarSnapshot) -> bool:
     return car.result_status not in _RETIRED_STATUSES and car.driver_status not in _RETIRED_STATUSES
 
@@ -112,19 +193,26 @@ def _car_by_index(inputs: MetricInputs, car_index: int) -> CarSnapshot | None:
 
 def _current_gaps(
     inputs: MetricInputs,
-) -> tuple[float | None, float | None, float | None, str | None]:
+) -> tuple[
+    float | None,
+    float | None,
+    float | None,
+    str | None,
+    int | None,
+    int | None,
+]:
     car = _car_by_index(inputs, inputs.car_index)
     if car is None or not _active(car):
-        return None, None, None, "car_unavailable"
+        return None, None, None, "car_unavailable", None, None
     if car.position is None:
-        return None, None, None, "position_unavailable"
+        return None, None, None, "position_unavailable", None, None
     active_cars = tuple(
         item for item in inputs.state.cars if _active(item) and item.position is not None
     )
     if any(
         item.car_index != car.car_index and item.position == car.position for item in active_cars
     ):
-        return None, None, None, "position_tie"
+        return None, None, None, "position_tie", None, None
 
     ahead_cars = tuple(
         item for item in active_cars if item.position is not None and item.position < car.position
@@ -132,9 +220,10 @@ def _current_gaps(
     behind_cars = tuple(
         item for item in active_cars if item.position is not None and item.position > car.position
     )
+    nearest_ahead = max(ahead_cars, key=lambda item: item.position or 0, default=None)
     ahead = (
         car.delta_to_car_in_front_ms / 1000.0
-        if ahead_cars and car.delta_to_car_in_front_ms is not None
+        if nearest_ahead is not None and car.delta_to_car_in_front_ms is not None
         else None
     )
     nearest_behind = min(behind_cars, key=lambda item: item.position or 0, default=None)
@@ -150,7 +239,14 @@ def _current_gaps(
         if car.delta_to_leader_ms is not None
         else None
     )
-    return ahead, behind, leader, None
+    return (
+        ahead,
+        behind,
+        leader,
+        None,
+        nearest_ahead.car_index if nearest_ahead is not None else None,
+        nearest_behind.car_index if nearest_behind is not None else None,
+    )
 
 
 def _trend(samples: tuple[GapSample, ...], field: Literal["ahead_s", "behind_s"]) -> float | None:
@@ -214,9 +310,14 @@ class GapMetrics:
     def compute(self, inputs: MetricInputs) -> tuple[Metric, ...]:
         self.tracker.record(inputs)
         stale, sources = _freshness(inputs)
-        ahead, behind, leader, issue = _current_gaps(inputs)
+        ahead, behind, leader, issue, _, _ = _current_gaps(inputs)
         live_count = 1 if issue is None else 0
-        sample_window = self.tracker.window(inputs.now, inputs.config.gap_trend_window_s)
+        sample_window = self.tracker.window(
+            inputs.now,
+            inputs.config.gap_trend_window_s,
+            session_uid=inputs.state.session.uid,
+            car_index=inputs.car_index,
+        )
         low, ok = inputs.config.thresholds("gap")
         results = [
             _metric(
@@ -253,7 +354,8 @@ class GapMetrics:
         )
         for field, key in trend_fields:
             points = tuple(item for item in sample_window if getattr(item, field) is not None)
-            slope = _trend(sample_window, field) if len(points) >= 2 else None
+            minimum_samples = max(3, low)
+            slope = _trend(sample_window, field) if len(points) >= minimum_samples else None
             if slope is None:
                 results.append(
                     insufficient(
@@ -309,24 +411,32 @@ class GapMetrics:
 
 
 def _current_stint_records(inputs: MetricInputs, car_index: int) -> tuple[LapRecord, ...]:
+    bounds = current_stint_bounds(inputs, car_index)
+    if bounds is None:
+        return ()
+    start_lap, end_lap = bounds
+    car = _car_by_index(inputs, car_index)
+    current_lap = (
+        car.current_lap
+        if car is not None and car.current_lap is not None
+        else max(
+            (record.lap_number for record in inputs.history.records_for(car_index)),
+            default=0,
+        )
+        + 1
+    )
     records = tuple(
         record
         for record in inputs.history.records_for(car_index)
         if record.closed
+        and record.lap_number >= start_lap
+        and record.lap_number <= current_lap
+        and (end_lap is None or record.lap_number <= end_lap)
         and record.lap_time_s is not None
         and record.valid is not False
         and is_clean(classify_lap(record, inputs.config))
     )
-    stints = inputs.history.stints_for(car_index)
-    if not stints:
-        return records[-3:]
-    current = stints[-1]
-    return tuple(
-        record
-        for record in records
-        if record.lap_number >= current.start_lap
-        and (current.end_lap is None or record.lap_number <= current.end_lap)
-    )
+    return records[-3:]
 
 
 def compare_car(inputs: MetricInputs, rival_index: int) -> CarComparison:
@@ -420,7 +530,7 @@ def compare_car(inputs: MetricInputs, rival_index: int) -> CarComparison:
         and stops is not None
         else Quality.LOW
     )
-    stale, _ = _freshness(inputs)
+    stale = _comparison_stale(inputs)
     if stale:
         quality = Quality.STALE
     return CarComparison(

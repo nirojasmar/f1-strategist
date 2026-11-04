@@ -268,6 +268,66 @@ class MetricInputs:
         return None
 
 
+def current_stint_bounds(
+    inputs: MetricInputs,
+    car_index: int,
+) -> tuple[int, int | None] | None:
+    """Find the stint containing the car's current lap without trusting future records."""
+    car = next((item for item in inputs.state.cars if item.car_index == car_index), None)
+    if car is None:
+        return None
+    records = tuple(
+        sorted(
+            (record for record in inputs.history.records_for(car_index) if record.closed),
+            key=lambda record: record.lap_number,
+        )
+    )
+    current_lap = car.current_lap
+    if current_lap is None:
+        current_lap = max((record.lap_number for record in records), default=0) + 1
+    if current_lap < 1:
+        return None
+
+    if car.tyre_age_laps == 0:
+        return current_lap, None
+
+    prior_records = tuple(record for record in records if record.lap_number <= current_lap)
+    latest = prior_records[-1] if prior_records else None
+    if latest is not None and latest.tyre_age_start == 0:
+        return latest.lap_number, None
+    official_stints = tuple(
+        sorted(inputs.history.stints_for(car_index), key=lambda stint: stint.start_lap)
+    )
+    official_index = next(
+        (
+            index
+            for index, stint in enumerate(official_stints)
+            if stint.start_lap <= current_lap
+            and (stint.end_lap is None or current_lap <= stint.end_lap)
+        ),
+        None,
+    )
+    if official_index is not None:
+        official = official_stints[official_index]
+        end_lap = official.end_lap
+        if official_index + 1 < len(official_stints):
+            next_start = official_stints[official_index + 1].start_lap
+            inferred_end = next_start - 1
+            end_lap = inferred_end if end_lap is None else min(end_lap, inferred_end)
+        return official.start_lap, end_lap
+
+    if latest is None:
+        return current_lap, None
+    if car.actual_tyre_compound is not None and latest.compound != car.actual_tyre_compound:
+        return current_lap, None
+    start_lap = latest.lap_number
+    for record in reversed(prior_records[:-1]):
+        if record.compound != latest.compound or record.tyre_age_start == 0:
+            break
+        start_lap = record.lap_number
+    return start_lap, None
+
+
 @runtime_checkable
 class MetricModule(Protocol):
     """Contrato de un módulo puro de métricas."""
