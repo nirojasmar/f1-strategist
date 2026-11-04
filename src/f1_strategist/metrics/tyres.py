@@ -141,9 +141,10 @@ class TyreMetrics:
         x_values = [age_value for age_value, _ in regression_samples]
         y_values = [wear_value for _, wear_value in regression_samples]
         low_at, ok_at = inputs.config.thresholds("tyres")
+        minimum_samples = max(3, low_at)
         rate: float | None = None
         rate_quality: Quality | None = None
-        if len(regression_samples) >= 3:
+        if len(regression_samples) >= minimum_samples:
             try:
                 rate = linear_regression(x_values, y_values).slope
                 rate_quality = (

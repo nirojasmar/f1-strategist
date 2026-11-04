@@ -386,6 +386,8 @@ def compare_car(inputs: MetricInputs, rival_index: int) -> CarComparison:
         direction = "behind"
         if rival.delta_to_leader_ms is not None and player.delta_to_leader_ms is not None:
             interval = (rival.delta_to_leader_ms - player.delta_to_leader_ms) / 1000.0
+        elif player.position == 1 and rival.delta_to_leader_ms is not None:
+            interval = rival.delta_to_leader_ms / 1000.0
         elif rival.position == player.position + 1 and rival.delta_to_car_in_front_ms is not None:
             interval = rival.delta_to_car_in_front_ms / 1000.0
         else:

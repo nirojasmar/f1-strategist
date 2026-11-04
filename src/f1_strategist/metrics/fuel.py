@@ -56,6 +56,7 @@ class FuelMetrics:
             and not (_EXCLUDED_FLAGS & record.flags)
             and record.fuel_start_kg >= record.fuel_end_kg
         ]
+        low_at, ok_at = inputs.config.thresholds("fuel")
         window_size = inputs.config.fuel_window_laps
         selected = eligible[-window_size:]
         consumptions = [
@@ -77,7 +78,7 @@ class FuelMetrics:
             sources=sources,
         )
 
-        if len(consumptions) < 2:
+        if len(consumptions) < max(2, low_at):
             consumption_metric = insufficient(
                 "fuel.consumption_per_lap",
                 "kg/lap",
@@ -104,8 +105,8 @@ class FuelMetrics:
                 if stale
                 else assess_quality(
                     len(consumptions),
-                    ok_at=inputs.config.thresholds("fuel")[1],
-                    low_at=inputs.config.thresholds("fuel")[0],
+                    ok_at=ok_at,
+                    low_at=low_at,
                     stale=False,
                 )
             )
@@ -131,9 +132,7 @@ class FuelMetrics:
             )
 
         laps_of_fuel = tank / consumption if tank is not None and consumption else None
-        estimate_quality = (
-            Quality.OK if len(consumptions) >= inputs.config.thresholds("fuel")[1] else Quality.LOW
-        )
+        estimate_quality = Quality.OK if len(consumptions) >= ok_at else Quality.LOW
         laps_of_fuel_metric = (
             _derived_metric(
                 "fuel.laps_of_fuel",

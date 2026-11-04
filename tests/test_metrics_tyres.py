@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from f1_strategist.config import MetricsConfig
+from f1_strategist.config import MetricsConfig, SampleThresholds
 from f1_strategist.metrics.history import LapHistorySnapshot, LapRecord, MetricInputs, TyreStint
 from f1_strategist.metrics.types import Quality
 from f1_strategist.metrics.tyres import TyreMetrics
@@ -145,6 +145,21 @@ def test_tyre_regression_uses_only_clean_samples_in_current_stint() -> None:
     assert metrics["tyres.wear_rate_pct_per_lap"].value == 10.0
     assert metrics["tyres.wear_rate_pct_per_lap"].sample_count == 3
     assert metrics["tyres.laps_to_wear_limit"].value == 2.0
+
+
+def test_tyre_regression_requires_the_configured_low_sample_count() -> None:
+    car = CarSnapshot(car_index=0, actual_tyre_compound="soft", tyre_age_laps=4, damage=_damage())
+    inputs = _inputs(
+        records=(_record(2, "soft", 2, 10), _record(3, "soft", 3, 20), _record(4, "soft", 4, 30)),
+        car=car,
+        config=MetricsConfig(min_samples={"tyres": SampleThresholds(low=5, ok=6)}),
+    )
+
+    metrics = _metrics(inputs)
+
+    assert metrics["tyres.wear_rate_pct_per_lap"].quality is Quality.INSUFFICIENT
+    assert metrics["tyres.wear_rate_pct_per_lap"].value is None
+    assert metrics["tyres.wear_rate_pct_per_lap"].sample_count == 3
 
 
 def test_tyre_outputs_insufficient_or_unavailable_values_as_appropriate() -> None:

@@ -109,6 +109,24 @@ def test_leader_and_last_car_have_missing_neighbor_quality() -> None:
     assert last_metrics["gap.behind_s"].quality is Quality.UNAVAILABLE
 
 
+def test_compare_car_uses_rival_leader_delta_when_the_player_leads() -> None:
+    cars = (
+        replace(
+            _cars()[0],
+            position=1,
+            delta_to_leader_ms=None,
+            delta_to_car_in_front_ms=None,
+        ),
+        replace(_cars()[1], position=2, delta_to_leader_ms=2000),
+        replace(_cars()[2], position=3, delta_to_leader_ms=4200),
+    )
+
+    comparison = compare_car(_inputs(cars), 2)
+
+    assert comparison.interval_direction == "behind"
+    assert comparison.interval_s == 4.2
+
+
 def test_tied_positions_are_not_assigned_an_ahead_or_behind_direction() -> None:
     tied = _metric_map(GapMetrics().compute(_inputs(_cars(tied=True))))
 

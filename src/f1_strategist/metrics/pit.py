@@ -10,6 +10,8 @@ from .history import LapRecord, MetricInputs
 from .types import Metric, Quality, Window, insufficient
 
 _SAFETY_FLAGS = frozenset({"safety_car", "virtual_safety_car", "red_flag"})
+# Field-wide evidence needs at least three observed stops to be considered representative.
+_MIN_FIELD_STOPS = 3
 
 
 def _freshness(inputs: MetricInputs) -> tuple[bool, tuple[str, ...]]:
@@ -68,7 +70,8 @@ def _loss_samples(inputs: MetricInputs) -> tuple[float, ...]:
         reference = tuple(
             record.lap_time_s
             for record in records
-            if record.lap_time_s is not None
+            if record.closed
+            and record.lap_time_s is not None
             and record.lap_number not in {entry.lap_number, exit_record.lap_number}
             and entry.lap_number - 3 <= record.lap_number <= exit_record.lap_number + 3
             and record.valid is not False
@@ -147,17 +150,13 @@ class PitMetrics:
             if record.closed
         )
         losses = _loss_samples(inputs)
-        if losses:
-            _, ok = inputs.config.thresholds("pit")
-            loss_quality = (
-                Quality.OK if len(losses) >= ok and field_stop_count >= 3 else Quality.LOW
-            )
-        else:
-            loss_quality = None
-        _, ok_sample_count = inputs.config.thresholds("pit")
+        _, ok = inputs.config.thresholds("pit")
         sample_count_quality = (
-            Quality.OK if len(losses) >= ok_sample_count and field_stop_count >= 3 else Quality.LOW
+            Quality.OK
+            if len(losses) >= ok and field_stop_count >= _MIN_FIELD_STOPS
+            else Quality.LOW
         )
+        loss_quality = sample_count_quality if losses else None
         result = [
             _metric(
                 "pit.stops_done",

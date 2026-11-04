@@ -76,6 +76,8 @@ def test_damage_groups_faults_and_changed_laps() -> None:
         front_right_wing_damage=8,
         rear_wing_damage=15,
         floor_damage=6,
+        diffuser_damage=90,
+        sidepod_damage=80,
         engine_damage=3,
         engine_mguh_wear=19,
         gearbox_damage=4,

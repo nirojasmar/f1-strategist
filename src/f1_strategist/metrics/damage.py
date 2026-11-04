@@ -39,6 +39,7 @@ class DamageMetrics:
         else:
             metrics.extend(
                 (
+                    # D8 defines this metric as the maximum across the wings only.
                     _damage_value(
                         "damage.aero_max_pct",
                         max(

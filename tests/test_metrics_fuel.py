@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from f1_strategist.config import MetricsConfig
+from f1_strategist.config import MetricsConfig, SampleThresholds
 from f1_strategist.metrics.fuel import FuelMetrics
 from f1_strategist.metrics.history import LapHistorySnapshot, LapRecord, MetricInputs
 from f1_strategist.metrics.types import Quality
@@ -135,6 +135,26 @@ def test_fuel_requires_two_closed_samples_and_handles_missing_data() -> None:
     assert no_data["fuel.in_tank_kg"].quality is Quality.UNAVAILABLE
     assert no_data["fuel.consumption_per_lap"].quality is Quality.INSUFFICIENT
     assert no_data["fuel.margin_laps_at_finish"].quality is Quality.INSUFFICIENT
+
+
+def test_fuel_requires_the_configured_low_sample_count() -> None:
+    inputs = _inputs(
+        (_record(1, 20, 18), _record(2, 18, 16)),
+        car=CarSnapshot(car_index=0, fuel_kg=20.0),
+    )
+    inputs = replace(
+        inputs,
+        config=MetricsConfig(
+            fuel_window_laps=5,
+            min_samples={"fuel": SampleThresholds(low=3, ok=5)},
+        ),
+    )
+
+    metrics = _metrics(inputs)
+
+    assert metrics["fuel.consumption_per_lap"].quality is Quality.INSUFFICIENT
+    assert metrics["fuel.consumption_per_lap"].value is None
+    assert metrics["fuel.consumption_stddev"].quality is Quality.INSUFFICIENT
 
 
 def test_fuel_variable_consumption_and_stale_status() -> None:
