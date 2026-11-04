@@ -60,7 +60,7 @@ Documentos de diseño:
 | --- | --- | --- |
 | 0. Definición y entorno | Parcial | Repo, CI definido, config, receptor y guía de firewall listos. Falta validar la recepción desde otro PC de la red local y en Linux real. |
 | 1. Receptor, parser y estado | Implementada; CI verde | Snapshots inmutables de sesión y coches, daños, frescura por grupo, eventos y resumen de consola. |
-| 2. Métricas e histórico | En curso | Ola 0 (A1--A4) y ola 1 (B1--B3) implementadas; faltan histórico (C), métricas (D), integración (E) y cierre (F). |
+| 2. Métricas e histórico | En curso | Ola 0 (A1--A4), ola 1 (B1--B3) e histórico (C1--C4, incluidas correcciones C2b) implementados; faltan métricas (D), integración (E) y cierre (F). |
 | 3. Grabación y replay | Parcial | Captura y reemisión UDP listas (se adelantaron en Sprint 1). Falta el replay interno hacia el pipeline y el registro en SQLite. |
 | 4--10 | No iniciadas | |
 
@@ -122,8 +122,22 @@ Documentos de diseño:
     `game_paused` y el pronóstico por muestras (`WeatherForecastSnapshot`). `safety_car_changed` y
     `weather_changed` se emiten solo ante transiciones entre valores conocidos; un cambio de sesión limpia
     todo el entorno y el pronóstico.
+-   Ola 2 (C1--C4): implementados el histórico acotado e inmutable por vuelta, el cierre y muestreo en las
+    fronteras, la ingesta idempotente de `SessionHistory` (incluidos tiempos oficiales, validez y stints) y
+    la clasificación pura de comparabilidad.
+-   C2b, según la review de Ola 2: corregidas la edad de neumático al cerrar la vuelta de entrada y su
+    reinicio al cambiar neumáticos con la vuelta abierta; marcadas las vueltas parciales e incompletas;
+    excluidos del delta de daño los desgastes graduales; detectados flashbacks intra-vuelta y vueltas de
+    reinicio tras bandera roja. `LapTracker.observe` evita recorrer coches si no cambian las marcas de
+    frescura relevantes, conservando el manejo de cambio y fin de sesión.
+-   Validación local Windows tras C2b: `uv run pytest -q` (308 pruebas), `uv run ruff check .`,
+    `uv run ruff format --check .`, `uv run pyright` y `git diff --check` pasan.
 
 **No verificado todavía:**
+
+-   C2b usa escenarios sintéticos; falta contrastar con una captura real en F3 el orden de cambio de
+    neumáticos, el tiempo de la vuelta final y la ausencia de `damage_change` en vueltas sin incidentes.
+-   No se volvió a ejecutar CI de GitHub Actions tras los cambios de C2b.
 
 ## 6. Bitácora
 
@@ -230,6 +244,16 @@ Documentos de diseño:
     y `uv run pytest` pasan; suite completa con 221 pruebas.
 -   Los cambios de B1--B3 están en el árbol de trabajo de la rama `f2-wave1-wide-state`, sin commit. No se
     modificó el panel de consola y `progress.md` se actualiza con esta entrada.
+-   Implementada la Ola 2 del histórico: C1 define los registros y snapshots inmutables; C2 cierra vueltas,
+    muestrea valores de frontera y trata boxes, retiros y flashbacks; C3 incorpora tiempos oficiales,
+    validez y stints desde `SessionHistory`, también si el paquete llega antes del cierre; C4 clasifica
+    banderas de comparabilidad.
+-   Revisada `plans/review_fase_2_ola_2.md` y aplicada C2b: se corrigieron edad de neumáticos, vueltas
+    parciales/incompletas, cálculo de daño, flashback intra-vuelta, reinicio tras bandera roja y trabajo
+    repetido sin cambios de frescura. Las banderas `partial_lap` e `incomplete` se propagan a clasificación
+    y hacen que `is_clean` devuelva `False`.
+-   Validación final local: 308 pruebas pasan; Ruff (lint y formato), Pyright y `git diff --check` pasan.
+    La validación con captura real y CI queda pendiente.
 
 ## 7. Hallazgos de la primera captura real
 
@@ -371,18 +395,16 @@ uv run f1-strategist replay captures/<archivo>.f1cap --host 127.0.0.1 --port 207
 -   Si el juego envía por broadcast, la app debe escuchar en `0.0.0.0`; en loopback no recibe nada.
 -   Otra aplicación de telemetría usando el puerto 20777 provoca un error claro al abrir el socket.
 
-## 10. Siguiente paso: completar la Fase 2
+## 10. Siguiente paso: métricas de la Fase 2
 
-La Fase 2 está **en curso**. A1--A4 (cimientos y escenarios) y B1--B3 (estado ampliado) están
-implementados; el siguiente bloque es:
+La Fase 2 está **en curso**. A1--A4, B1--B3 y el histórico C1--C4 están implementados. El siguiente
+bloque es:
 
-1.  **Histórico:** construir el histórico por vuelta (C1--C4), incluyendo el cierre de vueltas, la
-    detección de vueltas no comparables y el uso de `SessionHistory`/`TyreSets`.
-2.  **Métricas:** implementar progreso, combustible, neumáticos, ritmo, intervalos, boxes, ERS, daños y
+1.  **Métricas:** implementar progreso, combustible, neumáticos, ritmo, intervalos, boxes, ERS, daños y
     entorno (D1--D9), consumiendo los nuevos campos de `RaceState`.
-3.  **Integración:** añadir `MetricsEngine` y snapshots; integrarlos en la sesión, la consola y la
+2.  **Integración:** añadir `MetricsEngine` y snapshots; integrarlos en la sesión, la consola y la
     exportación JSON/CSV (E1--E4).
-4.  **Validación y cierre:** recortar y anonimizar una captura, incorporar un fixture real cuando esté
+3.  **Validación y cierre:** recortar y anonimizar una captura, incorporar un fixture real cuando esté
     disponible y verificar las tolerancias, invariantes y documentación (F1--F4).
 
 ## 11. Pendientes y decisiones abiertas
