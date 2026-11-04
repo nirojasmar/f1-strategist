@@ -8,9 +8,11 @@ from rich.console import Console
 
 import f1_strategist.console as console_module
 from f1_strategist.config import AppConfig
-from f1_strategist.console import _render_race_summary, render
-from f1_strategist.console_messages import render_race_event
+from f1_strategist.console import _render_metrics_summary, _render_race_summary, render
+from f1_strategist.console_messages import render_diagnostic, render_race_event
 from f1_strategist.messages import message
+from f1_strategist.metrics.engine import MetricsSnapshot
+from f1_strategist.metrics.types import Metric, Quality, Window
 from f1_strategist.parser import (
     CarStatusPacket,
     EnumValue,
@@ -123,3 +125,92 @@ def test_console_renders_untrusted_markup_as_literal_text(monkeypatch) -> None:
     rendered = output.getvalue()
     assert "[bold]192.0.2.1[/bold]" in rendered
     assert "disk [red]failure[/red]" in rendered
+
+
+def _metric(key: str, value: float | None, unit: str, quality: Quality) -> Metric:
+    return Metric(
+        key=key,
+        value=value,
+        unit=unit,
+        window=Window("instant"),
+        quality=quality,
+        sample_count=4,
+        computed_at_monotonic=3.0,
+    )
+
+
+def test_console_renders_metrics_panel_with_quality_markers(monkeypatch) -> None:
+    config = AppConfig()
+    session = CaptureSession(config)
+    metrics = MetricsSnapshot(
+        metrics={
+            "progress.laps_remaining": _metric("progress.laps_remaining", 3.5, "lap", Quality.OK),
+            "fuel.margin_laps_at_finish": _metric(
+                "fuel.margin_laps_at_finish", None, "lap", Quality.INSUFFICIENT
+            ),
+            "tyres.wear_rate_pct_per_lap": _metric(
+                "tyres.wear_rate_pct_per_lap", 0.125, "%/lap", Quality.STALE
+            ),
+            "pace.trend_s_per_lap": _metric(
+                "pace.trend_s_per_lap", None, "s/lap", Quality.UNAVAILABLE
+            ),
+            "gap.ahead_s": _metric("gap.ahead_s", 0.82, "s", Quality.OK),
+            "gap.behind_s": _metric("gap.behind_s", None, "s", Quality.INSUFFICIENT),
+        },
+        computed_at_monotonic=3.0,
+        session_uid=1,
+    )
+    monkeypatch.setattr(session, "metrics_snapshot", lambda: metrics)
+
+    output = StringIO()
+    console = Console(file=output, width=120, no_color=True)
+    console.print(render(config, session, now=5.0))
+    text = output.getvalue()
+
+    assert "Métricas" in text
+    for label in (
+        "Vueltas restantes",
+        "Margen de combustible",
+        "Tasa de desgaste",
+        "Tendencia de ritmo",
+        "Intervalo delante",
+        "Intervalo detrás",
+    ):
+        assert label in text
+    assert "3.5 vueltas" in text
+    assert "0.125 %/lap" in text
+    assert "0.82 s" in text
+    assert "stale (obsoleto)" in text
+    assert "insufficient (insuficiente)" in text
+    assert "unavailable (no disponible)" in text
+
+    lines = text.splitlines()
+    fuel_line = next(line for line in lines if "Margen de combustible" in line)
+    pace_line = next(line for line in lines if "Tendencia de ritmo" in line)
+    assert "—" in fuel_line
+    assert "—" in pace_line
+
+
+def test_console_metrics_panel_renders_empty_snapshot_with_dashes() -> None:
+    output = StringIO()
+    console = Console(file=output, width=120, no_color=True)
+    console.print(_render_metrics_summary(MetricsSnapshot()))
+    text = output.getvalue()
+
+    for label in (
+        "Vueltas restantes",
+        "Margen de combustible",
+        "Tasa de desgaste",
+        "Tendencia de ritmo",
+        "Intervalo delante",
+        "Intervalo detrás",
+    ):
+        line = next(line for line in text.splitlines() if label in line)
+        assert "—" in line
+
+
+def test_metrics_update_error_renders_in_spanish() -> None:
+    rendered = render_diagnostic(message("metrics_update_error", error="boom"))
+
+    assert "métricas" in rendered
+    assert "boom" in rendered
