@@ -42,6 +42,7 @@ class _OpenLap:
     flags: set[str] = field(default_factory=set)
     track_statuses: set[str] = field(default_factory=set)
     weathers: set[str] = field(default_factory=set)
+    track_temperature_samples: list[float] = field(default_factory=list)
     pit_entry: bool = False
     pit_exit: bool = False
     pit_lane_time_s: float | None = None
@@ -376,6 +377,7 @@ class LapTracker:
         open_lap.flags.add("flashback")
         open_lap.damage_baseline = _damage_values(car.damage)
         open_lap.damage_max_delta_pct = None
+        open_lap.track_temperature_samples.clear()
         open_lap.traffic_samples = 0
         open_lap.traffic_samples_ahead = 0
         open_lap.traffic_sample_seen = False
@@ -392,6 +394,8 @@ class LapTracker:
             open_lap.track_statuses.add(state.session.safety_car_status)
         if state.session.weather is not None:
             open_lap.weathers.add(state.session.weather)
+        if state.session.track_temperature_c is not None:
+            open_lap.track_temperature_samples.append(state.session.track_temperature_c)
         if self._red_flag_pending:
             open_lap.track_statuses.add("red_flag")
 
@@ -635,6 +639,11 @@ class LapTracker:
             pit_stop_time_s=open_lap.pit_stop_time_s,
             track_status_seen=frozenset(open_lap.track_statuses),
             weather_seen=frozenset(open_lap.weathers),
+            track_temperature_c=(
+                sum(open_lap.track_temperature_samples) / len(open_lap.track_temperature_samples)
+                if open_lap.track_temperature_samples
+                else None
+            ),
             traffic_fraction=traffic_fraction,
             damage_max_delta_pct=open_lap.damage_max_delta_pct,
             flags=frozenset(flags),

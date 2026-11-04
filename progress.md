@@ -60,7 +60,7 @@ Documentos de diseño:
 | --- | --- | --- |
 | 0. Definición y entorno | Parcial | Repo, CI definido, config, receptor y guía de firewall listos. Falta validar la recepción desde otro PC de la red local y en Linux real. |
 | 1. Receptor, parser y estado | Implementada; CI verde | Snapshots inmutables de sesión y coches, daños, frescura por grupo, eventos y resumen de consola. |
-| 2. Métricas e histórico | En curso | Ola 0 (A1--A4), ola 1 (B1--B3) e histórico (C1--C4, incluidas correcciones C2b) implementados; faltan métricas (D), integración (E) y cierre (F). |
+| 2. Métricas e histórico | En curso | A1--A4, B1--B3, histórico C1--C4/C2b y métricas D1--D9 implementados; faltan integración (E) y cierre (F). |
 | 3. Grabación y replay | Parcial | Captura y reemisión UDP listas (se adelantaron en Sprint 1). Falta el replay interno hacia el pipeline y el registro en SQLite. |
 | 4--10 | No iniciadas | |
 
@@ -132,12 +132,22 @@ Documentos de diseño:
     frescura relevantes, conservando el manejo de cambio y fin de sesión.
 -   Validación local Windows tras C2b: `uv run pytest -q` (308 pruebas), `uv run ruff check .`,
     `uv run ruff format --check .`, `uv run pyright` y `git diff --check` pasan.
+-   Implementados D1--D9 como módulos `MetricModule` y registrados en `metrics/registry.py`: progreso,
+    combustible, neumáticos, ritmo, intervalos y comparación con rivales, boxes, ERS, daños y entorno.
+    Las muestras derivadas respetan calidad, frescura y datos faltantes; las ventanas de combustible,
+    neumáticos y ritmo excluyen las vueltas parciales, incompletas o retiradas cuando corresponde.
+-   `LapRecord` conserva la temperatura de pista media observada durante la vuelta para calcular la
+    tendencia por vuelta de D9. La capacidad de ERS y el límite de desgaste siguen sin valores por defecto;
+    las métricas que dependen de ellos quedan `unavailable` hasta configurarlos.
+-   Validación local Windows tras D1--D9: `uv run pytest -q` (351 pruebas), Ruff (lint y formato),
+    Pyright y `git diff --check` pasan.
 
 **No verificado todavía:**
 
 -   C2b usa escenarios sintéticos; falta contrastar con una captura real en F3 el orden de cambio de
     neumáticos, el tiempo de la vuelta final y la ausencia de `damage_change` en vueltas sin incidentes.
--   No se volvió a ejecutar CI de GitHub Actions tras los cambios de C2b.
+-   Las métricas D1--D9 se validaron con escenarios sintéticos; falta calibrarlas con una captura real.
+-   No se volvió a ejecutar CI de GitHub Actions tras los cambios de C2b y D1--D9.
 
 ## 6. Bitácora
 
@@ -254,6 +264,11 @@ Documentos de diseño:
     y hacen que `is_clean` devuelva `False`.
 -   Validación final local: 308 pruebas pasan; Ruff (lint y formato), Pyright y `git diff --check` pasan.
     La validación con captura real y CI queda pendiente.
+-   Implementadas en paralelo las tareas D1--D9 como módulos independientes y registrados: progreso,
+    combustible, neumáticos, ritmo, intervalos/rivales, boxes, ERS, daños y entorno. `GapTracker` aporta
+    muestras de tendencia acotadas; D9 usa la temperatura media por vuelta conservada en `LapRecord`.
+-   Validación local Windows de D1--D9: suite completa con 351 pruebas; Ruff, formato, Pyright y
+    `git diff --check` pasan. Pendientes: integración E1--E4, validación/calibración con captura real y CI.
 
 ## 7. Hallazgos de la primera captura real
 
@@ -395,16 +410,14 @@ uv run f1-strategist replay captures/<archivo>.f1cap --host 127.0.0.1 --port 207
 -   Si el juego envía por broadcast, la app debe escuchar en `0.0.0.0`; en loopback no recibe nada.
 -   Otra aplicación de telemetría usando el puerto 20777 provoca un error claro al abrir el socket.
 
-## 10. Siguiente paso: métricas de la Fase 2
+## 10. Siguiente paso: integración de la Fase 2
 
-La Fase 2 está **en curso**. A1--A4, B1--B3 y el histórico C1--C4 están implementados. El siguiente
-bloque es:
+La Fase 2 está **en curso**. A1--A4, B1--B3, el histórico C1--C4/C2b y las métricas D1--D9 están
+implementados. El siguiente bloque es:
 
-1.  **Métricas:** implementar progreso, combustible, neumáticos, ritmo, intervalos, boxes, ERS, daños y
-    entorno (D1--D9), consumiendo los nuevos campos de `RaceState`.
-2.  **Integración:** añadir `MetricsEngine` y snapshots; integrarlos en la sesión, la consola y la
+1.  **Integración:** añadir `MetricsEngine` y snapshots; integrarlos en la sesión, la consola y la
     exportación JSON/CSV (E1--E4).
-3.  **Validación y cierre:** recortar y anonimizar una captura, incorporar un fixture real cuando esté
+2.  **Validación y cierre:** recortar y anonimizar una captura, incorporar un fixture real cuando esté
     disponible y verificar las tolerancias, invariantes y documentación (F1--F4).
 
 ## 11. Pendientes y decisiones abiertas

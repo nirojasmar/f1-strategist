@@ -65,6 +65,7 @@ class LapRecord:
     pit_stop_time_s: float | None = None
     track_status_seen: frozenset[str] = frozenset()
     weather_seen: frozenset[str] = frozenset()
+    track_temperature_c: float | None = None
     traffic_fraction: float | None = None
     damage_max_delta_pct: float | None = None
     flags: frozenset[str] = frozenset()

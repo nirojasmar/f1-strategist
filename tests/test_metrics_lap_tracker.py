@@ -77,6 +77,7 @@ def _snapshot_with_car(
     total_laps: int | None = 5,
     ended: bool = False,
     red_flag_periods: int | None = 0,
+    track_temperature_c: float | None = None,
     freshness_updates: Mapping[str, float] | None = None,
 ) -> RaceStateSnapshot:
     snapshot = RaceState().snapshot()
@@ -95,6 +96,7 @@ def _snapshot_with_car(
             total_laps=total_laps,
             ended=ended,
             red_flag_periods=red_flag_periods,
+            track_temperature_c=track_temperature_c,
         ),
         cars=tuple(cars),
         freshness=freshness,
@@ -674,3 +676,36 @@ def test_missing_samples_remain_none_in_closed_record() -> None:
     assert record.ers_deployed_j is None
     assert record.traffic_fraction is None
     assert record.damage_max_delta_pct is None
+
+
+def test_closed_lap_records_mean_track_temperature() -> None:
+    tracker = LapTracker(config=MetricsConfig())
+    tracker.observe(
+        _snapshot_with_car(
+            CarSnapshot(car_index=0, current_lap=2, current_lap_time_ms=10_000),
+            track_temperature_c=30.0,
+            freshness_updates={"lap_data": 1.0, "session": 1.0},
+        ),
+        1.0,
+    )
+    tracker.observe(
+        _snapshot_with_car(
+            CarSnapshot(car_index=0, current_lap=2, current_lap_time_ms=20_000),
+            track_temperature_c=32.0,
+            freshness_updates={"lap_data": 2.0, "session": 2.0},
+        ),
+        2.0,
+    )
+    tracker.observe(
+        _snapshot_with_car(
+            CarSnapshot(car_index=0, current_lap=3, current_lap_time_ms=1_000),
+            track_temperature_c=34.0,
+            freshness_updates={"lap_data": 3.0, "session": 3.0},
+        ),
+        3.0,
+    )
+
+    record = tracker.history.get(0, 2)
+
+    assert record is not None
+    assert record.track_temperature_c == 31.0
