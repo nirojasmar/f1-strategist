@@ -42,6 +42,9 @@ class _OpenLap:
     flags: set[str] = field(default_factory=set)
     track_statuses: set[str] = field(default_factory=set)
     weathers: set[str] = field(default_factory=set)
+    track_temperature_sum_c: float = 0.0
+    track_temperature_sample_count: int = 0
+    last_track_temperature_sample_at: float | None = None
     pit_entry: bool = False
     pit_exit: bool = False
     pit_lane_time_s: float | None = None
@@ -222,7 +225,7 @@ class LapTracker:
                     del self._open_laps[index]
                 continue
 
-            self._update_lap(open_lap, car, previous, state)
+            self._update_lap(open_lap, car, previous, state, now)
             if car.result_status == "retired":
                 self._finish_retired_lap(open_lap, car, now)
                 del self._open_laps[index]
@@ -307,7 +310,7 @@ class LapTracker:
             open_lap.flags.add("partial_lap")
         if previous is not None:
             open_lap.damage_baseline = _damage_values(previous.damage)
-        self._add_session_context(open_lap, state)
+        self._add_session_context(open_lap, state, now)
         self._update_pit(open_lap, car, previous)
         self._update_traffic(open_lap, car, state)
         self._update_damage(open_lap, car)
@@ -322,6 +325,7 @@ class LapTracker:
         car: CarSnapshot,
         previous: CarSnapshot | None,
         state: RaceStateSnapshot,
+        now: float,
     ) -> None:
         if self._tyres_changed(car, previous):
             open_lap.start_tyre_age = 0
@@ -345,7 +349,7 @@ class LapTracker:
         if self._is_in_lap_flashback(car, previous):
             self._reset_lap_accumulators(open_lap, car)
 
-        self._add_session_context(open_lap, state)
+        self._add_session_context(open_lap, state, now)
         self._update_pit(open_lap, car, previous)
         self._update_traffic(open_lap, car, state)
         self._update_damage(open_lap, car)
@@ -376,6 +380,8 @@ class LapTracker:
         open_lap.flags.add("flashback")
         open_lap.damage_baseline = _damage_values(car.damage)
         open_lap.damage_max_delta_pct = None
+        open_lap.track_temperature_sum_c = 0.0
+        open_lap.track_temperature_sample_count = 0
         open_lap.traffic_samples = 0
         open_lap.traffic_samples_ahead = 0
         open_lap.traffic_sample_seen = False
@@ -387,11 +393,23 @@ class LapTracker:
         self,
         open_lap: _OpenLap,
         state: RaceStateSnapshot,
+        now: float,
     ) -> None:
         if state.session.safety_car_status is not None:
             open_lap.track_statuses.add(state.session.safety_car_status)
         if state.session.weather is not None:
             open_lap.weathers.add(state.session.weather)
+        freshness = state.freshness_for("session")
+        sample_at = freshness.updated_at_monotonic
+        if (
+            state.session.track_temperature_c is not None
+            and sample_at is not None
+            and not freshness.is_stale(now)
+            and sample_at != open_lap.last_track_temperature_sample_at
+        ):
+            open_lap.track_temperature_sum_c += state.session.track_temperature_c
+            open_lap.track_temperature_sample_count += 1
+            open_lap.last_track_temperature_sample_at = sample_at
         if self._red_flag_pending:
             open_lap.track_statuses.add("red_flag")
 
@@ -554,7 +572,7 @@ class LapTracker:
                 continue
             car = state.cars[car_index]
             previous = self._last_cars[car_index] if car_index < len(self._last_cars) else None
-            self._update_lap(open_lap, car, previous, state)
+            self._update_lap(open_lap, car, previous, state, now)
             lap_time_s = (
                 car.current_lap_time_ms / 1000.0 if car.current_lap_time_ms is not None else None
             )
@@ -635,6 +653,11 @@ class LapTracker:
             pit_stop_time_s=open_lap.pit_stop_time_s,
             track_status_seen=frozenset(open_lap.track_statuses),
             weather_seen=frozenset(open_lap.weathers),
+            track_temperature_c=(
+                open_lap.track_temperature_sum_c / open_lap.track_temperature_sample_count
+                if open_lap.track_temperature_sample_count
+                else None
+            ),
             traffic_fraction=traffic_fraction,
             damage_max_delta_pct=open_lap.damage_max_delta_pct,
             flags=frozenset(flags),

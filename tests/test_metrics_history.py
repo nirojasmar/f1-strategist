@@ -204,7 +204,17 @@ def test_metric_module_is_a_runtime_checkable_protocol() -> None:
             return ()
 
     assert isinstance(DummyModule(), MetricModule)
-    assert METRIC_MODULES == ()
+    assert tuple(module.name for module in METRIC_MODULES) == (
+        "progress",
+        "fuel",
+        "tyres",
+        "pace",
+        "gap",
+        "pit",
+        "ers",
+        "damage",
+        "environment",
+    )
 
 
 def test_lap_record_fields_can_be_updated_with_replace() -> None:
