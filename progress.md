@@ -1,6 +1,6 @@
 # Progreso del proyecto --- F1 Strategist
 
-**Última actualización:** 2026-11-03
+**Última actualización:** 2026-11-04
 **Propósito de este archivo:** llevar trazabilidad del avance importante y dejar el contexto
 necesario para que cualquier persona o agente que llegue al proyecto entienda dónde estamos, qué
 está decidido, qué está verificado y qué falta.
@@ -52,7 +52,7 @@ Documentos de diseño:
 | Receptor UDP | Hilo dedicado con socket bloqueante y cola acotada | Decisión cerrada; `overall_frame_identifier`, cadencia observada y retención limitada |
 | Formato `.f1cap` v1 | Definido en `src/f1_strategist/capture.py` | Implementado en Sprint 1 |
 | Parser | Registro de decodificadores `struct` precompilados; modelos inmutables | Nueve tipos; formato 2025, año 25, juego 1.x y paquete v1; otras versiones menores se avisan y requieren tamaño exacto |
-| Estado de carrera | Un consumidor escritor publica snapshots inmutables | Sesión (entorno, pronóstico, safety car), coches (tiempos, intervalos, boxes, combustible/ERS, neumáticos), frescura por grupo y eventos; las métricas derivadas quedan en Fase 2 |
+| Estado de carrera | Un consumidor escritor publica snapshots inmutables | Sesión (entorno, pronóstico, safety car), coches (tiempos, intervalos, boxes, combustible/ERS, neumáticos), frescura por grupo y eventos. El motor de métricas integrado publica snapshots inmutables para consola y exportación |
 
 ## 4. Estado por fase del roadmap
 
@@ -60,7 +60,7 @@ Documentos de diseño:
 | --- | --- | --- |
 | 0. Definición y entorno | Parcial | Repo, CI definido, config, receptor y guía de firewall listos. Falta validar la recepción desde otro PC de la red local y en Linux real. |
 | 1. Receptor, parser y estado | Implementada; CI verde | Snapshots inmutables de sesión y coches, daños, frescura por grupo, eventos y resumen de consola. |
-| 2. Métricas e histórico | En curso | A1--A4, B1--B3, histórico C1--C4/C2b y métricas D1--D9 implementados; faltan integración (E) y cierre (F). |
+| 2. Métricas e histórico | En curso | A1--A4, B1--B3, histórico C1--C4/C2b, métricas D1--D9 e integración E1--E4 implementados; review Ola 4 corregida. Falta el cierre y la validación con captura real (F2--F4). |
 | 3. Grabación y replay | Parcial | Captura y reemisión UDP listas (se adelantaron en Sprint 1). Falta el replay interno hacia el pipeline y el registro en SQLite. |
 | 4--10 | No iniciadas | |
 
@@ -68,7 +68,8 @@ Documentos de diseño:
 
 **Verificado:**
 
--   La suite `pytest` (221 pruebas), Ruff (lint y formato) y Pyright pasan en Windows (2026-11-03).
+-   La suite `pytest` (401 pruebas funcionales y 1 benchmark excluido por defecto), Ruff (lint y formato) y
+    Pyright pasan en Windows (2026-11-04).
 -   CI de GitHub Actions exitoso para `phase-1-udp-parser`, commit `096eceb`, en Ubuntu y Windows; también
     pasaron Ruff (lint y formato) y Pyright (2026-11-02).
 -   El consumidor único aplica los paquetes parseados al estado y publica snapshots inmutables; la frescura
@@ -152,14 +153,37 @@ Documentos de diseño:
 -   Validación local Windows tras la review: `uv run --group dev pytest -q` (370 pruebas),
     `uv run --group dev ruff check .`, `uv run --group dev ruff format --check .` (70 archivos),
     `uv run --group dev pyright` (0 errores/avisos) y `git diff --check` pasan.
+-   E1: `MetricsEngine` alimenta `LapTracker` e ingiere `SessionHistory`; publica `MetricsSnapshot`
+    inmutables al cambiar de vuelta o sesión y como máximo cada `publish_interval_s`. Cada módulo se
+    ejecuta aislado y un fallo produce una métrica `unavailable` sin detener al resto. El benchmark
+    sintético de `apply` queda marcado y separado de la suite funcional.
+-   E2: `CaptureSession` actualiza las métricas después de aplicar cada paquete al estado y expone
+    `metrics_snapshot()` también en `SessionPort`. Un fallo del motor se registra como
+    `metrics_update_error` sin afectar al consumidor, la captura ni el estado de carrera.
+-   E3: panel `Métricas` con vueltas restantes, margen de combustible, tasa de desgaste, tendencia de
+    ritmo e intervalos delante y detrás. Los ausentes se muestran como `—`; se distinguen las calidades
+    y las filas dependientes de telemetría viva pasan a `stale` cuando `lap_data` envejece. Los fallos
+    de módulo se muestran con su nombre y tipo de excepción.
+-   E4: exportación JSON (`schema_version: 1`), JSON Lines y CSV, con unidades, ventanas y calidad por
+    métrica; una fila por coche y vuelta en los formatos tabulares. El comando
+    `f1-strategist metrics CAPTURA [--out ARCHIVO] [--format json|jsonl|csv]` usa el runner offline y
+    está documentado en `docs/exportacion_metricas.md`.
+-   Aplicadas las correcciones de `review_fase_2_ola_4.md` (O4-1--O4-10): protección contra
+    sobrescribir la captura o la configuración, publicación final tras la ingesta oficial, inclusión
+    de la vuelta final confirmada en ritmo, ausencia explícita de piloto, módulos con estado por motor,
+    frescura efectiva en el panel, avisos por truncamiento/rechazos, diagnóstico visible de módulos
+    fallidos, salida estándar UTF-8 y CSV con saltos de línea LF también en archivo.
+-   Validación local Windows tras E1--E4 y la review: `uv run pytest -q` (401 pruebas funcionales y
+    1 benchmark excluido), `uv run pytest -q -m benchmark` (1 prueba), `uv run ruff check .`,
+    `uv run ruff format --check .` (77 archivos) y `uv run pyright` (0 errores/avisos) pasan.
 
 **No verificado todavía:**
 
 -   C2b usa escenarios sintéticos; falta contrastar con una captura real en F3 el orden de cambio de
     neumáticos, el tiempo de la vuelta final y la ausencia de `damage_change` en vueltas sin incidentes.
 -   Las métricas D1--D9 se validaron con escenarios sintéticos; falta calibrarlas con una captura real.
--   No se validó todavía la integración E1--E4 ni se volvió a ejecutar CI de GitHub Actions tras las
-    correcciones de esta review.
+-   La integración E1--E4 está validada localmente con escenarios sintéticos. Siguen pendientes la
+    validación con captura real (F3) y volver a ejecutar CI de GitHub Actions después de la Ola 4.
 
 ## 6. Bitácora
 
@@ -282,6 +306,35 @@ Documentos de diseño:
 -   Validación local Windows de D1--D9: suite completa con 351 pruebas; Ruff, formato, Pyright y
     `git diff --check` pasan. Pendientes: integración E1--E4, validación/calibración con captura real y CI.
 
+### 2026-11-04
+
+-   Implementada E1: `MetricsEngine` alimenta `LapTracker`, ingiere `SessionHistory` y publica
+    `MetricsSnapshot` inmutables al cambiar de vuelta o sesión y como máximo cada `publish_interval_s`.
+    Cada motor crea sus propios módulos, los fallos se aíslan por módulo y el benchmark de `apply` queda
+    marcado y separado de la suite funcional.
+-   Implementada E2: `CaptureSession` actualiza las métricas después de aplicar el estado y expone
+    `metrics_snapshot()` también en `SessionPort`. Un fallo del motor se registra como
+    `metrics_update_error` sin afectar al consumidor, la captura ni el estado de carrera.
+-   Implementada E3: panel `Métricas` con vueltas restantes, margen de combustible, tasa de desgaste,
+    tendencia de ritmo e intervalos delante y detrás. Los datos ausentes se muestran como `—`, las
+    calidades se distinguen y las métricas de telemetría viva pasan a `stale` cuando `lap_data` envejece.
+    Los fallos de módulo se muestran con su nombre y tipo de excepción.
+-   Implementada E4: exportación JSON (`schema_version: 1`), JSON Lines y CSV con unidades, ventanas y
+    calidad por métrica; una fila por coche y vuelta en los formatos tabulares. El comando
+    `f1-strategist metrics CAPTURA [--out ARCHIVO] [--format json|jsonl|csv]` usa el runner offline y
+    está documentado en `docs/exportacion_metricas.md`. La salida estándar es UTF-8 y los archivos CSV
+    conservan saltos de línea LF.
+-   Aplicadas las correcciones de `review_fase_2_ola_4.md` (O4-1--O4-10): protección contra sobrescribir
+    la captura o la configuración, publicación final tras la ingesta oficial, inclusión de la vuelta
+    final confirmada en ritmo, ausencia explícita de piloto, módulos con estado por motor, frescura
+    efectiva en el panel, avisos por truncamiento o rechazos del parser y diagnóstico visible de módulos
+    fallidos.
+-   Validación local Windows: `uv run pytest -q` (401 pruebas funcionales y 1 benchmark excluido),
+    `uv run pytest -q -m benchmark` (1 prueba), `uv run ruff check .`,
+    `uv run ruff format --check .` (77 archivos) y `uv run pyright` (0 errores/avisos) pasan.
+-   Los cambios de E1--E4 y de la review están en el árbol de trabajo de la rama
+    `f2-wave-4-integration`, sin commit. El panel de estado de carrera existente no cambia.
+
 ## 7. Hallazgos de la primera captura real
 
 Captura: 68 541 paquetes, ~66 MB, 795,5 s entre el primer y el último paquete. Salida de `inspect`:
@@ -395,7 +448,8 @@ src/f1_strategist/
   replay.py       Reemisión de una captura por UDP respetando los tiempos
   summary.py      Resumen de una captura (comando inspect)
   console.py      Panel de consola con Rich (solo presentación)
-  cli.py          Comandos run, replay e inspect
+  cli.py          Comandos run, replay, inspect, trim y metrics
+  metrics/        Tipos, configuración, histórico, módulos D, motor y exportación
 tests/            Pruebas unitarias y de extremo a extremo (replay -> receptor -> captura)
 config/config.example.toml   Ejemplo de configuración
 ```
@@ -409,6 +463,7 @@ uv run ruff check . && uv run ruff format --check . && uv run pyright
 uv run f1-strategist run --listen-address 0.0.0.0   # recibir y grabar
 uv run f1-strategist inspect captures/<archivo>.f1cap
 uv run f1-strategist replay captures/<archivo>.f1cap --host 127.0.0.1 --port 20777
+uv run f1-strategist metrics captures/<archivo>.f1cap --format json
 ```
 
 ## 9. Notas técnicas para agentes
@@ -422,15 +477,14 @@ uv run f1-strategist replay captures/<archivo>.f1cap --host 127.0.0.1 --port 207
 -   Si el juego envía por broadcast, la app debe escuchar en `0.0.0.0`; en loopback no recibe nada.
 -   Otra aplicación de telemetría usando el puerto 20777 provoca un error claro al abrir el socket.
 
-## 10. Siguiente paso: integración de la Fase 2
+## 10. Siguiente paso: validación y cierre de la Fase 2
 
-La Fase 2 está **en curso**. A1--A4, B1--B3, el histórico C1--C4/C2b y las métricas D1--D9 están
-implementados. El siguiente bloque es:
+La Fase 2 está **en curso**. A1--A4, B1--B3, el histórico C1--C4/C2b, las métricas D1--D9 y la
+integración E1--E4 están implementados, incluida la review de la Ola 4. El siguiente bloque es:
 
-1.  **Integración:** añadir `MetricsEngine` y snapshots; integrarlos en la sesión, la consola y la
-    exportación JSON/CSV (E1--E4).
-2.  **Validación y cierre:** recortar y anonimizar una captura, incorporar un fixture real cuando esté
-    disponible y verificar las tolerancias, invariantes y documentación (F1--F4).
+1.  **Validación con captura real:** recortar y anonimizar una captura, incorporar un fixture real
+    cuando esté disponible y revisar tolerancias e invariantes (F2--F3).
+2.  **Cierre:** actualizar la documentación y `progress.md`, y volver a ejecutar CI (F4).
 
 ## 11. Pendientes y decisiones abiertas
 
@@ -440,7 +494,8 @@ implementados. El siguiente bloque es:
 -   Esquema de SQLite; modelo local concreto del LLM; voz; framework del front-end de la GUI;
     empaquetado de escritorio; fórmulas de degradación y simulación de paradas; umbrales iniciales;
     idioma por defecto y cambio en caliente.
--   Registrar en `docs/` hallazgos adicionales de nuevas capturas y validación de CI.
+-   Registrar hallazgos de nuevas capturas y ejecutar CI de GitHub Actions después de la Ola 4; la
+    calibración con captura real sigue pendiente.
 
 ### 2026-11-02
 
