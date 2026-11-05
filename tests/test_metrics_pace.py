@@ -90,11 +90,24 @@ def test_dirty_last_lap_is_reported_but_excluded_from_clean_samples() -> None:
     metrics = _by_key(PaceMetrics().compute(_inputs(records)))
 
     assert metrics["pace.last_lap_s"].value == 99.0
-    assert metrics["pace.best_lap_s"].value == 91.0
+    assert metrics["pace.best_lap_s"].value == 90.0
     assert metrics["pace.clean_mean_s"].value == pytest.approx(92.0)
     assert metrics["pace.clean_laps_used"].value == 3
     assert metrics["pace.trend_s_per_lap"].value == 1.0
     assert metrics["pace.trend_s_per_lap"].quality is Quality.LOW
+
+
+def test_best_lap_includes_valid_official_lap_with_traffic() -> None:
+    records = (
+        _record(2, 90.0),
+        _record(3, 80.863, traffic=0.8),
+        _record(4, 91.0),
+    )
+
+    metrics = _by_key(PaceMetrics().compute(_inputs(records)))
+
+    assert metrics["pace.best_lap_s"].value == 80.863
+    assert metrics["pace.clean_mean_s"].sample_count == 2
 
 
 @pytest.mark.parametrize("flag", ["partial_lap", "incomplete", "retired"])

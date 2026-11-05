@@ -231,20 +231,37 @@ asumir que un dato ausente equivale a cero.
 ### 3.4 Metrics / Feature Engine
 
 Transforma telemetría de bajo nivel en variables útiles para la
-estrategia.
+estrategia. La implementación vive en `src/f1_strategist/metrics/` y se
+organiza en tres capas:
 
-Ejemplos: - Consumo medio y variabilidad de combustible por vuelta. -
-Margen proyectado de combustible al final. - Desgaste y edad de
-neumáticos. - Ritmo limpio estimado y tendencia de degradación. -
-Diferencia con rivales y cambio de intervalo. - Tiempo de parada
-estimado. - Estado de ERS y oportunidades de uso. - Tendencia de daños o
-pérdida de rendimiento.
+-   **Histórico (`LapRecord` y `LapHistory`):** una entrada inmutable por
+    coche y vuelta, con tiempos oficiales de `SessionHistory`, sectores,
+    combustible, desgaste de las cuatro ruedas, edad y compuesto de
+    neumático, posiciones, intervalos, ERS, boxes, clima, tráfico, daños
+    y banderas de comparabilidad. `LapTracker` cierra las vueltas a
+    partir de las transiciones del estado y `LapHistory` conserva los
+    stints por coche.
+-   **Módulos de métricas:** progreso, combustible, neumáticos, ritmo,
+    intervalos, boxes, ERS, daños y entorno. Cada módulo implementa
+    `MetricModule.compute(inputs)`; `create_metric_modules()` es el punto de
+    registro que usa `MetricsEngine` y crea una instancia independiente por motor.
+-   **Motor (`MetricsEngine`):** alimenta el histórico, ingiere
+    `SessionHistory`, ejecuta los módulos y publica un
+    `MetricsSnapshot` inmutable. Recalcula al cambiar de vuelta o de
+    sesión y como máximo cada `publish_interval_s`. Un fallo en un módulo
+    se aísla como métrica `unavailable`; no detiene al resto.
 
-Cada métrica debería tener: - Valor y unidad. - Ventana de cálculo. -
-Timestamp. - Calidad o confianza. - Datos de entrada relevantes.
+Cada `Metric` incluye clave, valor, unidad, ventana, número de muestras,
+instante de cálculo, calidad (`ok`, `low`, `stale`, `insufficient` o
+`unavailable`), fuentes y notas. Los datos ausentes se representan como
+`None`, nunca como cero inventado. La frescura se deriva de los grupos de
+paquetes del estado y la consola degrada a `stale` las métricas que
+dependen de telemetría viva cuando dejan de llegar actualizaciones.
 
 Evitar comparar vueltas que no sean comparables sin marcar factores como
-tráfico, compuesto, edad del neumático o condiciones cambiantes.
+tráfico, compuesto, edad del neumático, daños, safety car o condiciones
+cambiantes. El motor exporta el snapshot a JSON y el histórico a JSON
+Lines o CSV mediante el comando `f1-strategist metrics`.
 
 ### 3.5 Strategy Engine
 
@@ -553,40 +570,89 @@ se exportan como JSON Schema (sección 2.3).
 
 ### Ejemplo de snapshot estratégico
 
+El comando `f1-strategist metrics CAPTURA --format json` exporta el
+`MetricsSnapshot` publicado al final del replay. El contrato es estable
+y lleva `schema_version: 1`; cada métrica incluye valor, unidad,
+calidad, ventana, número de muestras, instante de cálculo, fuentes y
+notas. El siguiente ejemplo es ilustrativo: sus valores no representan
+una salida real de Monza ni validan tolerancias:
+
 ``` json
 {
-  "session": {
-    "lap": 24,
-    "laps_remaining": 18,
-    "safety_car": false
-  },
-  "player": {
-    "position": 4,
-    "tyre_compound": "medium",
-    "tyre_age_laps": 12,
-    "fuel_margin_laps": 0.8,
-    "pace_trend": "degrading"
-  },
-  "opponent": {
-    "name": "Hamilton",
-    "gap_seconds": 1.8,
-    "gap_trend": "closing"
-  },
-  "strategy": {
-    "current_plan": "medium-hard",
-    "best_alternative": "pit_now",
-    "estimated_gain_seconds": 2.4,
-    "confidence": 0.78
-  },
-  "trigger": {
-    "type": "strategy_change",
-    "reason": "material_advantage"
+  "schema_version": 1,
+  "session_uid": 1,
+  "computed_at_monotonic": 1139.389,
+  "metrics": {
+    "progress.laps_completed": {
+      "value": 13,
+      "unit": "lap",
+      "quality": "ok",
+      "window": {"kind": "instant", "size": null},
+      "sample_count": 1,
+      "computed_at_monotonic": 1139.389,
+      "sources": ["lap_data"],
+      "notes": []
+    },
+    "fuel.consumption_per_lap": {
+      "value": 1.68287,
+      "unit": "kg/lap",
+      "quality": "ok",
+      "window": {"kind": "laps", "size": 5},
+      "sample_count": 5,
+      "computed_at_monotonic": 1139.389,
+      "sources": ["lap_history", "car_status"],
+      "notes": []
+    },
+    "tyres.wear_rate_pct_per_lap": {
+      "value": 2.792857,
+      "unit": "%/lap",
+      "quality": "stale",
+      "window": {"kind": "stint", "size": null},
+      "sample_count": 4,
+      "computed_at_monotonic": 1139.389,
+      "sources": ["car_damage", "car_status", "lap_data"],
+      "notes": []
+    },
+    "pace.last_lap_s": {
+      "value": 84.203,
+      "unit": "s",
+      "quality": "stale",
+      "window": {"kind": "instant", "size": null},
+      "sample_count": 1,
+      "computed_at_monotonic": 1139.389,
+      "sources": ["lap_history", "lap_data", "session_history"],
+      "notes": []
+    },
+    "gap.ahead_s": {
+      "value": 0.883,
+      "unit": "s",
+      "quality": "ok",
+      "window": {"kind": "instant", "size": null},
+      "sample_count": 1,
+      "computed_at_monotonic": 1139.389,
+      "sources": ["race_state", "lap_data"],
+      "notes": []
+    },
+    "env.weather": {
+      "value": "overcast",
+      "unit": "",
+      "quality": "ok",
+      "window": {"kind": "instant", "size": null},
+      "sample_count": 1,
+      "computed_at_monotonic": 1139.389,
+      "sources": ["session"],
+      "notes": []
+    }
   }
 }
 ```
 
-Ejemplo ilustrativo; los campos finales dependerán de los paquetes y
-métricas implementados.
+El ejemplo omite el resto de familias (`pit`, `ers`, `damage`, `track`,
+etc.), que aparecen en la misma colección. Los formatos `jsonl` y `csv`
+exportan otra vista: una fila por coche y vuelta con los campos de
+`LapRecord`, incluidos tiempos oficiales, sectores, combustible,
+desgaste, posiciones, intervalos, ERS, boxes, clima y banderas de
+comparabilidad.
 
 ## 6. Consideraciones de rendimiento y concurrencia
 

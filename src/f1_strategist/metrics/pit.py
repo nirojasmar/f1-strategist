@@ -10,7 +10,9 @@ from .history import LapRecord, MetricInputs
 from .types import Metric, Quality, Window, insufficient
 
 _SAFETY_FLAGS = frozenset({"safety_car", "virtual_safety_car", "red_flag"})
-_INELIGIBLE_STOP_FLAGS = frozenset({"incomplete", "partial_lap", "retired", "invalid", "flashback"})
+_INELIGIBLE_STOP_FLAGS = frozenset(
+    {"incomplete", "partial_lap", "telemetry_partial", "retired", "invalid", "flashback"}
+)
 # Field-wide evidence needs at least three observed stops to be considered representative.
 _MIN_FIELD_STOPS = 3
 

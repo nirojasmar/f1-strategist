@@ -99,7 +99,7 @@ class ERSMetrics:
             record
             for record in inputs.history.records_for(inputs.car_index)
             if record.closed
-            and not {"incomplete", "partial_lap", "retired"} & record.flags
+            and not {"incomplete", "partial_lap", "telemetry_partial", "retired"} & record.flags
             and "invalid" not in classify_lap(record, inputs.config)
         )
         latest = records[-1] if records else None

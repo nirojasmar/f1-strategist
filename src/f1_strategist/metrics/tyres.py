@@ -300,7 +300,12 @@ def _current_stint_clean_samples(
         ):
             continue
         flags = classify_lap(record, inputs.config)
-        if not is_clean(flags) or {"partial_lap", "incomplete", "retired"} & record.flags:
+        if not is_clean(flags) or {
+            "partial_lap",
+            "incomplete",
+            "telemetry_partial",
+            "retired",
+        } & record.flags:
             continue
         samples.append(record)
     return tuple(samples)
