@@ -15,6 +15,8 @@ from . import __version__
 from .capture import CaptureError
 from .config import ConfigError, apply_overrides, load_config
 from .console import format_bytes, run_console
+from .metrics.export import EXPORT_FORMATS, render_metrics_export, run_metrics_capture
+from .offline import OfflineResult
 from .packets import packet_name
 from .receiver import ReceiverError
 from .replay import replay_capture
@@ -86,6 +88,17 @@ def _build_parser() -> argparse.ArgumentParser:
 
     inspect = sub.add_parser("inspect", help="resume el contenido de una captura")
     inspect.add_argument("file", type=Path)
+
+    metrics = sub.add_parser("metrics", help="calcula y exporta métricas de una captura")
+    metrics.add_argument("file", type=Path, help="captura de entrada (.f1cap o .f1cap.gz)")
+    metrics.add_argument("--out", type=Path, help="archivo de salida (por defecto, stdout)")
+    metrics.add_argument(
+        "--format",
+        default="json",
+        metavar="FORMATO",
+        help=f"formato de salida: {', '.join(EXPORT_FORMATS)}",
+    )
+    metrics.add_argument("--config", type=Path, help="archivo TOML de configuración")
 
     trim = sub.add_parser("trim", help="recorta y opcionalmente anonimiza una captura")
     trim.add_argument("input", type=Path, help="captura de entrada (.f1cap o .f1cap.gz)")
@@ -206,6 +219,64 @@ def _cmd_inspect(args: argparse.Namespace, console: Console, err: Console) -> in
     return 0
 
 
+def _cmd_metrics(args: argparse.Namespace, console: Console, err: Console) -> int:
+    export_format = args.format.lower()
+    if export_format not in EXPORT_FORMATS:
+        valid = ", ".join(EXPORT_FORMATS)
+        raise ValueError(f"Formato de exportación no válido: {args.format!r}; usa {valid}")
+    if args.out is not None:
+        protected = [args.file]
+        if args.config is not None:
+            protected.append(args.config)
+        if any(_same_file(args.out, path) for path in protected):
+            raise ValueError("La salida no puede sobrescribir la captura ni la configuración.")
+    cfg = load_config(args.config)
+    result = run_metrics_capture(args.file, cfg.metrics)
+    _warn_offline_issues(result.offline, err)
+    output = render_metrics_export(result.snapshot, result.history, export_format)
+    if args.out is None:
+        _write_stdout(output)
+    else:
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        with args.out.open("w", encoding="utf-8", newline="") as handle:
+            handle.write(output)
+        console.print(f"Métricas exportadas en {args.out}")
+    return 0
+
+
+def _same_file(left: Path, right: Path) -> bool:
+    try:
+        return left.resolve() == right.resolve()
+    except OSError:
+        return False
+
+
+def _warn_offline_issues(offline: OfflineResult, err: Console) -> None:
+    if offline.truncated:
+        err.print("[yellow]Aviso:[/] La captura termina con un registro incompleto.")
+    rejections = sum(offline.parser_rejections.values())
+    if rejections:
+        err.print(f"[yellow]Aviso:[/] {rejections} paquete(s) rechazado(s) por el parser.")
+    if offline.packets_parsed == 0:
+        err.print("[yellow]Aviso:[/] La captura no contiene paquetes válidos.")
+
+
+def _write_stdout(text: str) -> None:
+    reconfigure = getattr(sys.stdout, "reconfigure", None)
+    if reconfigure is not None:
+        try:
+            reconfigure(encoding="utf-8")
+        except OSError:
+            reconfigure = None
+    if reconfigure is None:
+        buffer = getattr(sys.stdout, "buffer", None)
+        if buffer is not None:
+            buffer.write(text.encode("utf-8"))
+            buffer.flush()
+            return
+    sys.stdout.write(text)
+
+
 def _cmd_trim(args: argparse.Namespace, console: Console, err: Console) -> int:
     packet_types = frozenset().union(*args.types) if args.types else None
     decimate: dict[int, int] = {}
@@ -243,6 +314,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "run": _cmd_run,
         "replay": _cmd_replay,
         "inspect": _cmd_inspect,
+        "metrics": _cmd_metrics,
         "trim": _cmd_trim,
     }
     try:

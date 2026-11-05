@@ -13,16 +13,22 @@ from .pit import PitMetrics
 from .progress import ProgressMetrics
 from .tyres import TyreMetrics
 
-METRIC_MODULES: tuple[MetricModule, ...] = (
-    ProgressMetrics(),
-    FuelMetrics(),
-    TyreMetrics(),
-    PaceMetrics(),
-    GapMetrics(),
-    PitMetrics(),
-    ERSMetrics(),
-    DamageMetrics(),
-    EnvironmentMetrics(),
-)
 
-__all__ = ["METRIC_MODULES"]
+def create_metric_modules() -> tuple[MetricModule, ...]:
+    """Crea módulos nuevos para que cada motor tenga su propio estado."""
+    return (
+        ProgressMetrics(),
+        FuelMetrics(),
+        TyreMetrics(),
+        PaceMetrics(),
+        GapMetrics(),
+        PitMetrics(),
+        ERSMetrics(),
+        DamageMetrics(),
+        EnvironmentMetrics(),
+    )
+
+
+METRIC_MODULES: tuple[MetricModule, ...] = create_metric_modules()
+
+__all__ = ["METRIC_MODULES", "create_metric_modules"]

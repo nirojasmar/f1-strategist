@@ -37,7 +37,10 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-ra"
+addopts = "-ra -m 'not benchmark'"
+markers = [
+    "benchmark: mediciones de rendimiento no ejecutadas en la suite funcional",
+]
 
 [tool.pyright]
 include = ["src", "tests"]
