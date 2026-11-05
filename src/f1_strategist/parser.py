@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import struct
+from collections import Counter
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, fields, is_dataclass
 from types import MappingProxyType
@@ -42,6 +43,16 @@ class PacketSizeError(PacketParseError):
 class ParseIssue:
     code: str
     parameters: tuple[tuple[str, str | int | float], ...] = ()
+
+
+_MAX_PARSER_REJECTION_MESSAGES = 16
+_OTHER_PARSER_REJECTIONS = "other_parser_rejections_limited"
+
+
+def record_parser_rejection(rejections: Counter[ParseIssue], issue: ParseIssue) -> None:
+    if issue not in rejections and len(rejections) >= _MAX_PARSER_REJECTION_MESSAGES:
+        issue = ParseIssue(_OTHER_PARSER_REJECTIONS)
+    rejections[issue] += 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -988,6 +999,16 @@ _SESSION_MIDDLE = struct.Struct("<BBB")
 _MARSHAL_ZONE = struct.Struct("<fb")
 _FORECAST = struct.Struct("<BBBbbbbB")
 _SESSION_TAIL = struct.Struct("<BBIII14BI33B12Bff")
+_SESSION_TAIL_OFFSET = (
+    HEADER_SIZE
+    + _SESSION_PREFIX.size
+    + 21 * _MARSHAL_ZONE.size
+    + _SESSION_MIDDLE.size
+    + 64 * _FORECAST.size
+)
+SESSION_LINK_IDENTIFIER_OFFSETS = tuple(
+    _SESSION_TAIL_OFFSET + struct.calcsize("<BB") + offset for offset in (0, 4, 8)
+)
 _LAP_CAR = struct.Struct("<IIHBHBHBHBfff15BHHBfB")
 _PARTICIPANT = struct.Struct("<7B32sBBHBB12s")
 _LIVERY_COLOUR = struct.Struct("<BBB")
@@ -1563,6 +1584,24 @@ PACKET_DECODERS: Mapping[int, PacketDecoder] = MappingProxyType(
         12: PacketDecoder(HEADER_SIZE + 2 + 20 * _TYRE_SET.size, _parse_tyre_sets),
     }
 )
+
+SUPPORTED_HEADER_VERSION = (2025, 25, 1, 1)
+
+
+def is_ignored_by_design(header: PacketHeader) -> bool:
+    return (
+        0 <= header.packet_id <= 15
+        and header.packet_id not in PACKET_DECODERS
+        and (
+            header.packet_format,
+            header.game_year,
+            header.game_major_version,
+            header.packet_version,
+        )
+        == SUPPORTED_HEADER_VERSION
+    )
+
+
 SUPPORTED_PACKET_SIZES: Mapping[int, int] = MappingProxyType(
     {packet_id: decoder.size for packet_id, decoder in PACKET_DECODERS.items()}
 )

@@ -1,6 +1,6 @@
 # Progreso del proyecto --- F1 Strategist
 
-**Última actualización:** 2026-11-02
+**Última actualización:** 2026-11-05
 **Propósito de este archivo:** llevar trazabilidad del avance importante y dejar el contexto
 necesario para que cualquier persona o agente que llegue al proyecto entienda dónde estamos, qué
 está decidido, qué está verificado y qué falta.
@@ -52,7 +52,7 @@ Documentos de diseño:
 | Receptor UDP | Hilo dedicado con socket bloqueante y cola acotada | Decisión cerrada; `overall_frame_identifier`, cadencia observada y retención limitada |
 | Formato `.f1cap` v1 | Definido en `src/f1_strategist/capture.py` | Implementado en Sprint 1 |
 | Parser | Registro de decodificadores `struct` precompilados; modelos inmutables | Nueve tipos; formato 2025, año 25, juego 1.x y paquete v1; otras versiones menores se avisan y requieren tamaño exacto |
-| Estado de carrera | Un consumidor escritor publica snapshots inmutables | Datos de sesión y coches, frescura por grupo y eventos; las métricas derivadas quedan en Fase 2 |
+| Estado de carrera | Un consumidor escritor publica snapshots inmutables | Sesión (entorno, pronóstico, safety car), coches (tiempos, intervalos, boxes, combustible/ERS, neumáticos), frescura por grupo y eventos. El motor de métricas integrado publica snapshots inmutables para consola y exportación |
 
 ## 4. Estado por fase del roadmap
 
@@ -60,7 +60,7 @@ Documentos de diseño:
 | --- | --- | --- |
 | 0. Definición y entorno | Parcial | Repo, CI definido, config, receptor y guía de firewall listos. Falta validar la recepción desde otro PC de la red local y en Linux real. |
 | 1. Receptor, parser y estado | Implementada; CI verde | Snapshots inmutables de sesión y coches, daños, frescura por grupo, eventos y resumen de consola. |
-| 2. Métricas e histórico | No iniciada | |
+| 2. Métricas e histórico | Implementada; validación parcial | A1--A4, B1--B3, C1--C4/C2b, D1--D9, E1--E4 y F2--F4 implementados. F3 y la documentación se actualizaron según O5; la semántica/tolerancia del MFD sigue abierta aunque la validación local actual pasa. |
 | 3. Grabación y replay | Parcial | Captura y reemisión UDP listas (se adelantaron en Sprint 1). Falta el replay interno hacia el pipeline y el registro en SQLite. |
 | 4--10 | No iniciadas | |
 
@@ -68,7 +68,9 @@ Documentos de diseño:
 
 **Verificado:**
 
--   La suite `pytest` (84 pruebas), Ruff (lint y formato) y Pyright pasan en Windows (2026-11-02).
+-   La suite `pytest` (410 pruebas funcionales y 1 benchmark excluido por defecto), Ruff (lint y formato,
+    78 archivos) y Pyright pasan en Windows (2026-11-04). Las 9 pruebas de `real_capture` se ejecutaron
+    contra el fixture real de Monza.
 -   CI de GitHub Actions exitoso para `phase-1-udp-parser`, commit `096eceb`, en Ubuntu y Windows; también
     pasaron Ruff (lint y formato) y Pyright (2026-11-02).
 -   El consumidor único aplica los paquetes parseados al estado y publica snapshots inmutables; la frescura
@@ -100,8 +102,90 @@ Documentos de diseño:
     como `grid_position` base 1, igual que `FinalClassification.grid_position`.
 -   La captura es una carrera de 5 vueltas con 22 coches.
 -   Ejecución en Linux en red local captura adecuadamente los paquetes del primer PC.
+-   `CaptureReader` acepta entradas `.f1cap.gz`; `trim` conserva el tiempo de recepción y permite filtrar
+    por tipo, decimar paquetes, seleccionar un rango de vueltas y anonimizar identificadores.
+-   El constructor de escenarios sintéticos genera los tipos de paquete de carrera requeridos y puede
+    aplicar safety car, cambio de clima, vueltas inválidas y paradas programadas.
+-   El runner offline procesa `.f1cap` sin red, hilos ni esperas, entrega paquetes parseados a
+    consumidores con tiempo monotónico simulado y cuenta rechazos, tipos ignorados y truncamiento.
+-   `MetricsConfig` ofrece valores predeterminados validados para métricas y parámetros opcionales
+    desactivados por defecto.
+-   Los tipos base de métricas (`Quality`, `Window`, `Metric`) y sus helpers están implementados
+    con invariantes de calidad y pruebas unitarias.
+-   B1: `CarSnapshot` publica tiempos de vuelta y sectores, intervalos, distancia, invalidación de vuelta,
+    penalizaciones, estado de resultado y estado/tiempos de boxes. Los ceros de tiempo y los deltas del
+    líder se normalizan a `None`; los coches `invalid`/`inactive` no publican valores de vuelta.
+-   B2: `CarSnapshot` publica capacidad y combustible restante, ERS (almacén, modo, cosechado y desplegado),
+    bandera FIA, permiso de DRS y el neumático montado (`FittedTyreSnapshot`). `TyreSets` ya puebla el
+    coche indicado por `car_index`; un `fitted_index` ausente deja `fitted_tyre=None`. Con capacidad de
+    combustible 0, combustible y ERS quedan en `None` en lugar de publicarse como 0.
+-   B3: `RaceSessionSnapshot` publica clima, temperaturas, estado de safety car, tiempo restante, longitud
+    del circuito, límite de velocidad en boxes, ventanas de parada, posición de reincorporación,
+    `game_paused` y el pronóstico por muestras (`WeatherForecastSnapshot`). `safety_car_changed` y
+    `weather_changed` se emiten solo ante transiciones entre valores conocidos; un cambio de sesión limpia
+    todo el entorno y el pronóstico.
+-   Ola 2 (C1--C4): implementados el histórico acotado e inmutable por vuelta, el cierre y muestreo en las
+    fronteras, la ingesta idempotente de `SessionHistory` (incluidos tiempos oficiales, validez y stints) y
+    la clasificación pura de comparabilidad.
+-   C2b, según la review de Ola 2: corregidas la edad de neumático al cerrar la vuelta de entrada y su
+    reinicio al cambiar neumáticos con la vuelta abierta; marcadas las vueltas parciales e incompletas;
+    excluidos del delta de daño los desgastes graduales; detectados flashbacks intra-vuelta y vueltas de
+    reinicio tras bandera roja. `LapTracker.observe` evita recorrer coches si no cambian las marcas de
+    frescura relevantes, conservando el manejo de cambio y fin de sesión.
+-   Validación local Windows tras C2b: `uv run pytest -q` (308 pruebas), `uv run ruff check .`,
+    `uv run ruff format --check .`, `uv run pyright` y `git diff --check` pasan.
+-   Implementados D1--D9 como módulos `MetricModule` y registrados en `metrics/registry.py`: progreso,
+    combustible, neumáticos, ritmo, intervalos y comparación con rivales, boxes, ERS, daños y entorno.
+    Las muestras derivadas respetan calidad, frescura y datos faltantes; las ventanas de combustible,
+    neumáticos y ritmo excluyen las vueltas parciales, incompletas o retiradas cuando corresponde.
+-   `LapRecord` conserva la temperatura de pista media observada durante la vuelta para calcular la
+    tendencia por vuelta de D9. La capacidad de ERS y el límite de desgaste siguen sin valores por defecto;
+    las métricas que dependen de ellos quedan `unavailable` hasta configurarlos.
+-   Validación local Windows tras D1--D9: `uv run pytest -q` (351 pruebas), Ruff (lint y formato),
+    Pyright y `git diff --check` pasan.
+-   Aplicadas las correcciones pertinentes de `review_fase_2_ola_3.md` (R1--R10): aislamiento y
+    continuidad de las tendencias por sesión/coche/rival; selección del stint actual sin tomar stints
+    futuros ni vueltas del juego anterior; exclusión de paradas con vueltas duplicadas o no comparables;
+    ERS limitado a vueltas completas; frescura de sesión en márgenes de combustible; vuelta de formación
+    excluida del progreso; y temperatura muestreada una vez por actualización fresca de sesión con memoria
+    constante por vuelta.
+-   Añadidas regresiones para los casos R1--R10, incluidos paquetes repetidos, cambio de rival, stint
+    futuro o reinicio de neumático, datos obsoletos, vueltas inválidas y temperatura repetida/obsoleta.
+-   Validación local Windows tras la review: `uv run --group dev pytest -q` (370 pruebas),
+    `uv run --group dev ruff check .`, `uv run --group dev ruff format --check .` (70 archivos),
+    `uv run --group dev pyright` (0 errores/avisos) y `git diff --check` pasan.
+-   E1: `MetricsEngine` alimenta `LapTracker` e ingiere `SessionHistory`; publica `MetricsSnapshot`
+    inmutables al cambiar de vuelta o sesión y como máximo cada `publish_interval_s`. Cada módulo se
+    ejecuta aislado y un fallo produce una métrica `unavailable` sin detener al resto. El benchmark
+    sintético de `apply` queda marcado y separado de la suite funcional.
+-   E2: `CaptureSession` actualiza las métricas después de aplicar cada paquete al estado y expone
+    `metrics_snapshot()` también en `SessionPort`. Un fallo del motor se registra como
+    `metrics_update_error` sin afectar al consumidor, la captura ni el estado de carrera.
+-   E3: panel `Métricas` con vueltas restantes, margen de combustible, tasa de desgaste, tendencia de
+    ritmo e intervalos delante y detrás. Los ausentes se muestran como `—`; se distinguen las calidades
+    y las filas dependientes de telemetría viva pasan a `stale` cuando `lap_data` envejece. Los fallos
+    de módulo se muestran con su nombre y tipo de excepción.
+-   E4: exportación JSON (`schema_version: 1`), JSON Lines y CSV, con unidades, ventanas y calidad por
+    métrica; una fila por coche y vuelta en los formatos tabulares. El comando
+    `f1-strategist metrics CAPTURA [--out ARCHIVO] [--format json|jsonl|csv]` usa el runner offline y
+    está documentado en `docs/exportacion_metricas.md`.
+-   Aplicadas las correcciones de `review_fase_2_ola_4.md` (O4-1--O4-10): protección contra
+    sobrescribir la captura o la configuración, publicación final tras la ingesta oficial, inclusión
+    de la vuelta final confirmada en ritmo, ausencia explícita de piloto, módulos con estado por motor,
+    frescura efectiva en el panel, avisos por truncamiento/rechazos, diagnóstico visible de módulos
+    fallidos, salida estándar UTF-8 y CSV con saltos de línea LF también en archivo.
+-   Validación local Windows tras E1--E4 y la review: `uv run pytest -q` (401 pruebas funcionales y
+    1 benchmark excluido), `uv run pytest -q -m benchmark` (1 prueba), `uv run ruff check .`,
+    `uv run ruff format --check .` (77 archivos) y `uv run pyright` (0 errores/avisos) pasan.
 
 **No verificado todavía:**
+
+-   La calibración de los parámetros sin valor universal (capacidad de ERS, límite de desgaste y efecto
+    del combustible en el ritmo) queda para una fase posterior; las métricas dependientes siguen
+    `unavailable` hasta configurarlos.
+-   El fixture real de F3 no incluye lluvia ni safety car; las tolerancias bajo esas condiciones siguen
+    sin verificar.
+-   Queda volver a ejecutar CI de GitHub Actions después de la Ola 5.
 
 ## 6. Bitácora
 
@@ -167,6 +251,128 @@ Documentos de diseño:
 -   La prueba con la captura real confirmó que algunos eventos `buttons` traen `session_uid=0` mientras
     los demás paquetes usan el UID de carrera; solo `Session` y eventos de ciclo de vida pueden cambiar
     la identidad que mantiene el estado.
+-   Implementados F1 y pruebas de recorte, decimación, rango de vueltas, anonimización y lectura gzip.
+    Suite completa: 90 pruebas; Ruff y Pyright pasan; `trim --help` muestra las opciones esperadas.
+-   Implementados A1 (tipos base de métricas) y pruebas de umbrales, inmutabilidad, helpers y ventanas.
+    En ese punto, la suite tenía 110 pruebas; Ruff y Pyright pasaban.
+-   Implementada A2: configuración Pydantic para métricas, sección `[metrics]` de ejemplo y pruebas de
+    valores por defecto, TOML válido, parámetros opcionales y rechazo de valores inválidos. En ese punto,
+    la suite tenía 99 pruebas; Ruff y Pyright pasaban; el TOML de ejemplo cargaba correctamente.
+-   Implementados A3 (runner offline) y sus pruebas deterministas con fixtures, rechazos, paquetes
+    ignorados y captura truncada. En ese punto, la suite tenía 90 pruebas; Ruff y Pyright pasaban.
+-   Implementados A4 (`tests/scenarios.py`) y pruebas de paquetes, determinismo, cabeceras, estado final
+    e invariantes de entrada. Suite completa: 93 pruebas; Ruff y Pyright pasan.
+
+### 2026-11-03
+
+-   Implementada B1 (estado de tiempos, intervalos y boxes): `CarSnapshot` añade `last_lap_time_ms`,
+    `current_lap_time_ms`, `sector1_time_ms`, `sector2_time_ms`, `delta_to_car_in_front_ms`,
+    `delta_to_leader_ms`, `lap_distance_m`, `current_lap_invalid`, `penalties_s`, `result_status`,
+    `pit_lane_timer_active`, `pit_lane_time_ms` y `pit_stop_timer_ms`. Los tiempos y timers a 0 se
+    normalizan a `None`, el delta del líder no se publica para la posición 1 y los coches `invalid` o
+    `inactive` no publican datos de vuelta.
+-   Implementada B2 (combustible, ERS y neumáticos montados): `CarSnapshot` añade `fuel_capacity_kg`,
+    `fuel_remaining_laps`, `ers_store_j`, `ers_deploy_mode`, `ers_harvested_mguk_j`,
+    `ers_harvested_mguh_j`, `ers_deployed_this_lap_j`, `fia_flag`, `drs_allowed` y `fitted_tyre`.
+    `FittedTyreSnapshot` expone compuestos, `wear_pct`, `lifespan_laps` y `usable_life_laps`.
+    `TyreSetsPacket` se aplica al coche de `car_index` usando `fitted_index`; `255` o un índice inválido
+    dejan `fitted_tyre=None`. Con `fuel_capacity == 0`, combustible y ERS quedan en `None`.
+-   Implementada B3 (entorno de sesión): `RaceSessionSnapshot` añade `weather`, `track_temperature_c`,
+    `air_temperature_c`, `safety_car_status`, `session_time_left_s`, `track_length_m`,
+    `pit_speed_limit_kph`, `pit_window_ideal_lap`, `pit_window_latest_lap`, `pit_rejoin_position`,
+    `forecast` y `game_paused`; `WeatherForecastSnapshot` representa cada muestra del pronóstico. Las
+    ventanas de boxes y la posición de reincorporación con valor 0 se publican como `None`.
+-   Añadidos los eventos `safety_car_changed` y `weather_changed`, emitidos solo al cambiar entre valores
+    conocidos; los paquetes repetidos y los valores `unknown` no generan eventos duplicados. Un cambio de
+    `session_uid` limpia el entorno, el pronóstico y los eventos de la sesión anterior.
+-   Añadidas 9 pruebas a `tests/test_race_state.py` para B1, B2 y B3: valores reales de los fixtures,
+    casos `None` por ceros restringidos o datos ausentes, transiciones de safety car y clima, no
+    duplicación de eventos y reinicio completo por `session_uid`.
+-   Validación local en Windows: `uv run ruff check .`, `uv run ruff format --check .`, `uv run pyright`
+    y `uv run pytest` pasan; suite completa con 221 pruebas.
+-   Los cambios de B1--B3 están en el árbol de trabajo de la rama `f2-wave1-wide-state`, sin commit. No se
+    modificó el panel de consola y `progress.md` se actualiza con esta entrada.
+-   Implementada la Ola 2 del histórico: C1 define los registros y snapshots inmutables; C2 cierra vueltas,
+    muestrea valores de frontera y trata boxes, retiros y flashbacks; C3 incorpora tiempos oficiales,
+    validez y stints desde `SessionHistory`, también si el paquete llega antes del cierre; C4 clasifica
+    banderas de comparabilidad.
+-   Revisada `plans/review_fase_2_ola_2.md` y aplicada C2b: se corrigieron edad de neumáticos, vueltas
+    parciales/incompletas, cálculo de daño, flashback intra-vuelta, reinicio tras bandera roja y trabajo
+    repetido sin cambios de frescura. Las banderas `partial_lap` e `incomplete` se propagan a clasificación
+    y hacen que `is_clean` devuelva `False`.
+-   Validación final local: 308 pruebas pasan; Ruff (lint y formato), Pyright y `git diff --check` pasan.
+    La validación con captura real y CI queda pendiente.
+-   Implementadas en paralelo las tareas D1--D9 como módulos independientes y registrados: progreso,
+    combustible, neumáticos, ritmo, intervalos/rivales, boxes, ERS, daños y entorno. `GapTracker` aporta
+    muestras de tendencia acotadas; D9 usa la temperatura media por vuelta conservada en `LapRecord`.
+-   Validación local Windows de D1--D9: suite completa con 351 pruebas; Ruff, formato, Pyright y
+    `git diff --check` pasan. Pendientes: integración E1--E4, validación/calibración con captura real y CI.
+
+### 2026-11-04
+
+-   Implementada E1: `MetricsEngine` alimenta `LapTracker`, ingiere `SessionHistory` y publica
+    `MetricsSnapshot` inmutables al cambiar de vuelta o sesión y como máximo cada `publish_interval_s`.
+    Cada motor crea sus propios módulos, los fallos se aíslan por módulo y el benchmark de `apply` queda
+    marcado y separado de la suite funcional.
+-   Implementada E2: `CaptureSession` actualiza las métricas después de aplicar el estado y expone
+    `metrics_snapshot()` también en `SessionPort`. Un fallo del motor se registra como
+    `metrics_update_error` sin afectar al consumidor, la captura ni el estado de carrera.
+-   Implementada E3: panel `Métricas` con vueltas restantes, margen de combustible, tasa de desgaste,
+    tendencia de ritmo e intervalos delante y detrás. Los datos ausentes se muestran como `—`, las
+    calidades se distinguen y las métricas de telemetría viva pasan a `stale` cuando `lap_data` envejece.
+    Los fallos de módulo se muestran con su nombre y tipo de excepción.
+-   Implementada E4: exportación JSON (`schema_version: 1`), JSON Lines y CSV con unidades, ventanas y
+    calidad por métrica; una fila por coche y vuelta en los formatos tabulares. El comando
+    `f1-strategist metrics CAPTURA [--out ARCHIVO] [--format json|jsonl|csv]` usa el runner offline y
+    está documentado en `docs/exportacion_metricas.md`. La salida estándar es UTF-8 y los archivos CSV
+    conservan saltos de línea LF.
+-   Aplicadas las correcciones de `review_fase_2_ola_4.md` (O4-1--O4-10): protección contra sobrescribir
+    la captura o la configuración, publicación final tras la ingesta oficial, inclusión de la vuelta
+    final confirmada en ritmo, ausencia explícita de piloto, módulos con estado por motor, frescura
+    efectiva en el panel, avisos por truncamiento o rechazos del parser y diagnóstico visible de módulos
+    fallidos.
+-   Validación local Windows: `uv run pytest -q` (401 pruebas funcionales y 1 benchmark excluido),
+    `uv run pytest -q -m benchmark` (1 prueba), `uv run ruff check .`,
+    `uv run ruff format --check .` (77 archivos) y `uv run pyright` (0 errores/avisos) pasan.
+-   Los cambios de E1--E4 y de la review están en el árbol de trabajo de la rama
+    `f2-wave-4-integration`, sin commit. El panel de estado de carrera existente no cambia.
+
+-   Implementada F2: se incorporó `monza-13-laps.f1cap.gz` como fixture real de 13 vueltas y 5,4 MB,
+    anonimizado y comprimido. El archivo no se versiona por superar el límite acordado; las pruebas se
+    omiten cuando no está disponible o no se define `F1_CAPTURE_FIXTURE`.
+-   Implementada F3: `tests/test_metrics_real_capture.py` reproduce la captura completa (36 471 paquetes,
+    sin truncamiento ni rechazos) y verifica 20 coches × 13 vueltas, tiempos y sectores oficiales,
+    mejor vuelta, paradas, edad y desgaste de neumáticos, combustible, intervalos, vueltas restantes y
+    tendencias. El coste medio de `MetricsEngine.apply` fue de 0,225 ms, por debajo de 1 ms.
+-   Corregido un falso `flashback` en la vuelta final: `_is_in_lap_flashback` ignora los coches con
+    `result_status="finished"` para no confundir el reinicio del cronómetro tras la meta con un replay.
+-   Implementada F4: actualizadas la sección 3.4 y el ejemplo de snapshot del outline, el criterio de
+    salida medido del roadmap y este estado de la fase. Las 9 pruebas `real_capture` pasan contra el
+    fixture real; la suite completa queda en 410 pruebas funcionales y 1 benchmark excluido, con Ruff
+    (78 archivos), Pyright y `git diff --check` correctos.
+-   Los cambios de F2--F4 están en la rama `f2-wave-5-validation`; el fixture real permanece fuera de git.
+
+### 2026-11-05
+
+-   Aplicadas las correcciones pertinentes del review O5: un tiempo oficial ya no oculta cobertura
+    parcial; combustible segmenta primero los stints y usa un fallback explícito de un solo stint
+    anterior; `pace.best_lap_s` representa la mejor vuelta oficial válida, incluso con tráfico.
+-   F3 ahora falla ante una ruta de captura explícita inexistente y omite solo el fixture opcional
+    no solicitado. La validación exige muestras crudas suficientes y compara extremos por vuelta de
+    `CarStatus`/`CarDamage` con el histórico, además de revisar progreso, paradas, intervalos y
+    desviación de combustible durante las publicaciones.
+-   `fuel.game_deviation_laps` compara el margen estimado al final con el valor `fuel_remaining_laps`
+    del MFD. La semántica del protocolo sigue sin especificar más que “valor en el MFD”; la tolerancia
+    de ±0,3 vueltas no se declara cumplida.
+-   El detector de saltos conserva causas y reinicia continuidad cuando falta una muestra válida.
+    F3 aplica umbrales a ritmo y desgaste sin causa y verifica disponibilidad/atribución para
+    tendencias de intervalo, sin imponerles un umbral numérico.
+-   El ejemplo de snapshot del outline queda identificado como ilustrativo y refleja el esquema
+    medido de `pace.last_lap_s` y `tyres.wear_rate_pct_per_lap`; el roadmap limita las afirmaciones a
+    lo comprobado en el fixture reducido.
+-   Validación final local: 421 pruebas pasan y 1 benchmark queda excluido por defecto; el benchmark
+    pasa al ejecutarse con `-m benchmark` y las 15 pruebas de `real_capture` pasan con el fixture local.
+    Ruff (archivos Python afectados), Pyright y `git diff --check` pasan. CI remota no se ejecutó.
 
 ## 7. Hallazgos de la primera captura real
 
@@ -281,7 +487,8 @@ src/f1_strategist/
   replay.py       Reemisión de una captura por UDP respetando los tiempos
   summary.py      Resumen de una captura (comando inspect)
   console.py      Panel de consola con Rich (solo presentación)
-  cli.py          Comandos run, replay e inspect
+  cli.py          Comandos run, replay, inspect, trim y metrics
+  metrics/        Tipos, configuración, histórico, módulos D, motor y exportación
 tests/            Pruebas unitarias y de extremo a extremo (replay -> receptor -> captura)
 config/config.example.toml   Ejemplo de configuración
 ```
@@ -295,6 +502,7 @@ uv run ruff check . && uv run ruff format --check . && uv run pyright
 uv run f1-strategist run --listen-address 0.0.0.0   # recibir y grabar
 uv run f1-strategist inspect captures/<archivo>.f1cap
 uv run f1-strategist replay captures/<archivo>.f1cap --host 127.0.0.1 --port 20777
+uv run f1-strategist metrics captures/<archivo>.f1cap --format json
 ```
 
 ## 9. Notas técnicas para agentes
@@ -308,20 +516,16 @@ uv run f1-strategist replay captures/<archivo>.f1cap --host 127.0.0.1 --port 207
 -   Si el juego envía por broadcast, la app debe escuchar en `0.0.0.0`; en loopback no recibe nada.
 -   Otra aplicación de telemetría usando el puerto 20777 provoca un error claro al abrir el socket.
 
-## 10. Siguiente paso: plan de la Fase 1
+## 10. Siguiente paso: Fase 3 y calibración diferida
 
-1.  **Receptor, cerrado:** hilo dedicado con socket bloqueante y cola acotada; secuencia basada en
-    `overall_frame_identifier`, con estimación de cadencia y retención limitada. La prueba en red local
-    con dos PC sigue pendiente.
-2.  **Parser, cerrado para el alcance acordado:** registro único de decodificadores y tamaños, con
-    `struct` precompilados. Acepta formato 2025, año 25, juego 1.x y paquete v1; el minor no verificado
-    genera un aviso y se valida el tamaño exacto. Los tipos omitidos se cuentan como ignorados por diseño.
-3.  **Estado de carrera, implementado:** modelos de sesión y coches, incluyendo combustible, neumáticos
-    y daños recibidos; frescura por grupo; detección de cambio de sesión, vuelta y parada; panel de
-    resumen en consola. No se calculan métricas derivadas (Fase 2).
-4.  **Validación:** fixtures reales anonimizados, pruebas de propiedades y replay sintético con paquetes
-    soportados, más replay completo de la captura real con paradas y daños sin rechazos del parser. CI
-    de GitHub Actions pasa en Ubuntu y Windows.
+La implementación de la Fase 2 está completada, pero su criterio de aceptación queda **parcialmente
+abierto**: la semántica del indicador de combustible del MFD y su tolerancia aún no están verificadas.
+El fixture de Monza acredita solo los escenarios observados localmente. El siguiente trabajo es:
+
+1.  **Fase 3:** completar el replay interno hacia el pipeline y la persistencia en SQLite.
+2.  **Calibración diferida:** ajustar los parámetros que hoy no tienen valor universal y ampliar la
+    validación a capturas con lluvia, safety car y otras condiciones.
+3.  **CI:** volver a ejecutar GitHub Actions después de la Ola 5.
 
 ## 11. Pendientes y decisiones abiertas
 
@@ -331,15 +535,5 @@ uv run f1-strategist replay captures/<archivo>.f1cap --host 127.0.0.1 --port 207
 -   Esquema de SQLite; modelo local concreto del LLM; voz; framework del front-end de la GUI;
     empaquetado de escritorio; fórmulas de degradación y simulación de paradas; umbrales iniciales;
     idioma por defecto y cambio en caliente.
--   Registrar en `docs/` hallazgos adicionales de nuevas capturas y validación de CI.
-
-### 2026-11-02
-
--   Corregidos los offsets y conteos de stints de `SessionHistory` y `FinalClassification`; los históricos
-    ahora exponen solo los elementos declarados por sus contadores.
--   Añadidos fixtures de captura anonimizados, pruebas de layout con bytes no nulos, Hypothesis y un replay
-    válido de extremo a extremo.
--   La versión menor 1.x se acepta con aviso cuando el resto de la cabecera y el tamaño coinciden; los
-    tipos no implementados se ignoran sin generar rechazos.
--   Las métricas usan `overall_frame_identifier`, se calibran por cadencia observada y limitan las sesiones
-    retenidas. Los errores y diagnósticos pasan a claves neutrales al idioma para renderizarse en consola.
+-   Ejecutar CI de GitHub Actions después de la Ola 5; la calibración de parámetros abiertos y las
+    condiciones de lluvia o safety car quedan para fases posteriores con capturas variadas.

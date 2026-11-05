@@ -21,7 +21,7 @@ from .capture import CapturedPacket
 from .config import TelemetryConfig
 from .messages import DiagnosticMessage
 from .packets import PacketHeader
-from .parser import ParseIssue
+from .parser import SUPPORTED_HEADER_VERSION, ParseIssue, record_parser_rejection
 
 _RECV_BUFFER = 4 * 1024 * 1024
 _MAX_DATAGRAM = 65535
@@ -33,10 +33,7 @@ _OTHER_SOURCE_BUCKET = "other"
 _UINT32_MASK = 0xFFFFFFFF
 _UINT32_HALF = 0x80000000
 _MAX_PACKET_ID = 15
-_SUPPORTED_HEADER_VERSION = (2025, 25, 1, 1)
 _VERIFIED_GAME_MINOR = 26
-_MAX_PARSER_REJECTION_MESSAGES = 16
-_OTHER_PARSER_REJECTIONS = "other_parser_rejections_limited"
 
 
 class ReceiverError(Exception):
@@ -157,7 +154,7 @@ class Stats:
                 header.game_year,
                 header.game_major_version,
                 header.packet_version,
-            ) != _SUPPORTED_HEADER_VERSION or not 0 <= header.packet_id <= _MAX_PACKET_ID:
+            ) != SUPPORTED_HEADER_VERSION or not 0 <= header.packet_id <= _MAX_PACKET_ID:
                 self._invalid += 1
                 return
             self._by_id[header.packet_id] += 1
@@ -209,12 +206,7 @@ class Stats:
 
     def record_parser_rejection(self, issue: ParseIssue) -> None:
         with self._lock:
-            if (
-                issue not in self._parser_rejections
-                and len(self._parser_rejections) >= _MAX_PARSER_REJECTION_MESSAGES
-            ):
-                issue = ParseIssue(_OTHER_PARSER_REJECTIONS)
-            self._parser_rejections[issue] += 1
+            record_parser_rejection(self._parser_rejections, issue)
 
     def set_capture(self, packets: int, nbytes: int) -> None:
         with self._lock:

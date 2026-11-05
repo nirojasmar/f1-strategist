@@ -149,8 +149,44 @@ por métrica. - Exportación de métricas para análisis.
 
 ### Criterio de salida
 
-Las métricas básicas coinciden con los datos observables del juego
-dentro de tolerancias definidas y no presentan saltos injustificados.
+Criterio medido sobre el fixture real de Monza
+(`tests/fixtures/real/monza-13-laps.f1cap.gz`, 13 vueltas y 20 coches
+clasificados): **verificado localmente con alcance parcial**. El fixture
+de más de 3 MB no está versionado y es necesario para ejecutar
+`tests/test_metrics_real_capture.py`; sin él, esas pruebas se omiten. La
+obtención, el recorte y la verificación SHA-256 del origen están descritos
+en `tests/fixtures/real/README.md`; la ruta configurada explícitamente debe
+existir. Las comprobaciones cubren
+las métricas publicadas durante el replay, pero la semántica del indicador
+de combustible del MFD y su tolerancia siguen pendientes:
+
+-   Tiempos y sectores oficiales, mejor vuelta, vueltas completadas,
+    paradas, edad de neumático, intervalos y suma de vueltas frente al
+    tiempo total de carrera: exactos, salvo la suma frente al tiempo
+    total, que admite 0,05 s.
+-   Consumo de combustible: ±0,05 kg/lap frente a la media de las
+    diferencias de extremos crudos de `CarStatus` en cinco vueltas válidas
+    del stint actual; se contrasta su cobertura con los extremos agregados
+    del histórico.
+-   Desviación frente al MFD: se calcula como margen estimado al final
+    menos `fuel_remaining_laps` publicado por el juego. La estructura del
+    protocolo solo describe ese campo como valor del MFD; la tolerancia de
+    ±0,3 vueltas no se declara cumplida y requiere confirmar que ambas
+    magnitudes son comparables.
+-   Vueltas restantes: ±0,05 vueltas.
+-   Tendencias: se comprueban saltos entre publicaciones consecutivas con
+    valor y calidad válidos, con causas registradas. El límite es 0,5
+    s/lap para ritmo y 0,1 %/lap para desgaste cuando no hay una causa
+    observada. Las tendencias de intervalo se comprueban por disponibilidad
+    y atribución de causas, no contra un umbral fijo porque el rival puede
+    cambiar.
+-   Replay del fixture reducido: 36 471 paquetes leídos y parseados, sin
+    truncamiento ni rechazos. Coste medio de `MetricsEngine.apply`:
+    0,225 ms en este fixture, por debajo de 1 ms.
+
+Las tolerancias se comprueban en `tests/test_metrics_real_capture.py`.
+La validación usa un fixture anonimizado y no cubre todavía todas las
+condiciones de carrera (por ejemplo, lluvia o safety car).
 
 ------------------------------------------------------------------------
 

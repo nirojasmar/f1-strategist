@@ -14,8 +14,9 @@ from . import __version__
 from .capture import CapturedPacket, CaptureWriter
 from .config import AppConfig
 from .messages import message
+from .metrics.engine import MetricsEngine, MetricsSnapshot
 from .packets import parse_header
-from .parser import PACKET_DECODERS, PacketParseError, parse_packet
+from .parser import PacketParseError, is_ignored_by_design, parse_packet
 from .race_state import RaceState, RaceStateSnapshot
 from .receiver import Stats, StatsSnapshot, UdpReceiver
 
@@ -23,10 +24,17 @@ _LOGGER = logging.getLogger(__name__)
 
 
 class CaptureSession:
-    def __init__(self, config: AppConfig, queue_size: int = 20000) -> None:
+    def __init__(
+        self,
+        config: AppConfig,
+        queue_size: int = 20000,
+        *,
+        metrics_engine: MetricsEngine | None = None,
+    ) -> None:
         self.config = config
         self.stats = Stats()
         self._race_state = RaceState()
+        self._metrics_engine = metrics_engine or MetricsEngine(config.metrics)
         self._queue: queue.Queue[CapturedPacket] = queue.Queue(maxsize=queue_size)
         self._receiver = UdpReceiver(config.telemetry, self._queue, self.stats)
         self._writer: CaptureWriter | None = None
@@ -79,6 +87,9 @@ class CaptureSession:
     def race_snapshot(self) -> RaceStateSnapshot:
         return self._race_state.snapshot()
 
+    def metrics_snapshot(self) -> MetricsSnapshot:
+        return self._metrics_engine.snapshot()
+
     def _consume(self) -> None:
         while not (self._stop_consumer.is_set() and self._queue.empty()):
             try:
@@ -96,18 +107,7 @@ class CaptureSession:
 
             self._write_packet(packet)
 
-            if (
-                header is not None
-                and 0 <= header.packet_id <= 15
-                and header.packet_id not in PACKET_DECODERS
-                and (
-                    header.packet_format,
-                    header.game_year,
-                    header.game_major_version,
-                    header.packet_version,
-                )
-                == (2025, 25, 1, 1)
-            ):
+            if header is not None and is_ignored_by_design(header):
                 self.stats.record_ignored_packet(header.packet_id)
                 continue
             try:
@@ -128,6 +128,18 @@ class CaptureSession:
                     self.stats.record_consumer_error(
                         message("race_state_update_error", error=str(exc))
                     )
+                else:
+                    try:
+                        self._metrics_engine.apply(
+                            parsed_packet,
+                            observed_at,
+                            self._race_state.snapshot(),
+                        )
+                    except Exception as exc:
+                        _LOGGER.exception("Unexpected error while updating metrics")
+                        self.stats.record_consumer_error(
+                            message("metrics_update_error", error=str(exc))
+                        )
         writer = self._writer
         if writer is not None:
             try:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gzip
 from pathlib import Path
 
 import pytest
@@ -48,3 +49,18 @@ def test_bad_magic_is_rejected(tmp_path: Path) -> None:
 def test_missing_file_is_a_capture_error(tmp_path: Path) -> None:
     with pytest.raises(CaptureError):
         CaptureReader(tmp_path / "no-existe.f1cap")
+
+
+def test_reader_accepts_gzip_capture(tmp_path: Path) -> None:
+    source = tmp_path / "source.f1cap"
+    compressed = tmp_path / "source.f1cap.gz"
+    with CaptureWriter(source) as writer:
+        for packet in _packets():
+            writer.write(packet)
+    with source.open("rb") as raw, gzip.open(compressed, "wb") as zipped:
+        zipped.write(raw.read())
+
+    reader = CaptureReader(compressed)
+
+    assert list(reader) == _packets()
+    assert not reader.truncated

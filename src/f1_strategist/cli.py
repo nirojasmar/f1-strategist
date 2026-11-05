@@ -15,11 +15,46 @@ from . import __version__
 from .capture import CaptureError
 from .config import ConfigError, apply_overrides, load_config
 from .console import format_bytes, run_console
+from .metrics.export import EXPORT_FORMATS, render_metrics_export, run_metrics_capture
+from .offline import OfflineResult
 from .packets import packet_name
 from .receiver import ReceiverError
 from .replay import replay_capture
 from .session import CaptureSession
 from .summary import summarize
+from .trim import trim_capture
+
+
+def _parse_packet_types(value: str) -> frozenset[int]:
+    try:
+        packet_types = frozenset(int(item) for item in value.split(","))
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("usa IDs separados por comas") from exc
+    if not packet_types or any(not 0 <= packet_id <= 15 for packet_id in packet_types):
+        raise argparse.ArgumentTypeError("los IDs de paquete deben estar entre 0 y 15")
+    return packet_types
+
+
+def _parse_decimation(value: str) -> tuple[int, int]:
+    try:
+        packet_id_text, interval_text = value.split("=", 1)
+        packet_id, interval = int(packet_id_text), int(interval_text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("formato esperado: ID=N") from exc
+    if not 0 <= packet_id <= 15 or interval < 1:
+        raise argparse.ArgumentTypeError("el ID debe estar entre 0 y 15 y N debe ser >= 1")
+    return packet_id, interval
+
+
+def _parse_lap_range(value: str) -> tuple[int, int]:
+    try:
+        start_text, end_text = value.split("-", 1)
+        start, end = int(start_text), int(end_text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("formato esperado: A-B") from exc
+    if not 1 <= start <= end <= 255:
+        raise argparse.ArgumentTypeError("el rango debe cumplir 1 <= A <= B <= 255")
+    return start, end
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -53,6 +88,51 @@ def _build_parser() -> argparse.ArgumentParser:
 
     inspect = sub.add_parser("inspect", help="resume el contenido de una captura")
     inspect.add_argument("file", type=Path)
+
+    metrics = sub.add_parser("metrics", help="calcula y exporta métricas de una captura")
+    metrics.add_argument("file", type=Path, help="captura de entrada (.f1cap o .f1cap.gz)")
+    metrics.add_argument("--out", type=Path, help="archivo de salida (por defecto, stdout)")
+    metrics.add_argument(
+        "--format",
+        default="json",
+        metavar="FORMATO",
+        help=f"formato de salida: {', '.join(EXPORT_FORMATS)}",
+    )
+    metrics.add_argument("--config", type=Path, help="archivo TOML de configuración")
+
+    trim = sub.add_parser("trim", help="recorta y opcionalmente anonimiza una captura")
+    trim.add_argument("input", type=Path, help="captura de entrada (.f1cap o .f1cap.gz)")
+    trim.add_argument("output", type=Path, help="captura de salida (.f1cap o .f1cap.gz)")
+    trim.add_argument(
+        "--types",
+        action="append",
+        type=_parse_packet_types,
+        metavar="ID[,ID...]",
+        help="conservar solo estos IDs de paquete (repetible)",
+    )
+    trim.add_argument(
+        "--decimate",
+        action="append",
+        type=_parse_decimation,
+        metavar="ID=N",
+        help="conservar un paquete de cada N para el ID (por coche para IDs 11 y 12)",
+    )
+    trim.add_argument(
+        "--laps",
+        type=_parse_lap_range,
+        metavar="A-B",
+        help="conservar paquetes desde el inicio de A hasta el inicio de B+1",
+    )
+    trim.add_argument(
+        "--anonymize",
+        action="store_true",
+        help="eliminar LobbyInfo, anonimizar participantes, UID, enlaces, tiempos y origen",
+    )
+    trim.add_argument(
+        "--keep-ai-names",
+        action="store_true",
+        help="conservar nombres de participantes controlados por IA al anonimizar",
+    )
     return parser
 
 
@@ -139,11 +219,104 @@ def _cmd_inspect(args: argparse.Namespace, console: Console, err: Console) -> in
     return 0
 
 
+def _cmd_metrics(args: argparse.Namespace, console: Console, err: Console) -> int:
+    export_format = args.format.lower()
+    if export_format not in EXPORT_FORMATS:
+        valid = ", ".join(EXPORT_FORMATS)
+        raise ValueError(f"Formato de exportación no válido: {args.format!r}; usa {valid}")
+    if args.out is not None:
+        protected = [args.file]
+        if args.config is not None:
+            protected.append(args.config)
+        if any(_same_file(args.out, path) for path in protected):
+            raise ValueError("La salida no puede sobrescribir la captura ni la configuración.")
+    cfg = load_config(args.config)
+    result = run_metrics_capture(args.file, cfg.metrics)
+    _warn_offline_issues(result.offline, err)
+    output = render_metrics_export(result.snapshot, result.history, export_format)
+    if args.out is None:
+        _write_stdout(output)
+    else:
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        with args.out.open("w", encoding="utf-8", newline="") as handle:
+            handle.write(output)
+        console.print(f"Métricas exportadas en {args.out}")
+    return 0
+
+
+def _same_file(left: Path, right: Path) -> bool:
+    try:
+        return left.resolve() == right.resolve()
+    except OSError:
+        return False
+
+
+def _warn_offline_issues(offline: OfflineResult, err: Console) -> None:
+    if offline.truncated:
+        err.print("[yellow]Aviso:[/] La captura termina con un registro incompleto.")
+    rejections = sum(offline.parser_rejections.values())
+    if rejections:
+        err.print(f"[yellow]Aviso:[/] {rejections} paquete(s) rechazado(s) por el parser.")
+    if offline.packets_parsed == 0:
+        err.print("[yellow]Aviso:[/] La captura no contiene paquetes válidos.")
+
+
+def _write_stdout(text: str) -> None:
+    reconfigure = getattr(sys.stdout, "reconfigure", None)
+    if reconfigure is not None:
+        try:
+            reconfigure(encoding="utf-8")
+        except OSError:
+            reconfigure = None
+    if reconfigure is None:
+        buffer = getattr(sys.stdout, "buffer", None)
+        if buffer is not None:
+            buffer.write(text.encode("utf-8"))
+            buffer.flush()
+            return
+    sys.stdout.write(text)
+
+
+def _cmd_trim(args: argparse.Namespace, console: Console, err: Console) -> int:
+    packet_types = frozenset().union(*args.types) if args.types else None
+    decimate: dict[int, int] = {}
+    for packet_id, interval in args.decimate or ():
+        if packet_id in decimate:
+            raise ValueError(f"El ID {packet_id} aparece más de una vez en --decimate")
+        decimate[packet_id] = interval
+    result = trim_capture(
+        args.input,
+        args.output,
+        packet_types=packet_types,
+        decimate=decimate,
+        laps=args.laps,
+        anonymize=args.anonymize,
+        keep_ai_names=args.keep_ai_names,
+    )
+    console.print(
+        f"Captura recortada: {result.packets_written} de {result.packets_read} paquetes "
+        f"guardados en {args.output}."
+    )
+    if result.dropped_for_anonymization:
+        console.print(
+            f"Paquetes LobbyInfo omitidos al anonimizar: {result.dropped_for_anonymization}."
+        )
+    if result.truncated:
+        console.print("[yellow]La captura de entrada termina con un registro incompleto.[/]")
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     console = Console()
     err = Console(stderr=True)
-    handlers = {"run": _cmd_run, "replay": _cmd_replay, "inspect": _cmd_inspect}
+    handlers = {
+        "run": _cmd_run,
+        "replay": _cmd_replay,
+        "inspect": _cmd_inspect,
+        "metrics": _cmd_metrics,
+        "trim": _cmd_trim,
+    }
     try:
         return handlers[args.command](args, console, err)
     except (ConfigError, CaptureError, ValueError) as exc:

@@ -3,10 +3,48 @@
 from __future__ import annotations
 
 from .messages import DiagnosticMessage
+from .metrics.engine import MetricsSnapshot
+from .metrics.types import Metric, Quality
 from .packets import packet_name
 from .parser import ParseIssue
-from .race_state import CarSnapshot, RaceEvent
+from .race_state import CarSnapshot, RaceEvent, RaceStateSnapshot
 from .receiver import PacketSequenceStats
+
+METRICS_PANEL_TITLE = "Métricas"
+
+_METRIC_ROWS = (
+    ("progress.laps_remaining", "Vueltas restantes"),
+    ("fuel.margin_laps_at_finish", "Margen de combustible"),
+    ("tyres.wear_rate_pct_per_lap", "Tasa de desgaste"),
+    ("pace.trend_s_per_lap", "Tendencia de ritmo"),
+    ("gap.ahead_s", "Intervalo delante"),
+    ("gap.behind_s", "Intervalo detrás"),
+)
+
+_QUALITY_LABELS = {
+    Quality.OK: "ok",
+    Quality.LOW: "low (bajo)",
+    Quality.STALE: "stale (obsoleto)",
+    Quality.INSUFFICIENT: "insufficient (insuficiente)",
+    Quality.UNAVAILABLE: "unavailable (no disponible)",
+}
+
+_UNIT_LABELS = {
+    "lap": "vueltas",
+    "kg": "kg",
+    "s": "s",
+    "s/lap": "s/lap",
+    "%/lap": "%/lap",
+}
+
+_LIVE_METRIC_KEYS = frozenset(
+    {
+        "progress.laps_remaining",
+        "fuel.margin_laps_at_finish",
+        "gap.ahead_s",
+        "gap.behind_s",
+    }
+)
 
 
 def _number(item: DiagnosticMessage, name: str) -> float:
@@ -74,6 +112,63 @@ def _render_sequence_anomalies(
             parts.append(f"{stats.out_of_order} fuera de orden")
         details.append(f"{packet_name(packet_id)}: {', '.join(parts)}")
     return "Anomalías de secuencia UDP: " + "; ".join(details) + "."
+
+
+def render_metrics_rows(
+    snapshot: MetricsSnapshot,
+    race: RaceStateSnapshot | None = None,
+    now: float | None = None,
+) -> tuple[tuple[str, str, str], ...]:
+    """Devuelve etiqueta, valor y marcador de calidad de las métricas clave."""
+    rows: list[tuple[str, str, str]] = []
+    stale_live = _live_metrics_are_stale(race, now)
+    for key, label in _METRIC_ROWS:
+        metric = snapshot.get(key)
+        quality = _render_metric_quality(metric)
+        if stale_live and key in _LIVE_METRIC_KEYS and metric is not None:
+            quality = _QUALITY_LABELS[Quality.STALE]
+        rows.append((label, _render_metric_value(metric), quality))
+    for key in sorted(snapshot):
+        if not key.endswith(".error"):
+            continue
+        metric = snapshot[key]
+        module = key.removesuffix(".error")
+        detail = next(
+            (note for note in reversed(metric.notes) if note != "metric_module_failed"),
+            "error",
+        )
+        rows.append((f"Módulo {module}", "—", f"error de cálculo ({detail})"))
+    return tuple(rows)
+
+
+def _live_metrics_are_stale(race: RaceStateSnapshot | None, now: float | None) -> bool:
+    if race is None or now is None:
+        return False
+    try:
+        return race.freshness_for("lap_data").is_stale(now)
+    except KeyError:
+        return False
+
+
+def _render_metric_value(metric: Metric | None) -> str:
+    if metric is None or metric.value is None:
+        return "—"
+    value = metric.value
+    if isinstance(value, bool):
+        text = "sí" if value else "no"
+    elif isinstance(value, float):
+        precision = 3 if metric.unit == "%/lap" else 1 if metric.unit == "lap" else 2
+        text = f"{value:.{precision}f}"
+    else:
+        text = str(value)
+    unit = _UNIT_LABELS.get(metric.unit, metric.unit)
+    return f"{text} {unit}".strip()
+
+
+def _render_metric_quality(metric: Metric | None) -> str:
+    if metric is None:
+        return "—"
+    return _QUALITY_LABELS.get(metric.quality, metric.quality.value)
 
 
 def render_race_event(event: RaceEvent, cars: tuple[CarSnapshot, ...]) -> str:
@@ -150,6 +245,7 @@ def render_diagnostic(item: DiagnosticMessage) -> str:
         "consumer_header_error",
         "consumer_parse_error",
         "race_state_update_error",
+        "metrics_update_error",
         "capture_write_error",
         "capture_flush_error",
         "capture_close_error",
@@ -158,6 +254,7 @@ def render_diagnostic(item: DiagnosticMessage) -> str:
             "consumer_header_error": "Error al registrar una cabecera UDP",
             "consumer_parse_error": "Error inesperado en el parser UDP",
             "race_state_update_error": "Error inesperado al actualizar el estado de carrera",
+            "metrics_update_error": "Error inesperado al actualizar las métricas",
             "capture_write_error": "Error al escribir la captura",
             "capture_flush_error": "Error al vaciar la captura",
             "capture_close_error": "Error al cerrar la captura",

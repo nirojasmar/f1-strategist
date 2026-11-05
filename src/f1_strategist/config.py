@@ -7,7 +7,14 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 
 class ConfigError(Exception):
@@ -56,11 +63,94 @@ class CaptureConfig(BaseModel):
     directory: Path = Path("captures")
 
 
+METRIC_FAMILIES = frozenset(
+    {"progress", "fuel", "tyres", "pace", "gap", "pit", "ers", "damage", "env", "track"}
+)
+
+
+class SampleThresholds(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    low: int = Field(ge=1)
+    ok: int = Field(ge=1)
+
+    @model_validator(mode="after")
+    def _validate_order(self) -> SampleThresholds:
+        if self.ok < self.low:
+            raise ValueError("ok debe ser mayor o igual que low")
+        return self
+
+
+class MetricsConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    publish_interval_s: float = Field(default=0.5, gt=0, allow_inf_nan=False)
+    history_max_laps: int = Field(default=100, ge=1, le=100)
+    pace_window_laps: int = Field(default=5, ge=1)
+    fuel_window_laps: int = Field(default=5, ge=1)
+    min_samples_low: int = Field(default=3, ge=1)
+    min_samples_ok: int = Field(default=5, ge=1)
+    min_samples: dict[str, SampleThresholds] = Field(
+        default_factory=lambda: {"fuel": SampleThresholds(low=2, ok=3)}
+    )
+    traffic_gap_s: float = Field(default=1.0, ge=0, allow_inf_nan=False)
+    traffic_lap_fraction: float = Field(default=0.5, ge=0, le=1, allow_inf_nan=False)
+    gap_trend_window_s: float = Field(default=10.0, gt=0, allow_inf_nan=False)
+    damage_change_threshold_pct: float = Field(default=5, ge=0, le=100, allow_inf_nan=False)
+    fuel_effect_s_per_kg: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    tyre_wear_limit_pct: float | None = Field(default=None, ge=0, le=100, allow_inf_nan=False)
+    ers_capacity_joules: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+
+    @field_validator("min_samples")
+    @classmethod
+    def _validate_metric_families(
+        cls, value: dict[str, SampleThresholds]
+    ) -> dict[str, SampleThresholds]:
+        value = dict(value)
+        unknown = set(value) - METRIC_FAMILIES
+        if unknown:
+            raise ValueError(
+                f"Familias desconocidas en min_samples: {', '.join(sorted(unknown))}; "
+                f"válidas: {', '.join(sorted(METRIC_FAMILIES))}"
+            )
+        value.setdefault("fuel", SampleThresholds(low=2, ok=3))
+        return value
+
+    @model_validator(mode="after")
+    def _validate_sample_thresholds(self) -> MetricsConfig:
+        if self.min_samples_ok < self.min_samples_low:
+            raise ValueError("min_samples_ok debe ser mayor o igual que min_samples_low")
+        pace_ok = self.thresholds("pace")[1]
+        if self.pace_window_laps < pace_ok:
+            raise ValueError(
+                f"pace_window_laps ({self.pace_window_laps}) debe ser >= "
+                f"min_samples pace ok ({pace_ok})"
+            )
+        fuel_ok = self.thresholds("fuel")[1]
+        if self.fuel_window_laps < fuel_ok:
+            raise ValueError(
+                f"fuel_window_laps ({self.fuel_window_laps}) debe ser >= "
+                f"min_samples fuel ok ({fuel_ok})"
+            )
+        return self
+
+    def thresholds(self, family: str) -> tuple[int, int]:
+        if family not in METRIC_FAMILIES:
+            raise ValueError(
+                f"Familia desconocida {family!r}; válidas: {', '.join(sorted(METRIC_FAMILIES))}"
+            )
+        thresholds = self.min_samples.get(family)
+        if thresholds is not None:
+            return thresholds.low, thresholds.ok
+        return self.min_samples_low, self.min_samples_ok
+
+
 class AppConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     telemetry: TelemetryConfig = Field(default_factory=TelemetryConfig)
     capture: CaptureConfig = Field(default_factory=CaptureConfig)
+    metrics: MetricsConfig = Field(default_factory=MetricsConfig)
 
 
 def load_config(path: Path | None) -> AppConfig:

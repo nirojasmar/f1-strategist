@@ -37,7 +37,11 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-ra"
+addopts = "-ra -m 'not benchmark'"
+markers = [
+    "benchmark: mediciones de rendimiento no ejecutadas en la suite funcional",
+    "real_capture: invariantes y tolerancias sobre una captura real o F1_CAPTURE_FIXTURE",
+]
 
 [tool.pyright]
 include = ["src", "tests"]
