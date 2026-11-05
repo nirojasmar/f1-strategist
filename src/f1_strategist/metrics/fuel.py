@@ -6,10 +6,27 @@ from statistics import fmean, pstdev
 
 from ..race_state import PacketFreshness
 from .comparability import classify_lap, is_clean
-from .history import MetricInputs
+from .history import LapRecord, MetricInputs
 from .types import Metric, Quality, Window, assess_quality, insufficient, unavailable
 
 _EXCLUDED_FLAGS = frozenset({"partial_lap", "incomplete", "retired"})
+
+
+def _latest_stint_records(records: list[LapRecord]) -> list[LapRecord]:
+    """Selecciona el último stint y compuesto de la ventana de combustible."""
+    if not records:
+        return []
+
+    start = 0
+    for index, record in enumerate(records):
+        if record.pit_exit or record.tyre_age_start == 0:
+            start = index
+
+    stint = records[start:]
+    compound = stint[-1].compound
+    if compound is None:
+        return stint
+    return [record for record in stint if record.compound in (None, compound)]
 
 
 class FuelMetrics:
@@ -61,9 +78,10 @@ class FuelMetrics:
         low_at, ok_at = inputs.config.thresholds("fuel")
         window_size = inputs.config.fuel_window_laps
         selected = eligible[-window_size:]
+        stint_records = _latest_stint_records(selected)
         consumptions = [
             record.fuel_start_kg - record.fuel_end_kg
-            for record in selected
+            for record in stint_records
             if record.fuel_start_kg is not None and record.fuel_end_kg is not None
         ]
         comparable_count = sum(is_clean(classify_lap(record, inputs.config)) for record in selected)

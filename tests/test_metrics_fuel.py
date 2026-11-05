@@ -17,6 +17,10 @@ def _record(
     flags: frozenset[str] = frozenset(),
     closed: bool = True,
     track_status: frozenset[str] = frozenset(),
+    compound: str | None = None,
+    pit_exit: bool = False,
+    tyre_age_start: int | None = None,
+    tyre_age_end: int | None = None,
 ) -> LapRecord:
     return LapRecord(
         car_index=0,
@@ -26,6 +30,10 @@ def _record(
         closed=closed,
         flags=flags,
         track_status_seen=track_status,
+        compound=compound,
+        pit_exit=pit_exit,
+        tyre_age_start=tyre_age_start,
+        tyre_age_end=tyre_age_end,
     )
 
 
@@ -117,6 +125,23 @@ def test_fuel_uses_last_window_including_safety_car_and_reports_comparable_count
     assert metrics["fuel.consumption_per_lap"].sample_count == 3
     assert metrics["fuel.comparable_laps_count"].value == 2
     assert metrics["fuel.comparable_laps_count"].sample_count == 3
+
+
+def test_fuel_consumption_uses_the_latest_stint_and_compound() -> None:
+    records = (
+        _record(2, 50.0, 49.0, compound="soft"),
+        _record(3, 49.0, 48.0, compound="soft"),
+        _record(4, 48.0, 45.0, compound="medium"),
+        _record(5, 45.0, 42.0, compound="medium"),
+        _record(6, 42.0, 39.0, compound="medium"),
+    )
+
+    metrics = _metrics(_inputs(records, car=CarSnapshot(car_index=0, fuel_kg=30.0)))
+
+    assert metrics["fuel.consumption_per_lap"].value == 3.0
+    assert metrics["fuel.consumption_per_lap"].sample_count == 3
+    assert metrics["fuel.comparable_laps_count"].value == 5
+    assert metrics["fuel.comparable_laps_count"].sample_count == 5
 
 
 def test_fuel_requires_two_closed_samples_and_handles_missing_data() -> None:

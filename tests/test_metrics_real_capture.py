@@ -374,6 +374,10 @@ def test_trends_have_no_unjustified_jumps(replay: _Replay) -> None:
         "pace.trend_s_per_lap": _PACE_TREND_JUMP_S_PER_LAP,
         "tyres.wear_rate_pct_per_lap": _TYRE_TREND_JUMP_PCT_PER_LAP,
     }
+    sampled_metrics = {metric for metric, _, _ in replay.trend_jumps}
+    assert set(thresholds) <= sampled_metrics, (
+        f"faltan muestras de tendencia: {sorted(set(thresholds) - sampled_metrics)}"
+    )
     for metric, jump, lap_number in replay.trend_jumps:
         threshold = thresholds.get(metric)
         if threshold is None:

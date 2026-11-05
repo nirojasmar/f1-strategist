@@ -243,8 +243,8 @@ organiza en tres capas:
     stints por coche.
 -   **Módulos de métricas:** progreso, combustible, neumáticos, ritmo,
     intervalos, boxes, ERS, daños y entorno. Cada módulo implementa
-    `MetricModule.compute(inputs)` y se registra en
-    `registry.METRIC_MODULES`.
+    `MetricModule.compute(inputs)`; `create_metric_modules()` es el punto de
+    registro que usa `MetricsEngine` y crea una instancia independiente por motor.
 -   **Motor (`MetricsEngine`):** alimenta el histórico, ingiere
     `SessionHistory`, ejecuta los módulos y publica un
     `MetricsSnapshot` inmutable. Recalcula al cambiar de vuelta o de
