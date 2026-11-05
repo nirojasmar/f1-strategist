@@ -364,6 +364,8 @@ class LapTracker:
     ) -> bool:
         if previous is None or car.current_lap != previous.current_lap:
             return False
+        if car.result_status == "finished":
+            return False
         time_rewound = (
             car.current_lap_time_ms is not None
             and previous.current_lap_time_ms is not None

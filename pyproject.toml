@@ -40,6 +40,7 @@ testpaths = ["tests"]
 addopts = "-ra -m 'not benchmark'"
 markers = [
     "benchmark: mediciones de rendimiento no ejecutadas en la suite funcional",
+    "real_capture: invariantes y tolerancias sobre una captura real o F1_CAPTURE_FIXTURE",
 ]
 
 [tool.pyright]
