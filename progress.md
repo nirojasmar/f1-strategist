@@ -60,7 +60,7 @@ Documentos de diseño:
 | --- | --- | --- |
 | 0. Definición y entorno | Parcial | Repo, CI definido, config, receptor y guía de firewall listos. Falta validar la recepción desde otro PC de la red local y en Linux real. |
 | 1. Receptor, parser y estado | Implementada; CI verde | Snapshots inmutables de sesión y coches, daños, frescura por grupo, eventos y resumen de consola. |
-| 2. Métricas e histórico | En curso | A1--A4, B1--B3, histórico C1--C4/C2b, métricas D1--D9 e integración E1--E4 implementados; review Ola 4 corregida. Falta el cierre y la validación con captura real (F2--F4). |
+| 2. Métricas e histórico | Implementada; validada con captura real | A1--A4, B1--B3, histórico C1--C4/C2b, métricas D1--D9, integración E1--E4 y cierre F2--F4 completados. Tolerancias e invariantes verificados sobre Monza; CI posterior a la Ola 5 pendiente. |
 | 3. Grabación y replay | Parcial | Captura y reemisión UDP listas (se adelantaron en Sprint 1). Falta el replay interno hacia el pipeline y el registro en SQLite. |
 | 4--10 | No iniciadas | |
 
@@ -68,8 +68,9 @@ Documentos de diseño:
 
 **Verificado:**
 
--   La suite `pytest` (401 pruebas funcionales y 1 benchmark excluido por defecto), Ruff (lint y formato) y
-    Pyright pasan en Windows (2026-11-04).
+-   La suite `pytest` (410 pruebas funcionales y 1 benchmark excluido por defecto), Ruff (lint y formato,
+    78 archivos) y Pyright pasan en Windows (2026-11-04). Las 9 pruebas de `real_capture` se ejecutaron
+    contra el fixture real de Monza.
 -   CI de GitHub Actions exitoso para `phase-1-udp-parser`, commit `096eceb`, en Ubuntu y Windows; también
     pasaron Ruff (lint y formato) y Pyright (2026-11-02).
 -   El consumidor único aplica los paquetes parseados al estado y publica snapshots inmutables; la frescura
@@ -179,11 +180,12 @@ Documentos de diseño:
 
 **No verificado todavía:**
 
--   C2b usa escenarios sintéticos; falta contrastar con una captura real en F3 el orden de cambio de
-    neumáticos, el tiempo de la vuelta final y la ausencia de `damage_change` en vueltas sin incidentes.
--   Las métricas D1--D9 se validaron con escenarios sintéticos; falta calibrarlas con una captura real.
--   La integración E1--E4 está validada localmente con escenarios sintéticos. Siguen pendientes la
-    validación con captura real (F3) y volver a ejecutar CI de GitHub Actions después de la Ola 4.
+-   La calibración de los parámetros sin valor universal (capacidad de ERS, límite de desgaste y efecto
+    del combustible en el ritmo) queda para una fase posterior; las métricas dependientes siguen
+    `unavailable` hasta configurarlos.
+-   El fixture real de F3 no incluye lluvia ni safety car; las tolerancias bajo esas condiciones siguen
+    sin verificar.
+-   Queda volver a ejecutar CI de GitHub Actions después de la Ola 5.
 
 ## 6. Bitácora
 
@@ -335,6 +337,21 @@ Documentos de diseño:
 -   Los cambios de E1--E4 y de la review están en el árbol de trabajo de la rama
     `f2-wave-4-integration`, sin commit. El panel de estado de carrera existente no cambia.
 
+-   Implementada F2: se incorporó `monza-13-laps.f1cap.gz` como fixture real de 13 vueltas y 5,4 MB,
+    anonimizado y comprimido. El archivo no se versiona por superar el límite acordado; las pruebas se
+    omiten cuando no está disponible o no se define `F1_CAPTURE_FIXTURE`.
+-   Implementada F3: `tests/test_metrics_real_capture.py` reproduce la captura completa (36 471 paquetes,
+    sin truncamiento ni rechazos) y verifica 20 coches × 13 vueltas, tiempos y sectores oficiales,
+    mejor vuelta, paradas, edad y desgaste de neumáticos, combustible, intervalos, vueltas restantes y
+    tendencias. El coste medio de `MetricsEngine.apply` fue de 0,225 ms, por debajo de 1 ms.
+-   Corregido un falso `flashback` en la vuelta final: `_is_in_lap_flashback` ignora los coches con
+    `result_status="finished"` para no confundir el reinicio del cronómetro tras la meta con un replay.
+-   Implementada F4: actualizadas la sección 3.4 y el ejemplo de snapshot del outline, el criterio de
+    salida medido del roadmap y este estado de la fase. Las 9 pruebas `real_capture` pasan contra el
+    fixture real; la suite completa queda en 410 pruebas funcionales y 1 benchmark excluido, con Ruff
+    (78 archivos), Pyright y `git diff --check` correctos.
+-   Los cambios de F2--F4 están en la rama `f2-wave-5-validation`; el fixture real permanece fuera de git.
+
 ## 7. Hallazgos de la primera captura real
 
 Captura: 68 541 paquetes, ~66 MB, 795,5 s entre el primer y el último paquete. Salida de `inspect`:
@@ -477,14 +494,16 @@ uv run f1-strategist metrics captures/<archivo>.f1cap --format json
 -   Si el juego envía por broadcast, la app debe escuchar en `0.0.0.0`; en loopback no recibe nada.
 -   Otra aplicación de telemetría usando el puerto 20777 provoca un error claro al abrir el socket.
 
-## 10. Siguiente paso: validación y cierre de la Fase 2
+## 10. Siguiente paso: Fase 3 y calibración diferida
 
-La Fase 2 está **en curso**. A1--A4, B1--B3, el histórico C1--C4/C2b, las métricas D1--D9 y la
-integración E1--E4 están implementados, incluida la review de la Ola 4. El siguiente bloque es:
+La Fase 2 está **cerrada**. A1--A4, B1--B3, el histórico C1--C4/C2b, las métricas D1--D9, la
+integración E1--E4 y el cierre F2--F4 están completados. Las tolerancias e invariantes se validaron
+sobre el fixture real de Monza. El siguiente trabajo queda fuera de esta fase:
 
-1.  **Validación con captura real:** recortar y anonimizar una captura, incorporar un fixture real
-    cuando esté disponible y revisar tolerancias e invariantes (F2--F3).
-2.  **Cierre:** actualizar la documentación y `progress.md`, y volver a ejecutar CI (F4).
+1.  **Fase 3:** completar el replay interno hacia el pipeline y la persistencia en SQLite.
+2.  **Calibración diferida:** ajustar los parámetros que hoy no tienen valor universal y ampliar la
+    validación a capturas con lluvia, safety car y otras condiciones.
+3.  **CI:** volver a ejecutar GitHub Actions después de la Ola 5.
 
 ## 11. Pendientes y decisiones abiertas
 
@@ -494,16 +513,5 @@ integración E1--E4 están implementados, incluida la review de la Ola 4. El sig
 -   Esquema de SQLite; modelo local concreto del LLM; voz; framework del front-end de la GUI;
     empaquetado de escritorio; fórmulas de degradación y simulación de paradas; umbrales iniciales;
     idioma por defecto y cambio en caliente.
--   Registrar hallazgos de nuevas capturas y ejecutar CI de GitHub Actions después de la Ola 4; la
-    calibración con captura real sigue pendiente.
-
-### 2026-11-02
-
--   Corregidos los offsets y conteos de stints de `SessionHistory` y `FinalClassification`; los históricos
-    ahora exponen solo los elementos declarados por sus contadores.
--   Añadidos fixtures de captura anonimizados, pruebas de layout con bytes no nulos, Hypothesis y un replay
-    válido de extremo a extremo.
--   La versión menor 1.x se acepta con aviso cuando el resto de la cabecera y el tamaño coinciden; los
-    tipos no implementados se ignoran sin generar rechazos.
--   Las métricas usan `overall_frame_identifier`, se calibran por cadencia observada y limitan las sesiones
-    retenidas. Los errores y diagnósticos pasan a claves neutrales al idioma para renderizarse en consola.
+-   Ejecutar CI de GitHub Actions después de la Ola 5; la calibración de parámetros abiertos y las
+    condiciones de lluvia o safety car quedan para fases posteriores con capturas variadas.

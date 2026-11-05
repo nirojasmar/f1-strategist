@@ -149,8 +149,31 @@ por métrica. - Exportación de métricas para análisis.
 
 ### Criterio de salida
 
-Las métricas básicas coinciden con los datos observables del juego
-dentro de tolerancias definidas y no presentan saltos injustificados.
+Criterio medido sobre el fixture real de Monza
+(`tests/fixtures/real/monza-13-laps.f1cap.gz`, 13 vueltas y 20 coches
+clasificados): **verificado**. Las métricas básicas coinciden con los
+datos observables del juego dentro de estas tolerancias y no presentan
+saltos injustificados:
+
+-   Tiempos y sectores oficiales, mejor vuelta, vueltas completadas,
+    paradas, edad de neumático, intervalos y suma de vueltas frente al
+    tiempo total de carrera: exactos, salvo la suma frente al tiempo
+    total, que admite 0,05 s.
+-   Consumo de combustible: ±0,05 kg/lap frente al cálculo independiente
+    del tanque.
+-   Vueltas restantes: ±0,05 vueltas.
+-   Tendencias: sin saltos injustificados; el salto máximo entre
+    publicaciones consecutivas se limita a 0,5 s/lap para ritmo y
+    0,1 %/lap para desgaste. Las tendencias de intervalo se publican,
+    pero no se comparan contra un umbral fijo porque el rival puede
+    cambiar.
+-   Replay completo: 36 471 paquetes leídos y parseados, sin
+    truncamiento ni rechazos. Coste medio de `MetricsEngine.apply`:
+    0,225 ms, por debajo de 1 ms.
+
+Las tolerancias se comprueban en `tests/test_metrics_real_capture.py`.
+La validación usa un fixture anonimizado y no cubre todavía todas las
+condiciones de carrera (por ejemplo, lluvia o safety car).
 
 ------------------------------------------------------------------------
 
