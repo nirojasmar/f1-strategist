@@ -2,31 +2,35 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from statistics import fmean, pstdev
 
 from ..race_state import PacketFreshness
 from .comparability import classify_lap, is_clean
-from .history import LapRecord, MetricInputs
+from .history import LapRecord, MetricInputs, current_stint_bounds
 from .types import Metric, Quality, Window, assess_quality, insufficient, unavailable
 
-_EXCLUDED_FLAGS = frozenset({"partial_lap", "incomplete", "retired"})
+_EXCLUDED_FLAGS = frozenset({"partial_lap", "incomplete", "telemetry_partial", "retired"})
 
 
-def _latest_stint_records(records: list[LapRecord]) -> list[LapRecord]:
-    """Selecciona el último stint y compuesto de la ventana de combustible."""
-    if not records:
-        return []
-
-    start = 0
-    for index, record in enumerate(records):
-        if record.pit_exit or record.tyre_age_start == 0:
-            start = index
-
-    stint = records[start:]
-    compound = stint[-1].compound
-    if compound is None:
-        return stint
-    return [record for record in stint if record.compound in (None, compound)]
+def _stint_groups(records: list[LapRecord]) -> tuple[tuple[LapRecord, ...], ...]:
+    """Splits complete history before eligibility filtering so pit exits remain boundaries."""
+    stints: list[list[LapRecord]] = []
+    current: list[LapRecord] = []
+    compound: str | None = None
+    for record in records:
+        compound_changed = (
+            record.compound is not None and compound is not None and record.compound != compound
+        )
+        if current and (record.pit_exit or record.tyre_age_start == 0 or compound_changed):
+            stints.append(current)
+            current = []
+        current.append(record)
+        if record.compound is not None:
+            compound = record.compound
+    if current:
+        stints.append(current)
+    return tuple(tuple(stint) for stint in stints)
 
 
 class FuelMetrics:
@@ -78,10 +82,49 @@ class FuelMetrics:
         low_at, ok_at = inputs.config.thresholds("fuel")
         window_size = inputs.config.fuel_window_laps
         selected = eligible[-window_size:]
-        stint_records = _latest_stint_records(selected)
+        stint_records = _stint_groups([record for record in records if record.closed])
+        eligible_laps = {record.lap_number for record in eligible}
+        bounds = current_stint_bounds(inputs, inputs.car_index)
+        eligible_by_stint = [
+            [record for record in stint if record.lap_number in eligible_laps][-window_size:]
+            for stint in stint_records
+        ]
+        current_stint_index = (
+            next(
+                (
+                    index
+                    for index, stint in enumerate(stint_records)
+                    if stint[-1].lap_number >= bounds[0]
+                    and (bounds[1] is None or stint[0].lap_number <= bounds[1])
+                ),
+                len(stint_records),
+            )
+            if bounds is not None
+            else max(0, len(stint_records) - 1)
+        )
+        current_samples = (
+            [
+                record
+                for record in eligible_by_stint[current_stint_index]
+                if bounds is None
+                or (
+                    record.lap_number >= bounds[0]
+                    and (bounds[1] is None or record.lap_number <= bounds[1])
+                )
+            ]
+            if current_stint_index < len(eligible_by_stint)
+            else []
+        )
+        used_previous_stint = False
+        if len(current_samples) < max(2, low_at):
+            for previous_samples in reversed(eligible_by_stint[:current_stint_index]):
+                if len(previous_samples) >= max(2, low_at):
+                    current_samples = previous_samples
+                    used_previous_stint = True
+                    break
         consumptions = [
             record.fuel_start_kg - record.fuel_end_kg
-            for record in stint_records
+            for record in current_samples
             if record.fuel_start_kg is not None and record.fuel_end_kg is not None
         ]
         comparable_count = sum(is_clean(classify_lap(record, inputs.config)) for record in selected)
@@ -140,6 +183,14 @@ class FuelMetrics:
                 len(consumptions),
                 sources,
             )
+            fallback_quality = Quality.STALE if stale else Quality.LOW
+            fallback_note = ("fuel_previous_stint_fallback",)
+            if used_previous_stint:
+                consumption_metric = replace(
+                    consumption_metric,
+                    quality=fallback_quality,
+                    notes=fallback_note,
+                )
             stddev_metric = _calculated(
                 "fuel.consumption_stddev",
                 pstdev(consumptions),
@@ -150,9 +201,21 @@ class FuelMetrics:
                 len(consumptions),
                 sources,
             )
+            if used_previous_stint:
+                stddev_metric = replace(
+                    stddev_metric,
+                    quality=fallback_quality,
+                    notes=fallback_note,
+                )
 
         laps_of_fuel = tank / consumption if tank is not None and consumption else None
-        estimate_quality = Quality.OK if len(consumptions) >= ok_at else Quality.LOW
+        estimate_quality = (
+            Quality.LOW
+            if used_previous_stint
+            else Quality.OK
+            if len(consumptions) >= ok_at
+            else Quality.LOW
+        )
         laps_of_fuel_metric = (
             _derived_metric(
                 "fuel.laps_of_fuel",
@@ -247,8 +310,13 @@ class FuelMetrics:
                 sources=("car_status",),
             )
         )
+        margin_laps = (
+            laps_of_fuel - laps_remaining
+            if laps_of_fuel is not None and laps_remaining is not None
+            else None
+        )
         game_deviation = (
-            laps_of_fuel - game_laps if laps_of_fuel is not None and game_laps is not None else None
+            margin_laps - game_laps if margin_laps is not None and game_laps is not None else None
         )
         game_deviation_metric = (
             _derived_metric(
@@ -256,9 +324,9 @@ class FuelMetrics:
                 game_deviation,
                 "lap",
                 inputs.now,
-                stale,
+                margin_stale,
                 len(consumptions),
-                sources,
+                ("car_status", "lap_data", "session"),
                 estimate_quality,
             )
             if game_deviation is not None

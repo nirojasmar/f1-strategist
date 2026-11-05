@@ -203,7 +203,7 @@ def test_stale_session_packet_is_ignored() -> None:
     assert history.snapshot().stints_for(0) == ()
 
 
-def test_official_time_confirms_a_previously_incomplete_lap() -> None:
+def test_official_time_preserves_partial_telemetry_coverage_flags() -> None:
     history = LapHistory()
     history.reset(1)
     history.upsert(
@@ -212,7 +212,7 @@ def test_official_time_confirms_a_previously_incomplete_lap() -> None:
             lap_number=3,
             lap_time_s=90.0,
             lap_time_source="lap_data",
-            flags=frozenset({"incomplete", "first_lap"}),
+            flags=frozenset({"incomplete", "partial_lap", "first_lap"}),
             closed=True,
         )
     )
@@ -230,4 +230,4 @@ def test_official_time_confirms_a_previously_incomplete_lap() -> None:
     record = history.get(0, 3)
     assert record is not None
     assert record.lap_time_s == 70.0
-    assert record.flags == frozenset({"first_lap"})
+    assert record.flags == frozenset({"telemetry_partial", "first_lap"})

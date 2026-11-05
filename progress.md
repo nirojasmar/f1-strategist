@@ -1,6 +1,6 @@
 # Progreso del proyecto --- F1 Strategist
 
-**Última actualización:** 2026-11-04
+**Última actualización:** 2026-11-05
 **Propósito de este archivo:** llevar trazabilidad del avance importante y dejar el contexto
 necesario para que cualquier persona o agente que llegue al proyecto entienda dónde estamos, qué
 está decidido, qué está verificado y qué falta.
@@ -60,7 +60,7 @@ Documentos de diseño:
 | --- | --- | --- |
 | 0. Definición y entorno | Parcial | Repo, CI definido, config, receptor y guía de firewall listos. Falta validar la recepción desde otro PC de la red local y en Linux real. |
 | 1. Receptor, parser y estado | Implementada; CI verde | Snapshots inmutables de sesión y coches, daños, frescura por grupo, eventos y resumen de consola. |
-| 2. Métricas e histórico | Implementada; validada con captura real | A1--A4, B1--B3, histórico C1--C4/C2b, métricas D1--D9, integración E1--E4 y cierre F2--F4 completados. Tolerancias e invariantes verificados sobre Monza; CI posterior a la Ola 5 pendiente. |
+| 2. Métricas e histórico | Implementada; validación parcial | A1--A4, B1--B3, C1--C4/C2b, D1--D9, E1--E4 y F2--F4 implementados. F3 y la documentación se actualizaron según O5; la semántica/tolerancia del MFD sigue abierta aunque la validación local actual pasa. |
 | 3. Grabación y replay | Parcial | Captura y reemisión UDP listas (se adelantaron en Sprint 1). Falta el replay interno hacia el pipeline y el registro en SQLite. |
 | 4--10 | No iniciadas | |
 
@@ -352,6 +352,28 @@ Documentos de diseño:
     (78 archivos), Pyright y `git diff --check` correctos.
 -   Los cambios de F2--F4 están en la rama `f2-wave-5-validation`; el fixture real permanece fuera de git.
 
+### 2026-11-05
+
+-   Aplicadas las correcciones pertinentes del review O5: un tiempo oficial ya no oculta cobertura
+    parcial; combustible segmenta primero los stints y usa un fallback explícito de un solo stint
+    anterior; `pace.best_lap_s` representa la mejor vuelta oficial válida, incluso con tráfico.
+-   F3 ahora falla ante una ruta de captura explícita inexistente y omite solo el fixture opcional
+    no solicitado. La validación exige muestras crudas suficientes y compara extremos por vuelta de
+    `CarStatus`/`CarDamage` con el histórico, además de revisar progreso, paradas, intervalos y
+    desviación de combustible durante las publicaciones.
+-   `fuel.game_deviation_laps` compara el margen estimado al final con el valor `fuel_remaining_laps`
+    del MFD. La semántica del protocolo sigue sin especificar más que “valor en el MFD”; la tolerancia
+    de ±0,3 vueltas no se declara cumplida.
+-   El detector de saltos conserva causas y reinicia continuidad cuando falta una muestra válida.
+    F3 aplica umbrales a ritmo y desgaste sin causa y verifica disponibilidad/atribución para
+    tendencias de intervalo, sin imponerles un umbral numérico.
+-   El ejemplo de snapshot del outline queda identificado como ilustrativo y refleja el esquema
+    medido de `pace.last_lap_s` y `tyres.wear_rate_pct_per_lap`; el roadmap limita las afirmaciones a
+    lo comprobado en el fixture reducido.
+-   Validación final local: 421 pruebas pasan y 1 benchmark queda excluido por defecto; el benchmark
+    pasa al ejecutarse con `-m benchmark` y las 15 pruebas de `real_capture` pasan con el fixture local.
+    Ruff (archivos Python afectados), Pyright y `git diff --check` pasan. CI remota no se ejecutó.
+
 ## 7. Hallazgos de la primera captura real
 
 Captura: 68 541 paquetes, ~66 MB, 795,5 s entre el primer y el último paquete. Salida de `inspect`:
@@ -496,9 +518,9 @@ uv run f1-strategist metrics captures/<archivo>.f1cap --format json
 
 ## 10. Siguiente paso: Fase 3 y calibración diferida
 
-La Fase 2 está **cerrada**. A1--A4, B1--B3, el histórico C1--C4/C2b, las métricas D1--D9, la
-integración E1--E4 y el cierre F2--F4 están completados. Las tolerancias e invariantes se validaron
-sobre el fixture real de Monza. El siguiente trabajo queda fuera de esta fase:
+La implementación de la Fase 2 está completada, pero su criterio de aceptación queda **parcialmente
+abierto**: la semántica del indicador de combustible del MFD y su tolerancia aún no están verificadas.
+El fixture de Monza acredita solo los escenarios observados localmente. El siguiente trabajo es:
 
 1.  **Fase 3:** completar el replay interno hacia el pipeline y la persistencia en SQLite.
 2.  **Calibración diferida:** ajustar los parámetros que hoy no tienen valor universal y ampliar la

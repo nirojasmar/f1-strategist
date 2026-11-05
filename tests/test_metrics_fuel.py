@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+import pytest
+
 from f1_strategist.config import MetricsConfig, SampleThresholds
 from f1_strategist.metrics.fuel import FuelMetrics
-from f1_strategist.metrics.history import LapHistorySnapshot, LapRecord, MetricInputs
+from f1_strategist.metrics.history import LapHistory, LapHistorySnapshot, LapRecord, MetricInputs
 from f1_strategist.metrics.types import Quality
 from f1_strategist.race_state import CarSnapshot, RaceSessionSnapshot, RaceState
 
@@ -101,7 +103,7 @@ def test_constant_fuel_consumption_and_finish_margins() -> None:
     assert metrics["fuel.margin_laps_at_finish"].value == 10.2
     assert metrics["fuel.margin_kg_at_finish"].value == 20.4
     assert metrics["fuel.game_remaining_laps"].value == 14.0
-    assert metrics["fuel.game_deviation_laps"].value == 1.0
+    assert metrics["fuel.game_deviation_laps"].value == pytest.approx(-3.8)
 
 
 def test_fuel_uses_last_window_including_safety_car_and_reports_comparable_count() -> None:
@@ -141,6 +143,108 @@ def test_fuel_consumption_uses_the_latest_stint_and_compound() -> None:
     assert metrics["fuel.consumption_per_lap"].value == 3.0
     assert metrics["fuel.consumption_per_lap"].sample_count == 3
     assert metrics["fuel.comparable_laps_count"].value == 5
+    assert metrics["fuel.comparable_laps_count"].sample_count == 5
+
+
+def test_fuel_falls_back_to_one_complete_prior_stint_after_a_pit_stop() -> None:
+    records = (
+        _record(1, 50.0, 48.0, compound="soft"),
+        _record(2, 48.0, 46.0, compound="soft"),
+        _record(3, 46.0, 44.0, compound="soft"),
+        _record(
+            4,
+            44.0,
+            43.0,
+            compound="medium",
+            pit_exit=True,
+            flags=frozenset({"partial_lap"}),
+        ),
+        _record(5, 43.0, 41.0, compound="medium", tyre_age_start=1, tyre_age_end=2),
+    )
+    inputs = _inputs(
+        records,
+        car=CarSnapshot(
+            car_index=0,
+            current_lap=6,
+            lap_distance_m=1000.0,
+            fuel_kg=30.0,
+            actual_tyre_compound="medium",
+            tyre_age_laps=2,
+        ),
+    )
+
+    metrics = _metrics(inputs)
+
+    assert metrics["fuel.consumption_per_lap"].value == 2.0
+    assert metrics["fuel.consumption_per_lap"].sample_count == 3
+    assert metrics["fuel.consumption_per_lap"].quality is Quality.LOW
+    assert metrics["fuel.consumption_per_lap"].notes == ("fuel_previous_stint_fallback",)
+    assert metrics["fuel.margin_laps_at_finish"].value is not None
+    assert metrics["fuel.margin_laps_at_finish"].quality is Quality.LOW
+
+
+def test_official_timing_does_not_make_partial_fuel_sample_eligible() -> None:
+    history = LapHistory()
+    history.upsert(_record(1, 40.0, 39.0, flags=frozenset({"partial_lap"}), compound="soft"))
+    history.upsert(_record(2, 39.0, 37.0, compound="soft"))
+    history.upsert(_record(3, 37.0, 35.0, compound="soft"))
+    history.update_lap_timing(
+        0,
+        1,
+        lap_time_s=90.0,
+        sector1_s=None,
+        sector2_s=None,
+        sector3_s=None,
+        valid=True,
+    )
+    inputs = _inputs(
+        car=CarSnapshot(car_index=0, current_lap=4, fuel_kg=30.0, actual_tyre_compound="soft")
+    )
+    inputs = replace(inputs, history=history.snapshot())
+
+    metrics = _metrics(inputs)
+
+    timed_partial = history.get(0, 1)
+    assert timed_partial is not None
+    assert "telemetry_partial" in timed_partial.flags
+    assert "partial_lap" not in timed_partial.flags
+    assert metrics["fuel.consumption_per_lap"].value == 2.0
+    assert metrics["fuel.consumption_per_lap"].sample_count == 2
+
+
+def test_fuel_excludes_partial_pit_exit_before_finding_same_compound_stint() -> None:
+    records = (
+        _record(1, 60.0, 58.0, compound="soft"),
+        _record(2, 58.0, 56.0, compound="soft"),
+        _record(3, 56.0, 54.0, compound="soft"),
+        _record(
+            4,
+            54.0,
+            53.0,
+            compound="soft",
+            pit_exit=True,
+            flags=frozenset({"partial_lap"}),
+        ),
+        _record(5, 53.0, 52.0, compound="soft", tyre_age_start=1, tyre_age_end=2),
+        _record(6, 52.0, 51.0, compound="soft", tyre_age_start=2, tyre_age_end=3),
+    )
+
+    metrics = _metrics(
+        _inputs(
+            records,
+            car=CarSnapshot(
+                car_index=0,
+                current_lap=7,
+                fuel_kg=30.0,
+                actual_tyre_compound="soft",
+                tyre_age_laps=3,
+            ),
+        )
+    )
+
+    assert metrics["fuel.consumption_per_lap"].value == 1.0
+    assert metrics["fuel.consumption_per_lap"].sample_count == 2
+    assert metrics["fuel.comparable_laps_count"].value == 4
     assert metrics["fuel.comparable_laps_count"].sample_count == 5
 
 

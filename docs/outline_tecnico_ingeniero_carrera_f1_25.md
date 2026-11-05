@@ -574,7 +574,8 @@ El comando `f1-strategist metrics CAPTURA --format json` exporta el
 `MetricsSnapshot` publicado al final del replay. El contrato es estable
 y lleva `schema_version: 1`; cada métrica incluye valor, unidad,
 calidad, ventana, número de muestras, instante de cálculo, fuentes y
-notas. Ejemplo abreviado con datos de la captura real de Monza:
+notas. El siguiente ejemplo es ilustrativo: sus valores no representan
+una salida real de Monza ni validan tolerancias:
 
 ``` json
 {
@@ -603,23 +604,23 @@ notas. Ejemplo abreviado con datos de la captura real de Monza:
       "notes": []
     },
     "tyres.wear_rate_pct_per_lap": {
-      "value": 2.7125,
+      "value": 2.792857,
       "unit": "%/lap",
-      "quality": "ok",
-      "window": {"kind": "laps", "size": 5},
-      "sample_count": 5,
+      "quality": "stale",
+      "window": {"kind": "stint", "size": null},
+      "sample_count": 4,
       "computed_at_monotonic": 1139.389,
-      "sources": ["lap_history", "car_damage"],
+      "sources": ["car_damage", "car_status", "lap_data"],
       "notes": []
     },
     "pace.last_lap_s": {
-      "value": 81.215,
+      "value": 84.203,
       "unit": "s",
-      "quality": "ok",
-      "window": {"kind": "laps", "size": 5},
+      "quality": "stale",
+      "window": {"kind": "instant", "size": null},
       "sample_count": 1,
       "computed_at_monotonic": 1139.389,
-      "sources": ["lap_history", "session_history"],
+      "sources": ["lap_history", "lap_data", "session_history"],
       "notes": []
     },
     "gap.ahead_s": {

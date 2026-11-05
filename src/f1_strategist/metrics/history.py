@@ -23,6 +23,9 @@ class _LapTimingUpdate:
     valid: bool
 
     def apply(self, record: LapRecord) -> LapRecord:
+        flags = record.flags
+        if {"incomplete", "partial_lap"} & flags:
+            flags = (flags - {"incomplete", "partial_lap"}) | {"telemetry_partial"}
         return replace(
             record,
             lap_time_s=self.lap_time_s,
@@ -31,7 +34,7 @@ class _LapTimingUpdate:
             sector2_s=self.sector2_s,
             sector3_s=self.sector3_s,
             valid=self.valid,
-            flags=record.flags - {"incomplete", "partial_lap"},
+            flags=flags,
         )
 
 
@@ -294,8 +297,16 @@ def current_stint_bounds(
 
     prior_records = tuple(record for record in records if record.lap_number <= current_lap)
     latest = prior_records[-1] if prior_records else None
-    if latest is not None and latest.tyre_age_start == 0:
+    if latest is not None and (latest.tyre_age_start == 0 or latest.pit_exit):
         return latest.lap_number, None
+    observed_start = next(
+        (
+            record.lap_number
+            for record in reversed(prior_records)
+            if record.tyre_age_start == 0 or record.pit_exit
+        ),
+        None,
+    )
     official_stints = tuple(
         sorted(inputs.history.stints_for(car_index), key=lambda stint: stint.start_lap)
     )
@@ -310,12 +321,13 @@ def current_stint_bounds(
     )
     if official_index is not None:
         official = official_stints[official_index]
+        start_lap = max(official.start_lap, observed_start or official.start_lap)
         end_lap = official.end_lap
         if official_index + 1 < len(official_stints):
             next_start = official_stints[official_index + 1].start_lap
             inferred_end = next_start - 1
             end_lap = inferred_end if end_lap is None else min(end_lap, inferred_end)
-        return official.start_lap, end_lap
+        return start_lap, end_lap
 
     if latest is None:
         return current_lap, None
@@ -323,7 +335,9 @@ def current_stint_bounds(
         return current_lap, None
     start_lap = latest.lap_number
     for record in reversed(prior_records[:-1]):
-        if record.compound != latest.compound or record.tyre_age_start == 0:
+        if record.compound != latest.compound or record.tyre_age_start == 0 or record.pit_exit:
+            if record.pit_exit or record.tyre_age_start == 0:
+                start_lap = record.lap_number
             break
         start_lap = record.lap_number
     return start_lap, None
