@@ -15,6 +15,7 @@ from . import __version__
 from .capture import CaptureError
 from .config import ConfigError, apply_overrides, load_config
 from .console import format_bytes, run_console
+from .metrics.export import EXPORT_FORMATS, render_metrics_export, run_metrics_capture
 from .packets import packet_name
 from .receiver import ReceiverError
 from .replay import replay_capture
@@ -86,6 +87,17 @@ def _build_parser() -> argparse.ArgumentParser:
 
     inspect = sub.add_parser("inspect", help="resume el contenido de una captura")
     inspect.add_argument("file", type=Path)
+
+    metrics = sub.add_parser("metrics", help="calcula y exporta métricas de una captura")
+    metrics.add_argument("file", type=Path, help="captura de entrada (.f1cap o .f1cap.gz)")
+    metrics.add_argument("--out", type=Path, help="archivo de salida (por defecto, stdout)")
+    metrics.add_argument(
+        "--format",
+        default="json",
+        metavar="FORMATO",
+        help=f"formato de salida: {', '.join(EXPORT_FORMATS)}",
+    )
+    metrics.add_argument("--config", type=Path, help="archivo TOML de configuración")
 
     trim = sub.add_parser("trim", help="recorta y opcionalmente anonimiza una captura")
     trim.add_argument("input", type=Path, help="captura de entrada (.f1cap o .f1cap.gz)")
@@ -206,6 +218,23 @@ def _cmd_inspect(args: argparse.Namespace, console: Console, err: Console) -> in
     return 0
 
 
+def _cmd_metrics(args: argparse.Namespace, console: Console, err: Console) -> int:
+    export_format = args.format.lower()
+    if export_format not in EXPORT_FORMATS:
+        valid = ", ".join(EXPORT_FORMATS)
+        raise ValueError(f"Formato de exportación no válido: {args.format!r}; usa {valid}")
+    cfg = load_config(args.config)
+    result = run_metrics_capture(args.file, cfg.metrics)
+    output = render_metrics_export(result.snapshot, result.history, export_format)
+    if args.out is None:
+        sys.stdout.write(output)
+    else:
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        args.out.write_text(output, encoding="utf-8")
+        console.print(f"Métricas exportadas en {args.out}")
+    return 0
+
+
 def _cmd_trim(args: argparse.Namespace, console: Console, err: Console) -> int:
     packet_types = frozenset().union(*args.types) if args.types else None
     decimate: dict[int, int] = {}
@@ -243,6 +272,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "run": _cmd_run,
         "replay": _cmd_replay,
         "inspect": _cmd_inspect,
+        "metrics": _cmd_metrics,
         "trim": _cmd_trim,
     }
     try:
