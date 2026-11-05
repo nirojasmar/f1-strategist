@@ -94,7 +94,8 @@ class PaceMetrics:
             if record.closed and record.lap_time_s is not None
         )
         records = tuple(
-            record for record in all_records
+            record
+            for record in all_records
             if record.lap_time_s is not None
             and not _NEVER_PACE_FLAGS.intersection(classify_lap(record, inputs.config))
         )
@@ -140,11 +141,7 @@ class PaceMetrics:
         last_record = records[-1] if records else None
         last_lap = last_record.lap_time_s if last_record is not None else None
         best_lap = min(
-            (
-                record.lap_time_s
-                for record in official_valid
-                if record.lap_time_s is not None
-            ),
+            (record.lap_time_s for record in official_valid if record.lap_time_s is not None),
             default=None,
         )
         best_record_count = len(official_valid)
