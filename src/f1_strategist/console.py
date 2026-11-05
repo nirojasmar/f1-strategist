@@ -99,12 +99,16 @@ def _render_race_summary(race: RaceStateSnapshot, now: float) -> Panel:
     return Panel(table, title="Estado de carrera", expand=False)
 
 
-def _render_metrics_summary(metrics: MetricsSnapshot) -> Panel:
+def _render_metrics_summary(
+    metrics: MetricsSnapshot,
+    race: RaceStateSnapshot | None = None,
+    now: float | None = None,
+) -> Panel:
     table = Table.grid(padding=(0, 2))
     table.add_column(style="bold")
     table.add_column(justify="right")
     table.add_column()
-    for label, value, quality in render_metrics_rows(metrics):
+    for label, value, quality in render_metrics_rows(metrics, race, now):
         table.add_row(label, value, quality)
     return Panel(table, title=METRICS_PANEL_TITLE, expand=False)
 
@@ -164,7 +168,7 @@ def render(cfg: AppConfig, session: SessionPort, now: float | None = None) -> Gr
     parts: list[RenderableType] = [
         Panel(info, title="F1 Strategist · telemetría UDP", expand=False),
         _render_race_summary(session.race_snapshot(), now),
-        _render_metrics_summary(session.metrics_snapshot()),
+        _render_metrics_summary(session.metrics_snapshot(), session.race_snapshot(), now),
     ]
     if snap.packets_by_id:
         table = Table(title="Paquetes por tipo · huecos estimados", expand=False)

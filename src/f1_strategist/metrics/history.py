@@ -31,6 +31,7 @@ class _LapTimingUpdate:
             sector2_s=self.sector2_s,
             sector3_s=self.sector3_s,
             valid=self.valid,
+            flags=record.flags - {"incomplete", "partial_lap"},
         )
 
 

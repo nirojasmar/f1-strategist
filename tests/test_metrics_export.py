@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+import f1_strategist.cli as cli_module
 from f1_strategist.capture import CapturedPacket, CaptureWriter
 from f1_strategist.cli import main
 from f1_strategist.metrics.engine import MetricsSnapshot
@@ -244,7 +245,9 @@ def test_metrics_command_exports_a_scenario(
 
     csv_out = tmp_path / "laps.csv"
     assert main(["metrics", str(capture), "--format", "csv", "--out", str(csv_out)]) == 0
-    csv_text = csv_out.read_text(encoding="utf-8")
+    csv_bytes = csv_out.read_bytes()
+    assert b"\r\n" not in csv_bytes
+    csv_text = csv_bytes.decode("utf-8")
     assert csv_text.splitlines()[0].split(",") == list(LAP_COLUMNS)
     assert len(list(csv.DictReader(io.StringIO(csv_text)))) == len(rows)
 
@@ -270,10 +273,70 @@ def test_metrics_command_handles_an_empty_capture(
         pass
 
     assert main(["metrics", str(capture)]) == 0
-    payload = json.loads(capsys.readouterr().out)
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
     assert payload == {
         "schema_version": EXPORT_SCHEMA_VERSION,
         "session_uid": None,
         "computed_at_monotonic": None,
         "metrics": {},
     }
+    assert "no contiene paquetes válidos" in captured.err
+
+
+def test_metrics_command_refuses_to_overwrite_the_capture(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    capture = tmp_path / "empty.f1cap"
+    with CaptureWriter(capture):
+        pass
+    original = capture.read_bytes()
+
+    assert main(["metrics", str(capture), "--out", str(capture)]) == 2
+
+    assert capture.read_bytes() == original
+    assert "no puede sobrescribir" in capsys.readouterr().err
+
+
+def test_metrics_command_warns_about_a_truncated_capture(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    capture = tmp_path / "truncated.f1cap"
+    with CaptureWriter(capture):
+        pass
+    capture.write_bytes(capture.read_bytes() + b"\x00\x00")
+
+    assert main(["metrics", str(capture)]) == 0
+    assert "registro incompleto" in capsys.readouterr().err
+
+
+def test_metrics_command_warns_about_parser_rejections(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    capture = tmp_path / "rejected.f1cap"
+    with CaptureWriter(capture) as writer:
+        writer.write(
+            CapturedPacket(
+                recv_time_ns=1_000_000_000,
+                source_ip="127.0.0.1",
+                source_port=4000,
+                payload=make_packet(250),
+            )
+        )
+
+    assert main(["metrics", str(capture)]) == 0
+    assert "rechazado(s) por el parser" in capsys.readouterr().err
+
+
+def test_write_stdout_encodes_utf8_even_with_a_cp1252_console(monkeypatch) -> None:
+    buffer = io.BytesIO()
+    stream = io.TextIOWrapper(buffer, encoding="cp1252")
+    monkeypatch.setattr(cli_module.sys, "stdout", stream)
+
+    cli_module._write_stdout("°C")
+    stream.flush()
+
+    assert buffer.getvalue().decode("utf-8") == "°C"

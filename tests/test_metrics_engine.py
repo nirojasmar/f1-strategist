@@ -192,6 +192,7 @@ def test_complete_scenario_publishes_every_module_family() -> None:
     assert all(record.lap_time_source == "session_history" for record in records)
 
 
+@pytest.mark.benchmark
 @pytest.mark.parametrize("budget_ms", [1.0])
 def test_apply_cost_stays_below_one_millisecond(budget_ms: float) -> None:
     state = RaceState()
@@ -207,3 +208,79 @@ def test_apply_cost_stays_below_one_millisecond(budget_ms: float) -> None:
 
     mean_ms = 1000.0 * elapsed / calls
     assert mean_ms < budget_ms
+
+
+class _PlayerModule:
+    name = "player"
+
+    def compute(self, inputs: MetricInputs) -> tuple[Metric, ...]:
+        return (
+            Metric(
+                "player.index",
+                inputs.car_index,
+                "",
+                Window("instant"),
+                Quality.OK,
+                1,
+                inputs.now,
+            ),
+        )
+
+
+def test_unknown_player_does_not_fall_back_to_car_zero() -> None:
+    module = _PlayerModule()
+    engine = MetricsEngine(modules=(module,))
+    state, packet = _state_and_packet()
+
+    engine.apply(packet, 1.0, replace(state, player_car_index=None))
+    assert engine.snapshot().get("player.index").value == -1  # type: ignore[union-attr]
+
+    engine.apply(packet, 1.1, replace(state, player_car_index=1))
+    assert engine.snapshot().get("player.index").value == 1  # type: ignore[union-attr]
+
+
+def test_each_engine_owns_independent_module_instances() -> None:
+    first = MetricsEngine()
+    second = MetricsEngine()
+
+    assert first.modules is not second.modules
+    assert all(left is not right for left, right in zip(first.modules, second.modules, strict=True))
+
+
+def test_finalize_forces_a_last_publication() -> None:
+    module = _CountingModule()
+    engine = MetricsEngine(MetricsConfig(publish_interval_s=1000.0), modules=(module,))
+    state, packet = _state_and_packet()
+
+    engine.apply(packet, 1.0, state)
+    engine.finalize(state, 1.1)
+
+    assert module.calls == 2
+    assert engine.snapshot().computed_at_monotonic == 1.1
+
+
+def test_official_final_best_lap_reaches_pace_after_finalize() -> None:
+    car = ScenarioCar(
+        0,
+        "Driver A",
+        1,
+        90.0,
+        40.0,
+        2.0,
+        2.5,
+        lap_time_overrides={5: 70.0},
+    )
+    state = RaceState()
+    engine = MetricsEngine(MetricsConfig(publish_interval_s=1000.0))
+    last_at = 0.0
+    for packet, observed_at in build_race_timed((car,), total_laps=5, samples_per_lap=2):
+        state.apply(packet, observed_at)
+        engine.apply(packet, observed_at, state.snapshot())
+        last_at = observed_at
+    engine.finalize(state.snapshot(), last_at)
+
+    final_lap = engine.history.get(0, 5)
+    assert final_lap is not None
+    assert final_lap.lap_time_s == 70.0
+    assert "incomplete" not in final_lap.flags
+    assert engine.snapshot().get("pace.best_lap_s").value == 70.0  # type: ignore[union-attr]

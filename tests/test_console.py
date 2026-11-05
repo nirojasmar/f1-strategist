@@ -214,3 +214,69 @@ def test_metrics_update_error_renders_in_spanish() -> None:
 
     assert "métricas" in rendered
     assert "boom" in rendered
+
+
+def test_metrics_panel_marks_live_rows_stale_when_lap_data_ages(monkeypatch) -> None:
+    config = AppConfig()
+    session = CaptureSession(config)
+    fixtures = Path(__file__).parent / "fixtures"
+    session_packet = parse_packet((fixtures / "session.bin").read_bytes())
+    lap_data = parse_packet((fixtures / "lap_data.bin").read_bytes())
+    session._race_state.apply(
+        replace(session_packet, header=replace(session_packet.header, player_car_index=0)), 1.0
+    )
+    session._race_state.apply(
+        replace(lap_data, header=replace(lap_data.header, player_car_index=0)), 1.0
+    )
+    metrics = MetricsSnapshot(
+        metrics={
+            "progress.laps_remaining": _metric("progress.laps_remaining", 4.8, "lap", Quality.OK),
+            "fuel.margin_laps_at_finish": _metric(
+                "fuel.margin_laps_at_finish", 2.0, "lap", Quality.OK
+            ),
+            "tyres.wear_rate_pct_per_lap": _metric(
+                "tyres.wear_rate_pct_per_lap", 0.1, "%/lap", Quality.OK
+            ),
+        },
+        computed_at_monotonic=1.0,
+        session_uid=session_packet.header.session_uid,
+    )
+    monkeypatch.setattr(session, "metrics_snapshot", lambda: metrics)
+
+    output = StringIO()
+    console = Console(file=output, width=120, no_color=True)
+    console.print(render(config, session, now=10.0))
+    lines = output.getvalue().splitlines()
+
+    remaining = next(line for line in lines if "Vueltas restantes" in line)
+    fuel = next(line for line in lines if "Margen de combustible" in line)
+    wear = next(line for line in lines if "Tasa de desgaste" in line)
+    assert "stale (obsoleto)" in remaining
+    assert "stale (obsoleto)" in fuel
+    assert "stale (obsoleto)" not in wear
+
+
+def test_metrics_panel_reports_module_failures() -> None:
+    metrics = MetricsSnapshot(
+        metrics={
+            "broken.error": Metric(
+                "broken.error",
+                None,
+                "",
+                Window("instant"),
+                Quality.UNAVAILABLE,
+                0,
+                3.0,
+                notes=("metric_module_failed", "RuntimeError"),
+            )
+        },
+        computed_at_monotonic=3.0,
+        session_uid=1,
+    )
+    output = StringIO()
+    console = Console(file=output, width=120, no_color=True)
+    console.print(_render_metrics_summary(metrics))
+    text = output.getvalue()
+
+    assert "Módulo broken" in text
+    assert "error de cálculo (RuntimeError)" in text

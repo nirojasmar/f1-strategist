@@ -17,9 +17,13 @@ f1-strategist metrics CAPTURA [--out ARCHIVO] [--format json|jsonl|csv] [--confi
 - `--format`: `json` (por defecto), `jsonl` o `csv`.
 - `--config`: archivo TOML de configuración, incluidos los parámetros de
   `MetricsConfig`.
+- `--out` no puede apuntar a la propia captura ni al archivo de
+  configuración; el comando lo rechaza antes de escribir.
 
 Los formatos `jsonl` y `csv` contienen una fila por coche y vuelta del
-histórico. El formato `json` contiene la instantánea de métricas.
+histórico. El formato `json` contiene la instantánea de métricas. En todos
+los casos la salida estructurada se escribe íntegra en la salida estándar
+o en el archivo indicado, y los avisos se envían a la salida de error.
 
 ## Esquema JSON de métricas
 
@@ -82,6 +86,14 @@ En JSON Lines cada línea es un objeto JSON compacto. En CSV:
   `["green","safety_car"]`.
 - Las filas se ordenan por `car_index` y `lap_number`.
 - Se usa `\n` como fin de línea.
+
+## Avisos y errores
+
+- Una captura truncada, con paquetes rechazados por el parser o sin
+  ningún paquete válido produce un aviso en la salida de error. El
+  comando termina con código 0 y mantiene la salida estructurada válida.
+- Un formato desconocido, una captura ilegible, un error de configuración
+  o una salida que coincida con la entrada terminan con código 2.
 
 ## Estabilidad
 

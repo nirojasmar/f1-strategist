@@ -13,7 +13,7 @@ from typing import Any, Literal
 from ..config import MetricsConfig
 from ..offline import OfflineResult, run_capture_offline
 from ..parser import ParsedPacket
-from ..race_state import RaceState
+from ..race_state import RaceState, RaceStateSnapshot
 from .engine import MetricsEngine, MetricsSnapshot
 from .history import LapHistory, LapHistorySnapshot, LapRecord
 
@@ -101,6 +101,8 @@ def run_metrics_capture(
     """Reproduce una captura offline y devuelve sus métricas e histórico finales."""
     collector = _MetricsCollector(MetricsEngine(config))
     offline = run_capture_offline(path, [collector], speed=speed)
+    if collector.last_state is not None and collector.last_observed_at is not None:
+        collector.engine.finalize(collector.last_state, collector.last_observed_at)
     return MetricsCaptureResult(
         offline=offline,
         snapshot=collector.engine.snapshot(),
@@ -114,10 +116,14 @@ class _MetricsCollector:
     def __init__(self, engine: MetricsEngine) -> None:
         self.engine = engine
         self.state = RaceState()
+        self.last_state: RaceStateSnapshot | None = None
+        self.last_observed_at: float | None = None
 
     def apply(self, packet: ParsedPacket, observed_at: float) -> None:
         self.state.apply(packet, observed_at)
-        self.engine.apply(packet, observed_at, self.state.snapshot())
+        self.last_state = self.state.snapshot()
+        self.last_observed_at = observed_at
+        self.engine.apply(packet, observed_at, self.last_state)
 
 
 def _render_csv(rows: Sequence[Mapping[str, Any]]) -> str:

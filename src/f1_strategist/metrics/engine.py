@@ -13,7 +13,7 @@ from ..race_state import RaceStateSnapshot
 from .history import LapHistory, MetricInputs, MetricModule
 from .history_ingest import ingest_session_history
 from .lap_tracker import LapTracker
-from .registry import METRIC_MODULES
+from .registry import create_metric_modules
 from .types import Metric, Quality, Window
 
 
@@ -74,7 +74,7 @@ class MetricsEngine:
             config = None
         self._tracker = tracker or LapTracker(config=config)
         self._config = config or self._tracker.config
-        self._modules = tuple(METRIC_MODULES if modules is None else modules)
+        self._modules = create_metric_modules() if modules is None else tuple(modules)
         self._snapshot = MetricsSnapshot()
         self._last_publish_at: float | None = None
         self._last_signature: tuple[object, ...] | None = None
@@ -106,7 +106,8 @@ class MetricsEngine:
             raise ValueError("observed_at debe ser finito")
 
         self._tracker.observe(state_snapshot, observed_at)
-        if isinstance(packet, SessionHistoryPacket):
+        history_updated = isinstance(packet, SessionHistoryPacket)
+        if history_updated:
             ingest_session_history(packet, self._tracker.history)
 
         signature = self._state_signature(state_snapshot)
@@ -115,9 +116,16 @@ class MetricsEngine:
             self._last_publish_at is None
             or observed_at - self._last_publish_at >= self._config.publish_interval_s
         )
-        if changed or due:
+        if history_updated or changed or due:
             self._publish(state_snapshot, observed_at)
         self._last_signature = signature
+
+    def finalize(self, state_snapshot: RaceStateSnapshot, observed_at: float) -> None:
+        """Publica el estado final, por ejemplo al terminar una captura offline."""
+        if not math.isfinite(observed_at):
+            raise ValueError("observed_at debe ser finito")
+        self._publish(state_snapshot, observed_at)
+        self._last_signature = self._state_signature(state_snapshot)
 
     def snapshot(self) -> MetricsSnapshot:
         return self._snapshot
@@ -149,14 +157,20 @@ class MetricsEngine:
     @staticmethod
     def _state_signature(state: RaceStateSnapshot) -> tuple[object, ...]:
         cars = tuple((car.current_lap, car.result_status) for car in state.cars)
-        return (state.session.uid, state.session.ended, state.current_lap, cars)
+        return (
+            state.session.uid,
+            state.session.ended,
+            state.player_car_index,
+            state.current_lap,
+            cars,
+        )
 
 
 def _player_car_index(state: RaceStateSnapshot) -> int:
     index = state.player_car_index
     if index is not None and 0 <= index < len(state.cars):
         return index
-    return 0
+    return -1
 
 
 def _module_failure(name: str, now: float, error: Exception) -> Metric:

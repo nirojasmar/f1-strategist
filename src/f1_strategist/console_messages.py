@@ -7,7 +7,7 @@ from .metrics.engine import MetricsSnapshot
 from .metrics.types import Metric, Quality
 from .packets import packet_name
 from .parser import ParseIssue
-from .race_state import CarSnapshot, RaceEvent
+from .race_state import CarSnapshot, RaceEvent, RaceStateSnapshot
 from .receiver import PacketSequenceStats
 
 METRICS_PANEL_TITLE = "Métricas"
@@ -36,6 +36,15 @@ _UNIT_LABELS = {
     "s/lap": "s/lap",
     "%/lap": "%/lap",
 }
+
+_LIVE_METRIC_KEYS = frozenset(
+    {
+        "progress.laps_remaining",
+        "fuel.margin_laps_at_finish",
+        "gap.ahead_s",
+        "gap.behind_s",
+    }
+)
 
 
 def _number(item: DiagnosticMessage, name: str) -> float:
@@ -107,13 +116,38 @@ def _render_sequence_anomalies(
 
 def render_metrics_rows(
     snapshot: MetricsSnapshot,
+    race: RaceStateSnapshot | None = None,
+    now: float | None = None,
 ) -> tuple[tuple[str, str, str], ...]:
     """Devuelve etiqueta, valor y marcador de calidad de las métricas clave."""
     rows: list[tuple[str, str, str]] = []
+    stale_live = _live_metrics_are_stale(race, now)
     for key, label in _METRIC_ROWS:
         metric = snapshot.get(key)
-        rows.append((label, _render_metric_value(metric), _render_metric_quality(metric)))
+        quality = _render_metric_quality(metric)
+        if stale_live and key in _LIVE_METRIC_KEYS and metric is not None:
+            quality = _QUALITY_LABELS[Quality.STALE]
+        rows.append((label, _render_metric_value(metric), quality))
+    for key in sorted(snapshot):
+        if not key.endswith(".error"):
+            continue
+        metric = snapshot[key]
+        module = key.removesuffix(".error")
+        detail = next(
+            (note for note in reversed(metric.notes) if note != "metric_module_failed"),
+            "error",
+        )
+        rows.append((f"Módulo {module}", "—", f"error de cálculo ({detail})"))
     return tuple(rows)
+
+
+def _live_metrics_are_stale(race: RaceStateSnapshot | None, now: float | None) -> bool:
+    if race is None or now is None:
+        return False
+    try:
+        return race.freshness_for("lap_data").is_stale(now)
+    except KeyError:
+        return False
 
 
 def _render_metric_value(metric: Metric | None) -> str:

@@ -201,3 +201,33 @@ def test_stale_session_packet_is_ignored() -> None:
 
     assert history.snapshot().records_for(0) == ()
     assert history.snapshot().stints_for(0) == ()
+
+
+def test_official_time_confirms_a_previously_incomplete_lap() -> None:
+    history = LapHistory()
+    history.reset(1)
+    history.upsert(
+        LapRecord(
+            car_index=0,
+            lap_number=3,
+            lap_time_s=90.0,
+            lap_time_source="lap_data",
+            flags=frozenset({"incomplete", "first_lap"}),
+            closed=True,
+        )
+    )
+
+    history.update_lap_timing(
+        0,
+        3,
+        lap_time_s=70.0,
+        sector1_s=None,
+        sector2_s=None,
+        sector3_s=None,
+        valid=True,
+    )
+
+    record = history.get(0, 3)
+    assert record is not None
+    assert record.lap_time_s == 70.0
+    assert record.flags == frozenset({"first_lap"})
