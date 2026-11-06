@@ -1,4 +1,4 @@
-"""Línea de comandos: `run` (captura), `replay`, `play` e `inspect`."""
+"""Línea de comandos: captura, reproducción, inspección y catálogo de escenarios."""
 
 from __future__ import annotations
 
@@ -20,6 +20,7 @@ from . import __version__
 from .capture import CaptureError
 from .config import AppConfig, ConfigError, apply_overrides, load_config
 from .console import format_bytes, render, run_console
+from .datasets import DEFAULT_MANIFEST, Manifest, Scenario, load_manifest, verify_scenario
 from .metrics.export import EXPORT_FORMATS, render_metrics_export, run_metrics_capture
 from .offline import OfflineResult
 from .packets import packet_name
@@ -149,6 +150,26 @@ def _build_parser() -> argparse.ArgumentParser:
         "--keep-ai-names",
         action="store_true",
         help="conservar nombres de participantes controlados por IA al anonimizar",
+    )
+
+    datasets = sub.add_parser("datasets", help="consulta el catálogo de capturas de referencia")
+    datasets_sub = datasets.add_subparsers(dest="datasets_command", required=True)
+    datasets_list = datasets_sub.add_parser("list", help="lista los escenarios del manifiesto")
+    datasets_list.add_argument(
+        "--manifest",
+        type=Path,
+        default=DEFAULT_MANIFEST,
+        help=f"manifiesto TOML (por defecto, {DEFAULT_MANIFEST})",
+    )
+    datasets_verify = datasets_sub.add_parser(
+        "verify", help="verifica el hash y las expectativas de los escenarios"
+    )
+    datasets_verify.add_argument("--id", help="verificar solo este escenario")
+    datasets_verify.add_argument(
+        "--manifest",
+        type=Path,
+        default=DEFAULT_MANIFEST,
+        help=f"manifiesto TOML (por defecto, {DEFAULT_MANIFEST})",
     )
     return parser
 
@@ -379,6 +400,78 @@ def _cmd_metrics(args: argparse.Namespace, console: Console, err: Console) -> in
     return 0
 
 
+def _cmd_datasets(args: argparse.Namespace, console: Console, err: Console) -> int:
+    manifest = load_manifest(args.manifest)
+    if args.datasets_command == "list":
+        return _datasets_list(manifest, console)
+    scenarios = manifest.scenarios
+    if args.id is not None:
+        try:
+            scenarios = (manifest.get(args.id),)
+        except KeyError as exc:
+            raise ValueError(f"No existe el escenario {args.id!r} en {args.manifest}") from exc
+    return _datasets_verify(scenarios, console, err)
+
+
+def _datasets_list(manifest: Manifest, console: Console) -> int:
+    scenarios = manifest.scenarios
+    table = Table(title=f"Escenarios de referencia ({len(scenarios)})")
+    table.add_column("Escenario")
+    table.add_column("Estado")
+    table.add_column("Vuelta", justify="right")
+    table.add_column("Coches", justify="right")
+    table.add_column("Descripción")
+    table.add_column("Etiquetas")
+    for scenario in scenarios:
+        state = "[green]disponible[/]" if scenario.available else "[yellow]no disponible[/]"
+        table.add_row(
+            scenario.id,
+            state,
+            str(scenario.expected.total_laps),
+            str(scenario.expected.cars),
+            scenario.description,
+            ", ".join(scenario.tags),
+        )
+    console.print(table)
+    missing = sum(1 for scenario in scenarios if not scenario.available)
+    if missing:
+        console.print(f"[yellow]{missing} escenario(s) sin archivo de captura.[/]")
+    return 0
+
+
+def _datasets_verify(
+    scenarios: Sequence[Scenario],
+    console: Console,
+    err: Console,
+) -> int:
+    verified = 0
+    unavailable = 0
+    failures = 0
+    for scenario in scenarios:
+        result = verify_scenario(scenario)
+        if not result.available:
+            unavailable += 1
+            console.print(f"[yellow]{scenario.id}: no disponible[/] ({result.problems[0]})")
+        elif result.ok:
+            verified += 1
+            console.print(f"[green]{scenario.id}: correcto[/]")
+        else:
+            failures += 1
+            err.print(f"[red]{scenario.id}: verificación fallida[/]")
+            for problem in result.problems:
+                err.print(f"  - {problem}")
+    if failures:
+        err.print(f"[red]{failures} escenario(s) han fallado.[/]")
+        return 1
+    if verified:
+        console.print(f"{verified} escenario(s) verificado(s) correctamente.")
+    if unavailable:
+        console.print(f"{unavailable} escenario(s) no disponible(s); no se han verificado.")
+    if not verified and not unavailable:
+        console.print("No hay escenarios que verificar.")
+    return 0
+
+
 def _same_file(left: Path, right: Path) -> bool:
     try:
         return left.resolve() == right.resolve()
@@ -452,6 +545,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "inspect": _cmd_inspect,
         "metrics": _cmd_metrics,
         "trim": _cmd_trim,
+        "datasets": _cmd_datasets,
     }
     try:
         return handlers[args.command](args, console, err)
