@@ -1,28 +1,36 @@
-"""Línea de comandos: `run` (captura), `replay` (reemisión UDP) e `inspect`."""
+"""Línea de comandos: `run` (captura), `replay`, `play` e `inspect`."""
 
 from __future__ import annotations
 
 import argparse
+import os
+import select
 import signal
 import sys
+import time
 from collections.abc import Sequence
 from pathlib import Path
 
-from rich.console import Console
+from rich.console import Console, Group
+from rich.live import Live
 from rich.table import Table
+from rich.text import Text
 
 from . import __version__
 from .capture import CaptureError
-from .config import ConfigError, apply_overrides, load_config
-from .console import format_bytes, run_console
+from .config import AppConfig, ConfigError, apply_overrides, load_config
+from .console import format_bytes, render, run_console
 from .metrics.export import EXPORT_FORMATS, render_metrics_export, run_metrics_capture
 from .offline import OfflineResult
 from .packets import packet_name
+from .playback import PlaybackSession
 from .receiver import ReceiverError
 from .replay import replay_capture
 from .session import CaptureSession
 from .summary import summarize
 from .trim import trim_capture
+
+_SPEED_STEPS = (0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0)
 
 
 def _parse_packet_types(value: str) -> frozenset[int]:
@@ -85,6 +93,15 @@ def _build_parser() -> argparse.ArgumentParser:
     replay.add_argument("--port", type=int, default=20777)
     replay.add_argument("--speed", type=float, default=1.0, help="velocidad (0 = sin pausas)")
     replay.add_argument("--loop", action="store_true", help="repetir hasta Ctrl+C")
+
+    play = sub.add_parser("play", help="reproduce una captura sin red, con pausa y velocidad")
+    play.add_argument("file", type=Path, help="captura de entrada (.f1cap o .f1cap.gz)")
+    play.add_argument(
+        "--speed", type=float, default=1.0, help="velocidad de reproducción (0 = sin pausas)"
+    )
+    play.add_argument("--loop", action="store_true", help="repetir hasta Ctrl+C")
+    play.add_argument("--start-lap", type=int, help="empezar en esta vuelta (avance rápido)")
+    play.add_argument("--config", type=Path, help="archivo TOML de configuración")
 
     inspect = sub.add_parser("inspect", help="resume el contenido de una captura")
     inspect.add_argument("file", type=Path)
@@ -184,6 +201,124 @@ def _cmd_replay(args: argparse.Namespace, console: Console, err: Console) -> int
         console.print("Interrumpido.")
         return 0
     console.print(f"{sent} paquetes enviados.")
+    return 0
+
+
+class _KeyReader:
+    """Lectura de teclas sin bloquear; se desactiva si stdin no es un terminal."""
+
+    def __init__(self) -> None:
+        self._enabled = bool(getattr(sys.stdin, "isatty", lambda: False)())
+        self._windows = os.name == "nt"
+        self._saved_attributes: list[object] | None = None
+        if not self._enabled:
+            return
+        if not self._windows:
+            import termios  # noqa: PLC0415
+            import tty  # noqa: PLC0415
+
+            fd = sys.stdin.fileno()
+            self._saved_attributes = termios.tcgetattr(fd)  # type: ignore[reportAttributeAccessIssue]
+            tty.setcbreak(fd)  # type: ignore[reportAttributeAccessIssue]
+
+    def read(self) -> str | None:
+        if not self._enabled:
+            return None
+        if self._windows:
+            import msvcrt  # noqa: PLC0415
+
+            if not msvcrt.kbhit():
+                return None
+            key = msvcrt.getwch()
+            return key if key != "\x03" else "q"
+        ready, _, _ = select.select([sys.stdin], [], [], 0)
+        if not ready:
+            return None
+        return sys.stdin.read(1)
+
+    def close(self) -> None:
+        if self._saved_attributes is None:
+            return
+        import termios  # noqa: PLC0415
+
+        termios.tcsetattr(  # type: ignore[reportAttributeAccessIssue]
+            sys.stdin.fileno(),
+            termios.TCSADRAIN,  # type: ignore[reportAttributeAccessIssue]
+            self._saved_attributes,
+        )
+        self._saved_attributes = None
+
+
+def _next_speed(current: float, direction: int) -> float:
+    if current <= 0:
+        return _SPEED_STEPS[0] if direction > 0 else 0.0
+    if direction > 0:
+        return next(
+            (step for step in _SPEED_STEPS if step > current),
+            _SPEED_STEPS[-1],
+        )
+    return next(
+        (step for step in reversed(_SPEED_STEPS) if step < current),
+        _SPEED_STEPS[0],
+    )
+
+
+def _render_playback(cfg: AppConfig, session: PlaybackSession) -> Group:
+    help_text = "espacio: pausa · +/-: velocidad · q: salir"
+    return Group(render(cfg, session), Text(help_text, style="dim"))
+
+
+def _run_playback_console(
+    cfg: AppConfig,
+    session: PlaybackSession,
+    console: Console,
+) -> None:
+    keys = _KeyReader()
+    try:
+        with Live(_render_playback(cfg, session), console=console, refresh_per_second=4) as live:
+            try:
+                while not session.finished and session.error is None:
+                    key = keys.read()
+                    if key == " ":
+                        if session.paused:
+                            session.resume()
+                        else:
+                            session.pause()
+                    elif key in {"+", "="}:
+                        session.set_speed(_next_speed(session.speed, 1))
+                    elif key == "-":
+                        session.set_speed(_next_speed(session.speed, -1))
+                    elif key in {"q", "Q"}:
+                        break
+                    time.sleep(0.05)
+                    live.update(_render_playback(cfg, session))
+            except KeyboardInterrupt:
+                pass
+    finally:
+        keys.close()
+
+
+def _cmd_play(args: argparse.Namespace, console: Console, err: Console) -> int:
+    cfg = load_config(args.config)
+    session = PlaybackSession(
+        args.file,
+        cfg.metrics,
+        loop=args.loop,
+        speed=args.speed,
+        start_lap=args.start_lap,
+    )
+    _install_signal_handlers()
+    try:
+        session.play()
+        _run_playback_console(cfg, session, console)
+    finally:
+        session.stop()
+    if session.error is not None:
+        err.print(f"[red]Error:[/] {session.error}")
+        return 1
+    if session.finished:
+        snap = session.snapshot()
+        console.print(f"Reproducción completada: {snap.received} paquetes.")
     return 0
 
 
@@ -313,6 +448,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     handlers = {
         "run": _cmd_run,
         "replay": _cmd_replay,
+        "play": _cmd_play,
         "inspect": _cmd_inspect,
         "metrics": _cmd_metrics,
         "trim": _cmd_trim,
