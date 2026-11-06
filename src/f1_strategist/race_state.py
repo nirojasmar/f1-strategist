@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 
 from .parser import (
@@ -212,7 +213,8 @@ class RaceStateSnapshot:
 class RaceState:
     """Applies parsed packets from one consumer thread and publishes snapshots."""
 
-    def __init__(self) -> None:
+    def __init__(self, event_sink: Callable[[RaceEvent], None] | None = None) -> None:
+        self._event_sink = event_sink
         self._session_uid: int | None = None
         self._session_type: str | None = None
         self._track: str | None = None
@@ -619,17 +621,18 @@ class RaceState:
         value: str | None = None,
         previous_value: str | None = None,
     ) -> None:
-        self._events.append(
-            RaceEvent(
-                kind,
-                observed_at,
-                car_index,
-                lap_number,
-                session_uid,
-                value,
-                previous_value,
-            )
+        event = RaceEvent(
+            kind,
+            observed_at,
+            car_index,
+            lap_number,
+            session_uid,
+            value,
+            previous_value,
         )
+        self._events.append(event)
+        if self._event_sink is not None:
+            self._event_sink(event)
 
     def _build_snapshot(self) -> RaceStateSnapshot:
         return RaceStateSnapshot(

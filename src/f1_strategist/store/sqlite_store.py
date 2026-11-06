@@ -178,6 +178,8 @@ class SessionStore:
                 check_supported_version(connection)
             else:
                 apply_migrations(connection, migrations)
+                connection.execute("PRAGMA journal_mode = WAL").fetchone()
+                connection.execute("PRAGMA synchronous = NORMAL")
         except BaseException:
             connection.close()
             raise
@@ -459,10 +461,7 @@ def _open_writable(location: str) -> sqlite3.Connection:
         expanded = Path(location).expanduser()
         expanded.parent.mkdir(parents=True, exist_ok=True)
         path = str(expanded)
-    connection = sqlite3.connect(path, timeout=BUSY_TIMEOUT_MS / 1000)
-    connection.execute("PRAGMA journal_mode = WAL").fetchone()
-    connection.execute("PRAGMA synchronous = NORMAL")
-    return connection
+    return sqlite3.connect(path, timeout=BUSY_TIMEOUT_MS / 1000)
 
 
 def _open_readonly(location: str) -> sqlite3.Connection:

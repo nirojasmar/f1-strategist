@@ -56,6 +56,7 @@ class PlaybackSession:
         self._thread: threading.Thread | None = None
         self._runs_completed = 0
         self._observed_at = 0.0
+        self._packets_parsed = 0
         self._race_state = RaceState()
         self._metrics_engine = MetricsEngine(config)
         self._stats = Stats()
@@ -244,6 +245,7 @@ class PlaybackSession:
         self._stats = Stats()
         with self._condition:
             self._observed_at = 0.0
+            self._packets_parsed = 0
 
     def _play_once(self, seek_lap: int | None) -> str:
         reader = CaptureReader(self.path)
@@ -268,6 +270,8 @@ class PlaybackSession:
             if control is not None:
                 return control
             last_observed = observed_at
+            with self._condition:
+                self._observed_at = observed_at
 
             self._stats.record_received(captured.source_ip, len(captured.payload))
             header = parse_header(captured.payload)
@@ -281,18 +285,29 @@ class PlaybackSession:
                 self._stats.record_parser_rejection(exc.issue)
                 continue
 
+            self._packets_parsed += 1
             self._race_state.apply(packet, observed_at)
             state = self._race_state.snapshot()
             self._metrics_engine.apply(packet, observed_at, state)
             last_state = state
             last_observed_at = observed_at
-            with self._condition:
-                self._observed_at = observed_at
-
             if seeking and state.current_lap is not None and state.current_lap >= (seek_lap or 1):
                 seeking = False
                 deadline = None
 
+        if seeking:
+            raise RuntimeError(
+                f"No se encontró la vuelta solicitada {seek_lap} antes del final de la captura."
+            )
+        if reader.truncated:
+            raise RuntimeError("La captura termina con un registro incompleto.")
+        rejected = sum(self._stats.snapshot().parser_rejections.values())
+        if rejected:
+            raise RuntimeError(
+                f"La captura contiene {rejected} paquete(s) rechazado(s) por parser."
+            )
+        if self._packets_parsed == 0:
+            raise RuntimeError("La captura no contiene paquetes válidos.")
         if last_state is not None and last_observed_at is not None:
             self._metrics_engine.finalize(last_state, last_observed_at)
         return _EOF

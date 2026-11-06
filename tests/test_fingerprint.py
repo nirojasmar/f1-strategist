@@ -5,21 +5,26 @@ from __future__ import annotations
 import hashlib
 import shutil
 import struct
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from f1_strategist.capture import CapturedPacket, CaptureWriter
 from f1_strategist.cli import main
-from f1_strategist.config import AppConfig, MetricsConfig
+from f1_strategist.config import AppConfig, MetricsConfig, RecordingConfig
 from f1_strategist.fingerprint import (
+    _FingerprintCollector,
     build_run_info,
     compute_config_hash,
     compute_fingerprint,
     fingerprint_capture,
 )
+from f1_strategist.metrics.engine import MetricsEngine
+from f1_strategist.metrics.history import LapHistorySnapshot
 from f1_strategist.packets import HEADER_SIZE
-from f1_strategist.parser import PARSER_VERSION, ParsedPacket
+from f1_strategist.parser import PARSER_VERSION, PacketParseError, ParsedPacket
+from f1_strategist.race_state import RaceEvent
 from tests.conftest import make_packet
 from tests.scenarios import ScenarioCar, build_race_timed
 
@@ -125,6 +130,21 @@ def test_metric_config_change_changes_fingerprint(
     assert default.fingerprint != changed.fingerprint
 
 
+def test_non_metric_config_change_changes_hash_and_fingerprint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = _capture(tmp_path, monkeypatch)
+    default = fingerprint_capture(path)
+    changed = fingerprint_capture(
+        path,
+        AppConfig(recording=RecordingConfig(enabled=True)),
+    )
+
+    assert default.run_info.config_hash != changed.run_info.config_hash
+    assert default.fingerprint != changed.fingerprint
+
+
 def test_equivalent_config_shapes_produce_same_fingerprint(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -175,9 +195,33 @@ def test_run_info_has_versions_and_capture_hash(
     assert info.tool_version
     assert info.parser_version == PARSER_VERSION
     assert info.capture_sha256 == hashlib.sha256(path.read_bytes()).hexdigest()
-    assert info.config_hash == compute_config_hash(MetricsConfig())
+    assert info.config_hash == compute_config_hash(AppConfig())
     assert info.python_version
     assert info.platform
+
+
+def test_fingerprint_includes_simulated_event_time() -> None:
+    event = RaceEvent("pit_entry", occurred_at_monotonic=10.0, car_index=0)
+
+    empty_history = LapHistorySnapshot(records={})
+    first = compute_fingerprint((event,), empty_history, {})
+    second = compute_fingerprint((replace(event, occurred_at_monotonic=20.0),), empty_history, {})
+
+    assert first != second
+
+
+def test_fingerprint_collector_keeps_events_beyond_state_snapshot_limit() -> None:
+    collector = _FingerprintCollector(MetricsEngine())
+    for index in range(60):
+        collector.state._append_event("test", float(index), value=str(index))
+
+    assert len(collector.state._build_snapshot().events) == 50
+    assert len(collector.events) == 60
+    empty_history = LapHistorySnapshot(records={})
+    original = compute_fingerprint(collector.events, empty_history, {})
+    changed_events = (replace(collector.events[0], value="changed"), *collector.events[1:])
+
+    assert compute_fingerprint(changed_events, empty_history, {}) != original
 
 
 def test_cli_verify_accepts_matching_expectation(
@@ -215,3 +259,44 @@ def test_cli_verify_rejects_non_positive_runs(
         main(["verify", str(path), "--runs", "0"])
 
     assert exc.value.code == 2
+
+
+def test_cli_verify_rejects_truncated_capture(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    path = _capture(tmp_path, monkeypatch)
+    with path.open("ab") as handle:
+        handle.write(b"\x01\x02\x03")
+
+    assert main(["verify", str(path), "--runs", "1"]) == 1
+    assert "registro incompleto" in capsys.readouterr().err
+
+
+def test_cli_verify_rejects_capture_without_valid_packets(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    path = tmp_path / "empty.f1cap"
+    with CaptureWriter(path):
+        pass
+
+    assert main(["verify", str(path), "--runs", "1"]) == 1
+    assert "no contiene paquetes válidos" in capsys.readouterr().err
+
+
+def test_cli_verify_rejects_parser_rejections(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    path = _capture(tmp_path, monkeypatch)
+
+    def reject(_: bytes) -> ParsedPacket:
+        raise PacketParseError("bad_packet")
+
+    monkeypatch.setattr("f1_strategist.offline.parse_packet", reject)
+
+    assert main(["verify", str(path), "--runs", "1"]) == 1
+    assert "paquete(s) rechazado(s) por el parser" in capsys.readouterr().err

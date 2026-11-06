@@ -217,12 +217,28 @@ def apply_migrations(
 
 
 def check_supported_version(connection: sqlite3.Connection) -> int:
-    """Comprueba que la base no sea más nueva que el código (sin migrar)."""
+    """Comprueba versión y tablas requeridas para lectura, sin migrar."""
     current = _read_user_version(connection)
     if current > SCHEMA_VERSION:
         raise StoreError(
             f"La base de datos usa el esquema v{current}, más nuevo que el admitido "
             f"por esta versión de f1-strategist (v{SCHEMA_VERSION}). Actualiza la herramienta."
+        )
+    if current < SCHEMA_VERSION:
+        raise StoreError(
+            f"La base de datos usa el esquema v{current}; se requiere v{SCHEMA_VERSION}. "
+            "Ábrela en modo escritura para aplicar las migraciones antes de leerla."
+        )
+    required_tables = {"sessions", "participants", "laps", "events", "metric_samples", "app_errors"}
+    existing_tables = {
+        str(row[0])
+        for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+    }
+    missing_tables = sorted(required_tables - existing_tables)
+    if missing_tables:
+        raise StoreError(
+            f"La base de datos declara el esquema v{current}, pero faltan tablas: "
+            f"{', '.join(missing_tables)}."
         )
     return current
 

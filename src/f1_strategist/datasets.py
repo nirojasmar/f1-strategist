@@ -14,7 +14,11 @@ from .offline import run_capture_offline
 from .parser import FinalClassificationPacket, ParsedPacket
 from .race_state import RaceState
 
-DEFAULT_MANIFEST = Path("tests/fixtures/real/manifest.toml")
+_PACKAGE_MANIFEST = Path(__file__).parent / "data" / "manifest.toml"
+_REPOSITORY_MANIFEST = (
+    Path(__file__).resolve().parents[2] / "tests" / "fixtures" / "real" / "manifest.toml"
+)
+DEFAULT_MANIFEST = _REPOSITORY_MANIFEST if _REPOSITORY_MANIFEST.is_file() else _PACKAGE_MANIFEST
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _EXPECTED_KEYS = (
@@ -167,7 +171,7 @@ def verify_scenario(scenario: Scenario) -> VerificationResult:
 
     collector = _Collector()
     try:
-        run_capture_offline(scenario.file, [collector])
+        offline = run_capture_offline(scenario.file, [collector])
     except CaptureError as exc:
         problems.append(f"no se pudo leer la captura: {exc}")
         return VerificationResult(
@@ -175,6 +179,7 @@ def verify_scenario(scenario: Scenario) -> VerificationResult:
             available=True,
             problems=tuple(problems),
         )
+    problems.extend(offline.integrity_problems())
     observation = _observe(collector)
     problems.extend(_compare(scenario.expected, observation))
     return VerificationResult(

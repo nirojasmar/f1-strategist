@@ -339,18 +339,39 @@ def test_a_test_migration_upgrades_v1_to_v2(tmp_path: Path) -> None:
 
 def test_a_newer_database_is_rejected(tmp_path: Path) -> None:
     path = tmp_path / "sessions.db"
-    SessionStore.open(path).close()
     connection = sqlite3.connect(path)
     try:
+        connection.execute("PRAGMA journal_mode = DELETE")
+        connection.execute("CREATE TABLE sentinel (value TEXT)")
         connection.execute("PRAGMA user_version = 99")
         connection.commit()
     finally:
         connection.close()
 
+    before = sqlite3.connect(path)
+    original_schema = before.execute(
+        "SELECT name, sql FROM sqlite_master WHERE type = 'table' ORDER BY name"
+    ).fetchall()
+    original_journal_mode = before.execute("PRAGMA journal_mode").fetchone()[0]
+    before.close()
+
     with pytest.raises(StoreError, match="más nuevo"):
         SessionStore.open(path)
     with pytest.raises(StoreError, match="más nuevo"):
         SessionStore.open(path, readonly=True)
+
+    after = sqlite3.connect(path)
+    try:
+        assert after.execute("PRAGMA user_version").fetchone()[0] == 99
+        assert after.execute("PRAGMA journal_mode").fetchone()[0] == original_journal_mode
+        assert (
+            after.execute(
+                "SELECT name, sql FROM sqlite_master WHERE type = 'table' ORDER BY name"
+            ).fetchall()
+            == original_schema
+        )
+    finally:
+        after.close()
 
 
 def test_non_contiguous_migrations_are_rejected(tmp_path: Path) -> None:
@@ -405,6 +426,25 @@ def test_readonly_store_rejects_writes(tmp_path: Path) -> None:
 def test_readonly_open_requires_an_existing_database(tmp_path: Path) -> None:
     with pytest.raises(StoreError, match="No existe la base de datos"):
         SessionStore.open(tmp_path / "missing.db", readonly=True)
+
+
+def test_readonly_open_rejects_a_database_without_a_schema(tmp_path: Path) -> None:
+    path = tmp_path / "empty.db"
+    sqlite3.connect(path).close()
+
+    with pytest.raises(StoreError, match="se requiere v"):
+        SessionStore.open(path, readonly=True)
+
+
+def test_readonly_open_rejects_a_schema_missing_required_tables(tmp_path: Path) -> None:
+    path = tmp_path / "incomplete.db"
+    connection = sqlite3.connect(path)
+    connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+    connection.commit()
+    connection.close()
+
+    with pytest.raises(StoreError, match="faltan tablas"):
+        SessionStore.open(path, readonly=True)
 
 
 def test_lap_record_fields_have_a_column_or_an_explicit_exclusion(tmp_path: Path) -> None:

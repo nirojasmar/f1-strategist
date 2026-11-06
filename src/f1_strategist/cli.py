@@ -391,6 +391,12 @@ def _cmd_verify(args: argparse.Namespace, console: Console, err: Console) -> int
     first = None
     for index in range(args.runs):
         result = fingerprint_capture(args.file, cfg)
+        integrity_problems = result.offline.integrity_problems()
+        if integrity_problems:
+            err.print("[red]Error:[/] No se puede verificar una captura incompleta:")
+            for problem in integrity_problems:
+                err.print(f"  - {problem}")
+            return 1
         if first is None:
             first = result
         elif result.fingerprint != first.fingerprint:

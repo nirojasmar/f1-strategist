@@ -12,7 +12,7 @@ from f1_strategist.capture import CapturedPacket, CaptureWriter
 from f1_strategist.cli import main
 from f1_strategist.metrics.export import laps_to_rows, run_metrics_capture, snapshot_to_dict
 from f1_strategist.packets import HEADER_SIZE
-from f1_strategist.parser import ParsedPacket
+from f1_strategist.parser import PacketParseError, ParsedPacket
 from f1_strategist.playback import PlaybackSession
 from tests.conftest import make_packet
 from tests.scenarios import ScenarioCar, build_race_timed
@@ -43,6 +43,19 @@ def _write_capture(
                     source_ip="127.0.0.1",
                     source_port=4000,
                     payload=make_packet(1, extra=struct.pack("<I", index)),
+                )
+            )
+
+
+def _write_payload_capture(path: Path, payloads: list[bytes], times_ns: list[int]) -> None:
+    with CaptureWriter(path) as writer:
+        for payload, recv_time_ns in zip(payloads, times_ns, strict=True):
+            writer.write(
+                CapturedPacket(
+                    recv_time_ns=recv_time_ns,
+                    source_ip="127.0.0.1",
+                    source_port=4000,
+                    payload=payload,
                 )
             )
 
@@ -202,6 +215,105 @@ def test_start_lap_skips_the_earlier_laps(
     assert _result(session) == _result(baseline)
 
 
+def test_missing_start_lap_fails_without_looping(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path, _ = _capture(tmp_path, monkeypatch)
+    session = PlaybackSession(path, speed=0, loop=True, start_lap=99)
+
+    session.play()
+    assert session.wait(timeout=10)
+
+    assert session.finished
+    assert session.error is not None
+    assert "No se encontró la vuelta solicitada 99" in session.error
+    assert session.runs_completed == 0
+
+
+def test_seek_fails_when_capture_has_no_lap_data(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    packets = _scenario()
+    path = tmp_path / "session-without-laps.f1cap"
+    _write_payload_capture(path, [make_packet(1, extra=struct.pack("<I", 0))], [0])
+    _patch_parser(monkeypatch, packets[:1])
+    session = PlaybackSession(path, speed=0, loop=True, start_lap=1)
+
+    session.play()
+    assert session.wait(timeout=10)
+
+    assert session.error is not None
+    assert "No se encontró la vuelta solicitada 1" in session.error
+
+
+def test_playback_clock_advances_for_ignored_packets(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    packets = _scenario()
+    path = tmp_path / "ignored-after-session.f1cap"
+    _write_payload_capture(
+        path,
+        [make_packet(1, extra=struct.pack("<I", 0)), make_packet(0)],
+        [0, 4_000_000_000],
+    )
+    _patch_parser(monkeypatch, packets[:1])
+
+    session = PlaybackSession(path, speed=0)
+    _play_to_end(session)
+
+    assert session.observed_at == 4.0
+    assert session.snapshot().ignored_packets_by_id == {0: 1}
+    freshness = session.race_snapshot().freshness_for("session")
+    assert freshness.age_seconds(session.observed_at) == pytest.approx(4.0)
+    assert freshness.is_stale(session.observed_at)
+
+
+def test_playback_rejects_truncated_capture_and_parser_rejections(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path, _ = _capture(tmp_path, monkeypatch)
+    with path.open("ab") as handle:
+        handle.write(b"\x01\x02\x03")
+    truncated = PlaybackSession(path, speed=0)
+    truncated.play()
+    assert truncated.wait(timeout=10)
+    assert truncated.error is not None
+    assert "registro incompleto" in truncated.error
+
+    rejected_dir = tmp_path / "rejected"
+    rejected_dir.mkdir()
+    valid_path, _ = _capture(rejected_dir, monkeypatch)
+
+    def reject(_: bytes) -> ParsedPacket:
+        raise PacketParseError("bad_packet")
+
+    monkeypatch.setattr("f1_strategist.playback.parse_packet", reject)
+    rejected = PlaybackSession(valid_path, speed=0)
+    rejected.play()
+    assert rejected.wait(timeout=10)
+    assert rejected.error is not None
+    assert "rechazado(s) por parser" in rejected.error
+
+
+def test_playback_rejects_capture_without_valid_packets(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "ignored-only.f1cap"
+    _write_payload_capture(path, [make_packet(0)], [0])
+    session = PlaybackSession(path, speed=0)
+
+    session.play()
+    assert session.wait(timeout=10)
+
+    assert session.error is not None
+    assert "no contiene paquetes válidos" in session.error
+
+
 def test_stop_during_a_pause_is_immediate(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -265,3 +377,14 @@ def test_play_command_rejects_a_missing_capture(
 ) -> None:
     assert main(["play", str(tmp_path / "missing.f1cap"), "--speed", "0"]) == 2
     assert "No se pudo leer" in capsys.readouterr().err
+
+
+def test_play_command_fails_when_requested_lap_is_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    path, _ = _capture(tmp_path, monkeypatch)
+
+    assert main(["play", str(path), "--speed", "0", "--start-lap", "99"]) == 1
+    assert "No se encontró la vuelta solicitada 99" in capsys.readouterr().err

@@ -22,7 +22,7 @@ from .race_state import RaceEvent, RaceState, RaceStateSnapshot
 
 FINGERPRINT_SCHEMA_VERSION = 1
 
-_IGNORED_KEYS = frozenset({"capture_path", "computed_at_monotonic"})
+_IGNORED_KEYS = frozenset({"capture_path"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,8 +64,13 @@ def build_run_info(
     config: AppConfig | MetricsConfig | None = None,
     capture_path: Path | None = None,
 ) -> RunInfo:
-    """Construye los metadatos de una ejecución a partir de su configuración."""
-    config_hash = compute_config_hash(_effective_metrics_config(config))
+    """Construye los metadatos de una ejecución a partir de su configuración.
+
+    ``config_hash`` cubre la configuración completa suministrada; si se recibe
+    solo ``MetricsConfig``, las demás secciones usan sus valores por defecto.
+    """
+    resolved = _complete_config(config)
+    config_hash = compute_config_hash(resolved)
     capture_sha256 = _file_sha256(capture_path) if capture_path is not None else ""
     return RunInfo(
         tool_version=__version__,
@@ -78,8 +83,8 @@ def build_run_info(
 
 
 def compute_config_hash(config: AppConfig | MetricsConfig) -> str:
-    """SHA-256 del JSON canónico de la configuración de métricas validada."""
-    payload = _config_value(_effective_metrics_config(config).model_dump())
+    """Hash canónico de lo suministrado: toda ``AppConfig`` o solo ``MetricsConfig``."""
+    payload = _config_value(config.model_dump())
     return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()
 
 
@@ -92,6 +97,14 @@ def _effective_metrics_config(config: AppConfig | MetricsConfig | None) -> Metri
     return config
 
 
+def _complete_config(config: AppConfig | MetricsConfig | None) -> AppConfig:
+    if config is None:
+        return AppConfig()
+    if isinstance(config, AppConfig):
+        return config
+    return AppConfig(metrics=config)
+
+
 def compute_fingerprint(
     events: Iterable[RaceEvent] | RaceStateSnapshot,
     laps: LapHistory | LapHistorySnapshot,
@@ -101,8 +114,11 @@ def compute_fingerprint(
 ) -> str:
     """Devuelve una huella estable de los datos derivados de una ejecución.
 
-    Se excluyen los instantes del reloj real (campos ``*_at_monotonic``) y las
-    rutas, y los flotantes se redondean antes de serializar el JSON canónico.
+    Los tiempos de captura (``observed_at``) son deterministas y forman parte
+    de la huella, aunque sus campos conserven el sufijo ``_at_monotonic``; se
+    serializan como ``*_at_s``. Solo se excluyen las rutas y los valores que
+    dependen del reloj de pared. Los flotantes se redondean antes de serializar
+    el JSON canónico.
     """
     if isinstance(float_digits, bool) or not isinstance(float_digits, int) or float_digits < 0:
         raise ValueError("float_digits debe ser un entero no negativo")
@@ -133,6 +149,7 @@ def fingerprint_capture(
 ) -> FingerprintRun:
     """Reproduce una captura offline y calcula su huella determinista."""
     metrics_config = _effective_metrics_config(config)
+    complete_config = _complete_config(config)
     collector = _FingerprintCollector(MetricsEngine(metrics_config))
     offline = run_capture_offline(path, [collector])
     if collector.last_state is not None and collector.last_observed_at is not None:
@@ -141,14 +158,14 @@ def fingerprint_capture(
     state = collector.last_state
     metrics = collector.engine.snapshot()
     history = collector.engine.history.snapshot()
-    events = state.events if state is not None else ()
-    run_info = build_run_info(metrics_config, path)
+    events = tuple(collector.events)
+    run_info = build_run_info(complete_config, path)
     fingerprint = compute_fingerprint(
         events,
         history,
         {
             "metrics": metrics,
-            "metrics_config": _config_value(metrics_config.model_dump()),
+            "config": _config_value(complete_config.model_dump()),
             "run_info": {
                 "parser_version": run_info.parser_version,
                 "capture_sha256": run_info.capture_sha256,
@@ -170,7 +187,8 @@ def fingerprint_capture(
 class _FingerprintCollector:
     def __init__(self, engine: MetricsEngine) -> None:
         self.engine = engine
-        self.state = RaceState()
+        self.events: list[RaceEvent] = []
+        self.state = RaceState(self.events.append)
         self.last_state: RaceStateSnapshot | None = None
         self.last_observed_at: float | None = None
 
@@ -191,13 +209,13 @@ def _normalize_iterable(values: Iterable[RaceEvent], float_digits: int) -> list[
 def _normalize(value: object, float_digits: int) -> Any:
     if is_dataclass(value) and not isinstance(value, type):
         return {
-            field.name: _normalize(getattr(value, field.name), float_digits)
+            _normalize_key(field.name): _normalize(getattr(value, field.name), float_digits)
             for field in fields(value)
             if not _is_ignored_key(field.name)
         }
     if isinstance(value, Mapping):
         return {
-            str(key): _normalize(item, float_digits)
+            _normalize_key(str(key)): _normalize(item, float_digits)
             for key, item in value.items()
             if not _is_ignored_key(str(key))
         }
@@ -230,8 +248,15 @@ def _config_value(value: object) -> object:
     return value
 
 
+def _normalize_key(key: str) -> str:
+    """Nombra los tiempos de captura como segundos sin depender del reloj de pared."""
+    if key.endswith("_at_monotonic"):
+        return f"{key.removesuffix('_at_monotonic')}_at_s"
+    return key
+
+
 def _is_ignored_key(key: str) -> bool:
-    return key in _IGNORED_KEYS or key.endswith("_at_monotonic")
+    return key in _IGNORED_KEYS
 
 
 def _canonical_json(value: object) -> str:

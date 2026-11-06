@@ -13,6 +13,7 @@ import pytest
 from f1_strategist.capture import CapturedPacket, CaptureWriter
 from f1_strategist.cli import main
 from f1_strategist.datasets import (
+    DEFAULT_MANIFEST,
     ManifestError,
     Scenario,
     ScenarioExpectations,
@@ -20,7 +21,7 @@ from f1_strategist.datasets import (
     verify_scenario,
 )
 from f1_strategist.packets import HEADER_SIZE
-from f1_strategist.parser import ParsedPacket
+from f1_strategist.parser import PacketParseError, ParsedPacket
 from tests.conftest import make_packet
 from tests.scenarios import ScenarioCar, build_race_timed
 
@@ -191,6 +192,19 @@ def test_load_manifest_and_verify_synthetic_capture(
     assert result.observation.game_version == "1.26"
 
 
+def test_default_manifest_is_independent_of_current_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    manifest = load_manifest()
+
+    assert DEFAULT_MANIFEST.is_absolute()
+    assert manifest.path == DEFAULT_MANIFEST
+    assert manifest.get("monza-13-laps").id == "monza-13-laps"
+
+
 def test_verify_detects_wrong_hash(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -202,6 +216,39 @@ def test_verify_detects_wrong_hash(
 
     assert not result.ok
     assert any("sha256 no coincide" in problem for problem in result.problems)
+
+
+def test_verify_rejects_truncated_capture(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    capture = _synthetic_capture(tmp_path, monkeypatch)
+    with capture.open("ab") as handle:
+        handle.write(b"\x01\x02\x03")
+    manifest = load_manifest(_write_manifest(tmp_path / "manifest.toml", capture))
+
+    result = verify_scenario(manifest.get("synthetic"))
+
+    assert not result.ok
+    assert "la captura termina con un registro incompleto" in result.problems
+
+
+def test_verify_rejects_parser_rejections(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    capture = _synthetic_capture(tmp_path, monkeypatch)
+
+    def reject(_: bytes) -> ParsedPacket:
+        raise PacketParseError("bad_packet")
+
+    monkeypatch.setattr("f1_strategist.offline.parse_packet", reject)
+    manifest = load_manifest(_write_manifest(tmp_path / "manifest.toml", capture))
+
+    result = verify_scenario(manifest.get("synthetic"))
+
+    assert not result.ok
+    assert any("paquete(s) rechazado(s) por el parser" in problem for problem in result.problems)
 
 
 def test_verify_detects_unmet_expectation(
