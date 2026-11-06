@@ -10,6 +10,7 @@ import sys
 import time
 from collections.abc import Sequence
 from pathlib import Path
+from typing import Any
 
 from rich.console import Console, Group
 from rich.live import Live
@@ -256,7 +257,7 @@ class _KeyReader:
     def __init__(self) -> None:
         self._enabled = bool(getattr(sys.stdin, "isatty", lambda: False)())
         self._windows = os.name == "nt"
-        self._saved_attributes: list[object] | None = None
+        self._saved_attributes: Any | None = None
         if not self._enabled:
             return
         if not self._windows:
@@ -273,9 +274,13 @@ class _KeyReader:
         if self._windows:
             import msvcrt  # noqa: PLC0415
 
-            if not msvcrt.kbhit():
+            # Las stubs de msvcrt en plataformas no Windows no declaran estas
+            # funciones, aunque solo se usan cuando os.name == "nt".
+            kbhit = getattr(msvcrt, "kbhit", None)
+            getwch = getattr(msvcrt, "getwch", None)
+            if kbhit is None or getwch is None or not kbhit():
                 return None
-            key = msvcrt.getwch()
+            key = getwch()
             return key if key != "\x03" else "q"
         ready, _, _ = select.select([sys.stdin], [], [], 0)
         if not ready:
