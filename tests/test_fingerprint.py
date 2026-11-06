@@ -125,6 +125,21 @@ def test_metric_config_change_changes_fingerprint(
     assert default.fingerprint != changed.fingerprint
 
 
+def test_equivalent_config_shapes_produce_same_fingerprint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = _capture(tmp_path, monkeypatch)
+
+    default = fingerprint_capture(path)
+    metrics_only = fingerprint_capture(path, MetricsConfig())
+    app_config = fingerprint_capture(path, AppConfig())
+
+    assert default.run_info.config_hash == metrics_only.run_info.config_hash
+    assert metrics_only.run_info.config_hash == app_config.run_info.config_hash
+    assert default.fingerprint == metrics_only.fingerprint == app_config.fingerprint
+
+
 def test_fingerprint_ignores_key_order(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -146,6 +161,9 @@ def test_fingerprint_ignores_key_order(
 
     assert first == second
 
+    changed_metrics = {**metrics, "metric_a": {**metrics["metric_a"], "value": 1.6}}
+    assert compute_fingerprint(run.events, run.history, changed_metrics) != first
+
 
 def test_run_info_has_versions_and_capture_hash(
     tmp_path: Path,
@@ -157,7 +175,7 @@ def test_run_info_has_versions_and_capture_hash(
     assert info.tool_version
     assert info.parser_version == PARSER_VERSION
     assert info.capture_sha256 == hashlib.sha256(path.read_bytes()).hexdigest()
-    assert info.config_hash == compute_config_hash(AppConfig())
+    assert info.config_hash == compute_config_hash(MetricsConfig())
     assert info.python_version
     assert info.platform
 

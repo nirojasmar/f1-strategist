@@ -65,8 +65,7 @@ def build_run_info(
     capture_path: Path | None = None,
 ) -> RunInfo:
     """Construye los metadatos de una ejecución a partir de su configuración."""
-    resolved = AppConfig() if config is None else config
-    config_hash = compute_config_hash(resolved)
+    config_hash = compute_config_hash(_effective_metrics_config(config))
     capture_sha256 = _file_sha256(capture_path) if capture_path is not None else ""
     return RunInfo(
         tool_version=__version__,
@@ -79,9 +78,18 @@ def build_run_info(
 
 
 def compute_config_hash(config: AppConfig | MetricsConfig) -> str:
-    """SHA-256 del JSON canónico de la configuración validada."""
-    payload = _config_value(config.model_dump())
+    """SHA-256 del JSON canónico de la configuración de métricas validada."""
+    payload = _config_value(_effective_metrics_config(config).model_dump())
     return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()
+
+
+def _effective_metrics_config(config: AppConfig | MetricsConfig | None) -> MetricsConfig:
+    """Extrae la configuración de métricas que realmente usa el motor."""
+    if config is None:
+        return MetricsConfig()
+    if isinstance(config, AppConfig):
+        return config.metrics
+    return config
 
 
 def compute_fingerprint(
@@ -124,8 +132,7 @@ def fingerprint_capture(
     float_digits: int = 9,
 ) -> FingerprintRun:
     """Reproduce una captura offline y calcula su huella determinista."""
-    app_config = config if isinstance(config, AppConfig) else None
-    metrics_config = config.metrics if isinstance(config, AppConfig) else config
+    metrics_config = _effective_metrics_config(config)
     collector = _FingerprintCollector(MetricsEngine(metrics_config))
     offline = run_capture_offline(path, [collector])
     if collector.last_state is not None and collector.last_observed_at is not None:
@@ -135,16 +142,15 @@ def fingerprint_capture(
     metrics = collector.engine.snapshot()
     history = collector.engine.history.snapshot()
     events = state.events if state is not None else ()
-    run_info = build_run_info(app_config or metrics_config, path)
+    run_info = build_run_info(metrics_config, path)
     fingerprint = compute_fingerprint(
         events,
         history,
         {
             "metrics": metrics,
+            "metrics_config": _config_value(metrics_config.model_dump()),
             "run_info": {
-                "tool_version": run_info.tool_version,
                 "parser_version": run_info.parser_version,
-                "config_hash": run_info.config_hash,
                 "capture_sha256": run_info.capture_sha256,
             },
         },

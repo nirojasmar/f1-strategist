@@ -258,15 +258,16 @@ class _KeyReader:
         self._enabled = bool(getattr(sys.stdin, "isatty", lambda: False)())
         self._windows = os.name == "nt"
         self._saved_attributes: Any | None = None
+        self._fd: int | None = None
         if not self._enabled:
             return
         if not self._windows:
             import termios  # noqa: PLC0415
             import tty  # noqa: PLC0415
 
-            fd = sys.stdin.fileno()
-            self._saved_attributes = termios.tcgetattr(fd)  # type: ignore[reportAttributeAccessIssue]
-            tty.setcbreak(fd)  # type: ignore[reportAttributeAccessIssue]
+            self._fd = sys.stdin.fileno()
+            self._saved_attributes = termios.tcgetattr(self._fd)  # type: ignore[reportAttributeAccessIssue]
+            tty.setcbreak(self._fd)  # type: ignore[reportAttributeAccessIssue]
 
     def read(self) -> str | None:
         if not self._enabled:
@@ -282,22 +283,29 @@ class _KeyReader:
                 return None
             key = getwch()
             return key if key != "\x03" else "q"
-        ready, _, _ = select.select([sys.stdin], [], [], 0)
+        fd = self._fd
+        if fd is None:
+            return None
+        ready, _, _ = select.select([fd], [], [], 0)
         if not ready:
             return None
-        return sys.stdin.read(1)
+        data = os.read(fd, 1)
+        if not data:
+            return None
+        return data.decode("utf-8", errors="ignore") or None
 
     def close(self) -> None:
-        if self._saved_attributes is None:
+        if self._saved_attributes is None or self._fd is None:
             return
         import termios  # noqa: PLC0415
 
         termios.tcsetattr(  # type: ignore[reportAttributeAccessIssue]
-            sys.stdin.fileno(),
+            self._fd,
             termios.TCSADRAIN,  # type: ignore[reportAttributeAccessIssue]
             self._saved_attributes,
         )
         self._saved_attributes = None
+        self._fd = None
 
 
 def _next_speed(current: float, direction: int) -> float:
@@ -316,7 +324,10 @@ def _next_speed(current: float, direction: int) -> float:
 
 def _render_playback(cfg: AppConfig, session: PlaybackSession) -> Group:
     help_text = "espacio: pausa · +/-: velocidad · q: salir"
-    return Group(render(cfg, session), Text(help_text, style="dim"))
+    return Group(
+        render(cfg, session, time.monotonic(), race_now=session.observed_at),
+        Text(help_text, style="dim"),
+    )
 
 
 def _run_playback_console(

@@ -362,6 +362,35 @@ def test_non_contiguous_migrations_are_rejected(tmp_path: Path) -> None:
         )
 
 
+def test_failed_migration_rolls_back_ddl_and_version(tmp_path: Path) -> None:
+    path = tmp_path / "sessions.db"
+    upgrades = (
+        *MIGRATIONS,
+        Migration(2, ("CREATE TABLE migration_v2 (id INTEGER)",)),
+        Migration(
+            3,
+            (
+                "CREATE TABLE migration_v3 (id INTEGER)",
+                "CREATE TABLE migration_v3 (id INTEGER)",
+            ),
+        ),
+    )
+    with SessionStore.open(path) as store:
+        with pytest.raises(sqlite3.OperationalError, match="already exists"):
+            apply_migrations(store.connection, upgrades)
+
+        version = store.connection.execute("PRAGMA user_version").fetchone()[0]
+        tables = {
+            row[0]
+            for row in store.connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+        assert version == 2
+        assert "migration_v2" in tables
+        assert "migration_v3" not in tables
+
+
 def test_readonly_store_rejects_writes(tmp_path: Path) -> None:
     path = tmp_path / "sessions.db"
     with SessionStore.open(path) as store:
@@ -433,7 +462,7 @@ def test_session_info_validation() -> None:
 def test_recording_config_defaults_and_toml(tmp_path: Path) -> None:
     cfg = AppConfig()
     assert cfg.recording == RecordingConfig()
-    assert cfg.recording.enabled
+    assert not cfg.recording.enabled
     assert cfg.recording.database == Path("captures/sessions.db")
     assert cfg.recording.metrics_interval_s == 1.0
     assert cfg.recording.queue_size == 1000

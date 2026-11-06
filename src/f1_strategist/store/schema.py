@@ -181,8 +181,11 @@ def apply_migrations(
 ) -> int:
     """Aplica las migraciones pendientes y devuelve la versión resultante.
 
-    Cada migración se ejecuta en su propia transacción. Una base con una versión
-    posterior a la última migración conocida se rechaza sin tocarla.
+    Cada migración se ejecuta en su propia transacción de escritura inmediata. La
+    versión se relee dentro de la transacción para no repetir una migración que
+    otro proceso haya aplicado; ante cualquier fallo se revierte DDL y versión.
+    Una base con una versión posterior a la última migración conocida se rechaza
+    sin tocarla.
     """
     ordered = _validate_migrations(migrations)
     current = _read_user_version(connection)
@@ -195,13 +198,21 @@ def apply_migrations(
     for migration in ordered:
         if migration.version <= current:
             continue
-        statement_version = migration.version
-        with connection:
+        connection.execute("BEGIN IMMEDIATE")
+        try:
+            current = _read_user_version(connection)
+            if migration.version <= current:
+                connection.rollback()
+                continue
             for statement in migration.statements:
                 connection.execute(statement)
             # user_version no admite parámetros; ya está validado como entero.
-            connection.execute(f"PRAGMA user_version = {statement_version}")
-        current = statement_version
+            connection.execute(f"PRAGMA user_version = {migration.version}")
+            connection.commit()
+        except BaseException:
+            connection.rollback()
+            raise
+        current = migration.version
     return current
 
 

@@ -9,6 +9,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
+from .capture import CaptureError
 from .offline import run_capture_offline
 from .parser import FinalClassificationPacket, ParsedPacket
 from .race_state import RaceState
@@ -165,7 +166,15 @@ def verify_scenario(scenario: Scenario) -> VerificationResult:
         problems.append(f"sha256 no coincide: esperado {scenario.sha256}, obtenido {actual_hash}")
 
     collector = _Collector()
-    run_capture_offline(scenario.file, [collector])
+    try:
+        run_capture_offline(scenario.file, [collector])
+    except CaptureError as exc:
+        problems.append(f"no se pudo leer la captura: {exc}")
+        return VerificationResult(
+            scenario=scenario,
+            available=True,
+            problems=tuple(problems),
+        )
     observation = _observe(collector)
     problems.extend(_compare(scenario.expected, observation))
     return VerificationResult(

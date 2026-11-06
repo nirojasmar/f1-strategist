@@ -55,6 +55,7 @@ class PlaybackSession:
         self._error: str | None = None
         self._thread: threading.Thread | None = None
         self._runs_completed = 0
+        self._observed_at = 0.0
         self._race_state = RaceState()
         self._metrics_engine = MetricsEngine(config)
         self._stats = Stats()
@@ -142,6 +143,12 @@ class PlaybackSession:
     def speed(self) -> float:
         with self._condition:
             return self._speed
+
+    @property
+    def observed_at(self) -> float:
+        """Instante de captura del último paquete procesado (reloj de reproducción)."""
+        with self._condition:
+            return self._observed_at
 
     @property
     def playing(self) -> bool:
@@ -235,12 +242,15 @@ class PlaybackSession:
         self._race_state = RaceState()
         self._metrics_engine = MetricsEngine(self._config)
         self._stats = Stats()
+        with self._condition:
+            self._observed_at = 0.0
 
     def _play_once(self, seek_lap: int | None) -> str:
         reader = CaptureReader(self.path)
         first_ns: int | None = None
         last_observed = 0.0
         seeking = seek_lap is not None
+        deadline: float | None = None
         last_state: RaceStateSnapshot | None = None
         last_observed_at: float | None = None
 
@@ -251,7 +261,10 @@ class PlaybackSession:
             observed_at = max(last_observed, elapsed)
             gap = observed_at - last_observed
 
-            control = self._check_control() if seeking else self._wait_gap(gap)
+            if seeking:
+                control = self._check_control()
+            else:
+                control, deadline = self._wait_gap(gap, deadline)
             if control is not None:
                 return control
             last_observed = observed_at
@@ -273,9 +286,12 @@ class PlaybackSession:
             self._metrics_engine.apply(packet, observed_at, state)
             last_state = state
             last_observed_at = observed_at
+            with self._condition:
+                self._observed_at = observed_at
 
             if seeking and state.current_lap is not None and state.current_lap >= (seek_lap or 1):
                 seeking = False
+                deadline = None
 
         if last_state is not None and last_observed_at is not None:
             self._metrics_engine.finalize(last_state, last_observed_at)
@@ -292,28 +308,38 @@ class PlaybackSession:
                     return None
                 self._condition.wait()
 
-    def _wait_gap(self, gap_s: float) -> str | None:
-        if gap_s <= 0:
-            return self._check_control()
-        wall_start = time.monotonic()
-        while True:
-            with self._condition:
+    def _wait_gap(self, gap_s: float, deadline: float | None) -> tuple[str | None, float]:
+        with self._condition:
+            now = time.monotonic()
+            if deadline is None:
+                deadline = now
+            speed = self._speed
+            if speed > 0:
+                deadline += gap_s / speed
+            scheduled_speed = speed
+            while True:
                 if self._stop:
-                    return _STOP
+                    return _STOP, deadline
                 if self._pending_seek is not None:
-                    return _RESTART
+                    return _RESTART, deadline
                 if self._paused:
                     paused_at = time.monotonic()
                     while self._paused and not self._stop and self._pending_seek is None:
                         self._condition.wait()
-                    wall_start += time.monotonic() - paused_at
+                    deadline += time.monotonic() - paused_at
                     continue
+                now = time.monotonic()
                 speed = self._speed
                 if speed == 0:
-                    return None
-                remaining = gap_s / speed - (time.monotonic() - wall_start)
+                    return None, now
+                if speed != scheduled_speed:
+                    remaining = deadline - now
+                    if remaining > 0:
+                        deadline = now + remaining * scheduled_speed / speed
+                    scheduled_speed = speed
+                remaining = deadline - now
                 if remaining <= 0:
-                    return None
+                    return None, deadline
                 self._condition.wait(timeout=min(remaining, _POLL_INTERVAL_S))
 
 

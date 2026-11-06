@@ -68,7 +68,7 @@ class RecordingConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    enabled: bool = True
+    enabled: bool = False
     database: Path = Path("captures/sessions.db")
     metrics_interval_s: float = Field(default=1.0, gt=0, allow_inf_nan=False)
     queue_size: int = Field(default=1000, ge=1)

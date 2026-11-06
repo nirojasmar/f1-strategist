@@ -19,7 +19,7 @@ directory = "captures"
 [recording]
 # Graba la sesión en SQLite a partir de la captura cruda (derivable con `ingest`).
 # Actívalo solo si quieres que la sesión en vivo escriba en la base.
-enabled = true
+enabled = false
 database = "captures/sessions.db"
 # Cadencia máxima de las muestras de métricas y tamaño de la cola del grabador.
 metrics_interval_s = 1.0
