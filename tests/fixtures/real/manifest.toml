@@ -1,0 +1,21 @@
+# Catálogo de capturas reales usadas como referencia de regresión.
+#
+# Para añadir un escenario basta con copiar el archivo en este directorio y
+# añadir una entrada [[scenario]] con su hash, tamaño y expectativas.
+
+[[scenario]]
+id = "monza-13-laps"
+file = "monza-13-laps.f1cap.gz"
+sha256 = "fe5c2f7d2ebd391b5f79c8cb4246476470d0c6e9d83df1a94a749494896670cc"
+bytes = 5592587
+description = "Gran Premio de Monza, carrera de 13 vueltas con paradas en boxes."
+tags = ["pit_stops"]
+
+[scenario.expected]
+track = "monza"
+session_type = "race"
+total_laps = 13
+cars = 20
+pit_stops_total = 20
+best_lap_ms = 80038
+game_version = "1.26"

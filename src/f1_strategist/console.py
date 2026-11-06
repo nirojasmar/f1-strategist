@@ -122,8 +122,21 @@ def format_bytes(nbytes: int) -> str:
     return f"{nbytes} B"
 
 
-def render(cfg: AppConfig, session: SessionPort, now: float | None = None) -> Group:
+def render(
+    cfg: AppConfig,
+    session: SessionPort,
+    now: float | None = None,
+    *,
+    race_now: float | None = None,
+) -> Group:
+    """Renderiza el estado.
+
+    ``now`` es el reloj monotónico de la interfaz (diagnóstico y tramas). En
+    reproducción, ``race_now`` permite usar el instante de la captura para la
+    frescura de los datos de carrera sin mezclarlo con ese reloj.
+    """
     now = time.monotonic() if now is None else now
+    race_now = now if race_now is None else race_now
     tele = cfg.telemetry
     snap = session.snapshot()
     state = connection_state(tele, snap, now)
@@ -167,8 +180,8 @@ def render(cfg: AppConfig, session: SessionPort, now: float | None = None) -> Gr
 
     parts: list[RenderableType] = [
         Panel(info, title="F1 Strategist · telemetría UDP", expand=False),
-        _render_race_summary(session.race_snapshot(), now),
-        _render_metrics_summary(session.metrics_snapshot(), session.race_snapshot(), now),
+        _render_race_summary(session.race_snapshot(), race_now),
+        _render_metrics_summary(session.metrics_snapshot(), session.race_snapshot(), race_now),
     ]
     if snap.packets_by_id:
         table = Table(title="Paquetes por tipo · huecos estimados", expand=False)

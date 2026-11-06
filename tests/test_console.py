@@ -77,8 +77,8 @@ def test_console_renders_race_summary_fields() -> None:
         )
 
     output = StringIO()
-    console = Console(file=output, width=120, no_color=True)
-    console.print(render(config, session, now=5.0))
+    console = Console(file=output, width=250, no_color=True)
+    console.print(render(config, session, now=100.0, race_now=5.0))
 
     text = output.getvalue()
     assert "Estado de carrera" in text
@@ -87,6 +87,7 @@ def test_console_renders_race_summary_fields() -> None:
     assert "Posición" in text and "2" in text
     assert "12.3 kg" in text
     assert "C3" in text
+    assert "combustible/neumáticos: 1.0 s" in text
 
 
 def test_race_event_with_out_of_range_car_index_renders_safely() -> None:

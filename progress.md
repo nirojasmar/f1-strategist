@@ -61,16 +61,16 @@ Documentos de diseño:
 | 0. Definición y entorno | Parcial | Repo, CI definido, config, receptor y guía de firewall listos. Falta validar la recepción desde otro PC de la red local y en Linux real. |
 | 1. Receptor, parser y estado | Implementada; CI verde | Snapshots inmutables de sesión y coches, daños, frescura por grupo, eventos y resumen de consola. |
 | 2. Métricas e histórico | Implementada; validación parcial | A1--A4, B1--B3, C1--C4/C2b, D1--D9, E1--E4 y F2--F4 implementados. F3 y la documentación se actualizaron según O5; la semántica/tolerancia del MFD sigue abierta aunque la validación local actual pasa. |
-| 3. Grabación y replay | Parcial | Captura y reemisión UDP listas (se adelantaron en Sprint 1). Falta el replay interno hacia el pipeline y el registro en SQLite. |
+| 3. Grabación y replay | Parcial | G1--G4 implementados; se corrigieron los hallazgos de integridad, reloj, búsqueda, catálogo, configuración y esquema del review de Ola 0. G5 y siguientes siguen fuera de este cierre. |
 | 4--10 | No iniciadas | |
 
 ## 5. Qué está verificado y qué no
 
 **Verificado:**
 
--   La suite `pytest` (410 pruebas funcionales y 1 benchmark excluido por defecto), Ruff (lint y formato,
-    78 archivos) y Pyright pasan en Windows (2026-11-04). Las 9 pruebas de `real_capture` se ejecutaron
-    contra el fixture real de Monza.
+-   La suite `pytest` (488 pruebas funcionales y 1 benchmark excluido por defecto), Ruff (lint y formato,
+    89 archivos) y Pyright pasan en Windows (2026-11-06). El wheel se probó desde un directorio externo
+    al repositorio y carga el manifiesto empaquetado.
 -   CI de GitHub Actions exitoso para `phase-1-udp-parser`, commit `096eceb`, en Ubuntu y Windows; también
     pasaron Ruff (lint y formato) y Pyright (2026-11-02).
 -   El consumidor único aplica los paquetes parseados al estado y publica snapshots inmutables; la frescura
@@ -374,6 +374,20 @@ Documentos de diseño:
     pasa al ejecutarse con `-m benchmark` y las 15 pruebas de `real_capture` pasan con el fixture local.
     Ruff (archivos Python afectados), Pyright y `git diff --check` pasan. CI remota no se ejecutó.
 
+### 2026-11-06
+
+-   Aplicados los nueve hallazgos de `review.md` de la Ola 0: la huella conserva todos los eventos,
+    incluye tiempos simulados y configuración completa; `verify`, `datasets verify` y `play` rechazan
+    capturas truncadas, con rechazos del parser o sin paquetes válidos.
+-   El reloj de `play` avanza también ante paquetes ignorados/rechazados; buscar una vuelta ausente
+    falla claramente y no reintenta en bucle. El catálogo predeterminado se resuelve sin depender del
+    directorio actual y su manifiesto está incluido en el wheel; las capturas siguen siendo opcionales.
+-   SQLite valida versión y tablas en solo lectura, y no cambia journal mode antes de rechazar una
+    base futura; se registraron estos contratos y resultados en esta bitácora.
+-   Validación local: 488 pruebas pasan, 1 benchmark se excluye por defecto, Ruff (lint/formato),
+    Pyright y `git diff --check` pasan. El wheel se construyó y su comando de catálogo se probó desde
+    fuera del repositorio. CI remota no se ejecutó.
+
 ## 7. Hallazgos de la primera captura real
 
 Captura: 68 541 paquetes, ~66 MB, 795,5 s entre el primer y el último paquete. Salida de `inspect`:
@@ -522,7 +536,7 @@ La implementación de la Fase 2 está completada, pero su criterio de aceptació
 abierto**: la semántica del indicador de combustible del MFD y su tolerancia aún no están verificadas.
 El fixture de Monza acredita solo los escenarios observados localmente. El siguiente trabajo es:
 
-1.  **Fase 3:** completar el replay interno hacia el pipeline y la persistencia en SQLite.
+1.  **Fase 3:** continuar con G5 y tareas posteriores de grabación/persistencia.
 2.  **Calibración diferida:** ajustar los parámetros que hoy no tienen valor universal y ampliar la
     validación a capturas con lluvia, safety car y otras condiciones.
 3.  **CI:** volver a ejecutar GitHub Actions después de la Ola 5.
