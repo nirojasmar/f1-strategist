@@ -21,6 +21,7 @@ from .capture import CaptureError
 from .config import AppConfig, ConfigError, apply_overrides, load_config
 from .console import format_bytes, render, run_console
 from .datasets import DEFAULT_MANIFEST, Manifest, Scenario, load_manifest, verify_scenario
+from .fingerprint import fingerprint_capture
 from .metrics.export import EXPORT_FORMATS, render_metrics_export, run_metrics_capture
 from .offline import OfflineResult
 from .packets import packet_name
@@ -64,6 +65,16 @@ def _parse_lap_range(value: str) -> tuple[int, int]:
     if not 1 <= start <= end <= 255:
         raise argparse.ArgumentTypeError("el rango debe cumplir 1 <= A <= B <= 255")
     return start, end
+
+
+def _positive_int(value: str) -> int:
+    try:
+        number = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("se esperaba un entero") from exc
+    if number < 1:
+        raise argparse.ArgumentTypeError("el valor debe ser mayor o igual que 1")
+    return number
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -151,6 +162,20 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="conservar nombres de participantes controlados por IA al anonimizar",
     )
+
+    verify = sub.add_parser(
+        "verify", help="comprueba que las ejecuciones offline producen la misma huella"
+    )
+    verify.add_argument("file", type=Path, help="captura de entrada (.f1cap o .f1cap.gz)")
+    verify.add_argument(
+        "--runs",
+        type=_positive_int,
+        default=2,
+        metavar="N",
+        help="número de ejecuciones a comparar (por defecto 2)",
+    )
+    verify.add_argument("--expect", metavar="HUELLA", help="huella SHA-256 esperada")
+    verify.add_argument("--config", type=Path, help="archivo TOML de configuración")
 
     datasets = sub.add_parser("datasets", help="consulta el catálogo de capturas de referencia")
     datasets_sub = datasets.add_subparsers(dest="datasets_command", required=True)
@@ -340,6 +365,40 @@ def _cmd_play(args: argparse.Namespace, console: Console, err: Console) -> int:
     if session.finished:
         snap = session.snapshot()
         console.print(f"Reproducción completada: {snap.received} paquetes.")
+    return 0
+
+
+def _cmd_verify(args: argparse.Namespace, console: Console, err: Console) -> int:
+    if args.runs < 1:
+        raise ValueError("--runs debe ser mayor o igual que 1")
+    cfg = load_config(args.config)
+    first = None
+    for index in range(args.runs):
+        result = fingerprint_capture(args.file, cfg)
+        if first is None:
+            first = result
+        elif result.fingerprint != first.fingerprint:
+            err.print(
+                "[red]Error:[/] Las ejecuciones no son deterministas: "
+                f"ejecución 1 = {first.fingerprint}, ejecución {index + 1} = "
+                f"{result.fingerprint}"
+            )
+            return 1
+    assert first is not None
+    if args.expect is not None:
+        expected = args.expect.strip().lower()
+        if expected != first.fingerprint:
+            err.print(
+                "[red]Error:[/] La huella no coincide: "
+                f"esperada {expected}, obtenida {first.fingerprint}"
+            )
+            return 1
+    console.print(f"Huella determinista ({args.runs} ejecución(es)): [bold]{first.fingerprint}[/]")
+    info = first.run_info
+    console.print(
+        f"Configuración {info.config_hash} · parser {info.parser_version} · "
+        f"Python {info.python_version}"
+    )
     return 0
 
 
@@ -542,6 +601,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "run": _cmd_run,
         "replay": _cmd_replay,
         "play": _cmd_play,
+        "verify": _cmd_verify,
         "inspect": _cmd_inspect,
         "metrics": _cmd_metrics,
         "trim": _cmd_trim,
