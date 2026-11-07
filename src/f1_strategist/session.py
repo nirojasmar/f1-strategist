@@ -13,12 +13,14 @@ from pathlib import Path
 from . import __version__
 from .capture import CapturedPacket, CaptureWriter
 from .config import AppConfig
-from .messages import message
+from .messages import DiagnosticMessage, message
 from .metrics.engine import MetricsEngine, MetricsSnapshot
 from .packets import parse_header
 from .parser import PacketParseError, is_ignored_by_design, parse_packet
 from .race_state import RaceState, RaceStateSnapshot
 from .receiver import Stats, StatsSnapshot, UdpReceiver
+from .recorder import SessionRecorder, serialize_config
+from .store import SessionStore
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -41,6 +43,8 @@ class CaptureSession:
         self._consumer: threading.Thread | None = None
         self._stop_consumer = threading.Event()
         self.capture_path: Path | None = None
+        self._store: SessionStore | None = None
+        self._recorder: SessionRecorder | None = None
 
     @property
     def bound_port(self) -> int:
@@ -68,6 +72,8 @@ class CaptureSession:
                     "allowed_sources": tele.allowed_sources,
                 },
             )
+        if self.config.recording.enabled:
+            self._start_recorder()
         self._consumer = threading.Thread(
             target=self._consume, name="capture-consumer", daemon=True
         )
@@ -78,11 +84,60 @@ class CaptureSession:
         self._stop_consumer.set()
         if self._consumer is not None:
             self._consumer.join(timeout=5.0)
+        recorder = self._recorder
+        if recorder is not None:
+            try:
+                recorder.stop()
+            except Exception as exc:
+                _LOGGER.exception("Unable to stop the session recorder")
+                self.stats.record_consumer_error(message("recorder_error", error=str(exc)))
+            finally:
+                self._recorder = None
+        store = self._store
+        if store is not None:
+            try:
+                store.close()
+            except Exception as exc:
+                _LOGGER.exception("Unable to close the session store")
+                self.stats.record_consumer_error(message("recorder_error", error=str(exc)))
+            finally:
+                self._store = None
         if self._writer is not None:
             self._writer.close()
 
     def snapshot(self) -> StatsSnapshot:
         return self.stats.snapshot()
+
+    def _start_recorder(self) -> None:
+        """Abre el almacén y arranca el grabador; un fallo no detiene la captura."""
+        try:
+            store = SessionStore.open(self.config.recording.database)
+            try:
+                recorder = SessionRecorder(
+                    store,
+                    self.config.recording,
+                    capture_path=self.capture_path,
+                    config_json=serialize_config(self.config),
+                )
+            except BaseException:
+                store.close()
+                raise
+        except Exception as exc:
+            _LOGGER.exception("Unable to start the session recorder")
+            self.stats.record_consumer_error(message("recorder_error", error=str(exc)))
+            return
+        self._store = store
+        self._recorder = recorder
+
+    def _record_error(self, issue: DiagnosticMessage) -> None:
+        """Registra un error en las estadísticas y, si existe, en el grabador."""
+        self.stats.record_consumer_error(issue)
+        recorder = self._recorder
+        if recorder is not None:
+            try:
+                recorder.record_error(issue)
+            except Exception:
+                _LOGGER.exception("Unable to record a consumer error")
 
     def race_snapshot(self) -> RaceStateSnapshot:
         return self._race_state.snapshot()
@@ -102,7 +157,7 @@ class CaptureSession:
                 self.stats.record_header(header)
             except Exception as exc:
                 _LOGGER.exception("Unexpected error while recording packet header")
-                self.stats.record_consumer_error(message("consumer_header_error", error=str(exc)))
+                self._record_error(message("consumer_header_error", error=str(exc)))
                 header = None
 
             self._write_packet(packet)
@@ -116,30 +171,38 @@ class CaptureSession:
                 self.stats.record_parser_rejection(exc.issue)
             except Exception as exc:
                 _LOGGER.exception("Unexpected error while parsing UDP packet")
-                self.stats.record_consumer_error(message("consumer_parse_error", error=str(exc)))
+                self._record_error(message("consumer_parse_error", error=str(exc)))
             else:
                 try:
                     observed_at = packet.recv_monotonic
                     if observed_at is None:
                         observed_at = time.monotonic()
                     self._race_state.apply(parsed_packet, observed_at)
+                    state_snapshot = self._race_state.snapshot()
                 except Exception as exc:
                     _LOGGER.exception("Unexpected error while updating race state")
-                    self.stats.record_consumer_error(
-                        message("race_state_update_error", error=str(exc))
-                    )
+                    self._record_error(message("race_state_update_error", error=str(exc)))
                 else:
                     try:
-                        self._metrics_engine.apply(
-                            parsed_packet,
-                            observed_at,
-                            self._race_state.snapshot(),
-                        )
+                        self._metrics_engine.apply(parsed_packet, observed_at, state_snapshot)
                     except Exception as exc:
                         _LOGGER.exception("Unexpected error while updating metrics")
-                        self.stats.record_consumer_error(
-                            message("metrics_update_error", error=str(exc))
-                        )
+                        self._record_error(message("metrics_update_error", error=str(exc)))
+                    else:
+                        recorder = self._recorder
+                        if recorder is not None:
+                            try:
+                                recorder.observe(
+                                    parsed_packet.header.session_time,
+                                    observed_at,
+                                    state_snapshot,
+                                    self._metrics_engine.snapshot(),
+                                    self._metrics_engine.history,
+                                    header=parsed_packet.header,
+                                )
+                            except Exception as exc:
+                                _LOGGER.exception("Unexpected error while recording the session")
+                                self._record_error(message("recorder_error", error=str(exc)))
         writer = self._writer
         if writer is not None:
             try:

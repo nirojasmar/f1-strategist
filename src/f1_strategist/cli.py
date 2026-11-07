@@ -28,8 +28,10 @@ from .offline import OfflineResult
 from .packets import packet_name
 from .playback import PlaybackSession
 from .receiver import ReceiverError
+from .recorder import ingest_capture
 from .replay import replay_capture
 from .session import CaptureSession
+from .store import SessionStore, StoreError
 from .summary import summarize
 from .trim import trim_capture
 
@@ -177,6 +179,22 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     verify.add_argument("--expect", metavar="HUELLA", help="huella SHA-256 esperada")
     verify.add_argument("--config", type=Path, help="archivo TOML de configuración")
+
+    ingest = sub.add_parser(
+        "ingest", help="genera la base de datos a partir de una captura offline"
+    )
+    ingest.add_argument("file", type=Path, help="captura de entrada (.f1cap o .f1cap.gz)")
+    ingest.add_argument(
+        "--db",
+        type=Path,
+        help="base de datos SQLite (por defecto, la de la configuración)",
+    )
+    ingest.add_argument("--config", type=Path, help="archivo TOML de configuración")
+    ingest.add_argument(
+        "--replace",
+        action="store_true",
+        help="reemplaza la sesión ya ingerida con la misma captura y configuración",
+    )
 
     datasets = sub.add_parser("datasets", help="consulta el catálogo de capturas de referencia")
     datasets_sub = datasets.add_subparsers(dest="datasets_command", required=True)
@@ -481,6 +499,31 @@ def _cmd_metrics(args: argparse.Namespace, console: Console, err: Console) -> in
     return 0
 
 
+def _cmd_ingest(args: argparse.Namespace, console: Console, err: Console) -> int:
+    cfg = load_config(args.config)
+    if args.db is not None:
+        cfg = cfg.model_copy(
+            update={
+                "recording": cfg.recording.model_copy(update={"database": args.db}),
+            }
+        )
+    with SessionStore.open(cfg.recording.database) as store:
+        result = ingest_capture(args.file, store, cfg, replace=args.replace)
+    if result.skipped:
+        console.print(
+            f"La captura ya estaba ingerida en la sesión {result.session_id}; "
+            "usa --replace para reemplazarla."
+        )
+        return 0
+    console.print(
+        f"Sesión {result.session_id} ingerida: {result.laps} vueltas, "
+        f"{result.events} eventos, {result.metric_samples} muestras y "
+        f"{result.errors} errores."
+    )
+    console.print(f"Huella determinista: [bold]{result.fingerprint}[/]")
+    return 0
+
+
 def _cmd_datasets(args: argparse.Namespace, console: Console, err: Console) -> int:
     manifest = load_manifest(args.manifest)
     if args.datasets_command == "list":
@@ -627,11 +670,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         "inspect": _cmd_inspect,
         "metrics": _cmd_metrics,
         "trim": _cmd_trim,
+        "ingest": _cmd_ingest,
         "datasets": _cmd_datasets,
     }
     try:
         return handlers[args.command](args, console, err)
-    except (ConfigError, CaptureError, ValueError) as exc:
+    except (ConfigError, CaptureError, StoreError, ValueError) as exc:
         err.print(f"[red]Error:[/] {exc}")
         return 2
     except OSError as exc:

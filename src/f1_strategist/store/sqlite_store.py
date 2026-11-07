@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -200,8 +201,26 @@ class SessionStore:
         self.close()
 
     # ------------------------------------------------------------------
-    # Escritura (una transacción por método)
+    # Transacciones y escritura
     # ------------------------------------------------------------------
+
+    @contextmanager
+    def transaction(self) -> Iterator[sqlite3.Connection]:
+        """Agrupa varias escrituras en una sola transacción.
+
+        Si ya hay una transacción abierta se reutiliza, de modo que los métodos
+        de escritura pueden invocarse tanto sueltos como dentro de un lote.
+        """
+        if self._connection.in_transaction:
+            yield self._connection
+            return
+        self._connection.execute("BEGIN")
+        try:
+            yield self._connection
+        except BaseException:
+            self._connection.rollback()
+            raise
+        self._connection.commit()
 
     def create_session(self, info: SessionInfo) -> int:
         """Inserta la cabecera de una sesión y devuelve su id."""
@@ -226,8 +245,8 @@ class SessionStore:
             info.fingerprint,
         )
         columns = _SESSION_COLUMNS[1:]
-        with self._connection:
-            cursor = self._connection.execute(
+        with self.transaction() as connection:
+            cursor = connection.execute(
                 f"INSERT INTO sessions ({', '.join(columns)}) "
                 f"VALUES ({', '.join('?' for _ in columns)})",
                 values,
@@ -245,8 +264,8 @@ class SessionStore:
         fingerprint: str | None = None,
     ) -> None:
         """Cierra una sesión abierta con su estado final."""
-        with self._connection:
-            cursor = self._connection.execute(
+        with self.transaction() as connection:
+            cursor = connection.execute(
                 "UPDATE sessions SET ended_at_utc = ?, incomplete = ?, "
                 "fingerprint = COALESCE(?, fingerprint) WHERE id = ?",
                 (ended_at_utc, int(incomplete), fingerprint, session_id),
@@ -268,8 +287,8 @@ class SessionStore:
         ]
         if not rows:
             return
-        with self._connection:
-            self._connection.executemany(
+        with self.transaction() as connection:
+            connection.executemany(
                 "INSERT INTO participants (session_id, car_index, name, team, ai_controlled) "
                 "VALUES (?, ?, ?, ?, ?) "
                 "ON CONFLICT(session_id, car_index) DO UPDATE SET "
@@ -289,8 +308,8 @@ class SessionStore:
         ]
         if not rows:
             return
-        with self._connection:
-            self._connection.executemany(_UPSERT_LAP_SQL, rows)
+        with self.transaction() as connection:
+            connection.executemany(_UPSERT_LAP_SQL, rows)
 
     def add_events(self, session_id: int, events: Iterable[StoredEvent]) -> None:
         """Añade eventos de carrera."""
@@ -309,8 +328,8 @@ class SessionStore:
         ]
         if not rows:
             return
-        with self._connection:
-            self._connection.executemany(
+        with self.transaction() as connection:
+            connection.executemany(
                 "INSERT INTO events "
                 "(session_id, seq, kind, t_sim_s, car_index, lap_number, value, previous_value) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -336,8 +355,8 @@ class SessionStore:
         ]
         if not rows:
             return
-        with self._connection:
-            self._connection.executemany(
+        with self.transaction() as connection:
+            connection.executemany(
                 "INSERT INTO metric_samples "
                 "(session_id, t_session_s, t_sim_s, lap, key, value_num, value_text, unit, "
                 "quality, sample_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -349,12 +368,19 @@ class SessionStore:
         rows = [(session_id, error.t_sim_s, error.code, error.params_json) for error in errors]
         if not rows:
             return
-        with self._connection:
-            self._connection.executemany(
+        with self.transaction() as connection:
+            connection.executemany(
                 "INSERT INTO app_errors (session_id, t_sim_s, code, params_json) "
                 "VALUES (?, ?, ?, ?)",
                 rows,
             )
+
+    def delete_session(self, session_id: int) -> None:
+        """Elimina una sesión y todos sus datos asociados (cascada)."""
+        with self.transaction() as connection:
+            cursor = connection.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+        if cursor.rowcount == 0:
+            raise StoreError(f"No existe la sesión {session_id}")
 
     # ------------------------------------------------------------------
     # Lectura
@@ -461,7 +487,11 @@ def _open_writable(location: str) -> sqlite3.Connection:
         expanded = Path(location).expanduser()
         expanded.parent.mkdir(parents=True, exist_ok=True)
         path = str(expanded)
-    return sqlite3.connect(path, timeout=BUSY_TIMEOUT_MS / 1000)
+    return sqlite3.connect(
+        path,
+        timeout=BUSY_TIMEOUT_MS / 1000,
+        check_same_thread=False,
+    )
 
 
 def _open_readonly(location: str) -> sqlite3.Connection:
