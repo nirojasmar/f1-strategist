@@ -219,10 +219,10 @@ class SessionStore:
         self._connection.execute("BEGIN")
         try:
             yield self._connection
+            self._connection.commit()
         except BaseException:
             self._connection.rollback()
             raise
-        self._connection.commit()
 
     def create_session(self, info: SessionInfo) -> int:
         """Inserta la cabecera de una sesión y devuelve su id."""
