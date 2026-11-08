@@ -241,6 +241,11 @@ def render_diagnostic(item: DiagnosticMessage) -> str:
             f"El consumidor registró {item.get('count')} errores; último error: "
             f"{render_diagnostic(error)}"
         )
+    if key == "recorder_dropped":
+        return (
+            "Se perdieron lotes de la sesión por falta de espacio en la cola "
+            f"({item.get('count')} lotes)."
+        )
     if key in {
         "consumer_header_error",
         "consumer_parse_error",

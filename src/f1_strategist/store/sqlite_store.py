@@ -51,6 +51,7 @@ _SESSION_COLUMNS: tuple[str, ...] = (
     "config_hash",
     "config_json",
     "fingerprint",
+    "final_metrics_json",
 )
 
 _LAP_COLUMNS: tuple[str, ...] = tuple(LAP_COLUMN_TYPES)
@@ -93,6 +94,7 @@ class SessionInfo:
     config_hash: str | None = None
     config_json: str | None = None
     fingerprint: str | None = None
+    final_metrics_json: str | None = None
 
     def __post_init__(self) -> None:
         if self.session_uid < 0 or self.session_uid > 2**64 - 1:
@@ -243,6 +245,7 @@ class SessionStore:
             info.config_hash,
             info.config_json,
             info.fingerprint,
+            info.final_metrics_json,
         )
         columns = _SESSION_COLUMNS[1:]
         with self.transaction() as connection:
@@ -262,13 +265,65 @@ class SessionStore:
         ended_at_utc: str,
         incomplete: bool = False,
         fingerprint: str | None = None,
+        final_metrics_json: str | None = None,
+        capture_sha256: str | None = None,
     ) -> None:
         """Cierra una sesión abierta con su estado final."""
         with self.transaction() as connection:
             cursor = connection.execute(
                 "UPDATE sessions SET ended_at_utc = ?, incomplete = ?, "
-                "fingerprint = COALESCE(?, fingerprint) WHERE id = ?",
-                (ended_at_utc, int(incomplete), fingerprint, session_id),
+                "fingerprint = COALESCE(?, fingerprint), "
+                "final_metrics_json = COALESCE(?, final_metrics_json), "
+                "capture_sha256 = COALESCE(?, capture_sha256) WHERE id = ?",
+                (
+                    ended_at_utc,
+                    int(incomplete),
+                    fingerprint,
+                    final_metrics_json,
+                    capture_sha256,
+                    session_id,
+                ),
+            )
+        if cursor.rowcount == 0:
+            raise StoreError(f"No existe la sesión {session_id}")
+
+    def update_session(self, session_id: int, info: SessionInfo) -> None:
+        """Completa los metadatos de una sesión sin borrar los ya conocidos.
+
+        Solo se rellenan los campos que llegan con valor; los que ya estaban
+        guardados se conservan mediante ``COALESCE``.
+        """
+        with self.transaction() as connection:
+            cursor = connection.execute(
+                "UPDATE sessions SET "
+                "game_format = COALESCE(?, game_format), "
+                "game_year = COALESCE(?, game_year), "
+                "game_version = COALESCE(?, game_version), "
+                "track = COALESCE(?, track), "
+                "session_type = COALESCE(?, session_type), "
+                "total_laps = COALESCE(?, total_laps), "
+                "capture_path = COALESCE(?, capture_path), "
+                "capture_sha256 = COALESCE(?, capture_sha256), "
+                "tool_version = COALESCE(?, tool_version), "
+                "parser_version = COALESCE(?, parser_version), "
+                "config_hash = COALESCE(?, config_hash), "
+                "config_json = COALESCE(?, config_json) "
+                "WHERE id = ?",
+                (
+                    info.game_format,
+                    info.game_year,
+                    info.game_version,
+                    info.track,
+                    info.session_type,
+                    info.total_laps,
+                    info.capture_path,
+                    info.capture_sha256,
+                    info.tool_version,
+                    info.parser_version,
+                    info.config_hash,
+                    info.config_json,
+                    session_id,
+                ),
             )
         if cursor.rowcount == 0:
             raise StoreError(f"No existe la sesión {session_id}")
@@ -531,6 +586,7 @@ def _session_from_row(row: sqlite3.Row) -> SessionInfo:
         config_hash=_optional_str(row["config_hash"]),
         config_json=_optional_str(row["config_json"]),
         fingerprint=_optional_str(row["fingerprint"]),
+        final_metrics_json=_optional_str(row["final_metrics_json"]),
     )
 
 

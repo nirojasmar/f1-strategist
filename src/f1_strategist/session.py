@@ -13,6 +13,7 @@ from pathlib import Path
 from . import __version__
 from .capture import CapturedPacket, CaptureWriter
 from .config import AppConfig
+from .fingerprint import build_run_info, file_sha256
 from .messages import DiagnosticMessage, message
 from .metrics.engine import MetricsEngine, MetricsSnapshot
 from .packets import parse_header
@@ -45,6 +46,8 @@ class CaptureSession:
         self.capture_path: Path | None = None
         self._store: SessionStore | None = None
         self._recorder: SessionRecorder | None = None
+        self._reported_recorder_error: Exception | None = None
+        self._reported_dropped_batches = 0
 
     @property
     def bound_port(self) -> int:
@@ -84,14 +87,28 @@ class CaptureSession:
         self._stop_consumer.set()
         if self._consumer is not None:
             self._consumer.join(timeout=5.0)
+        capture_sha256: str | None = None
+        writer = self._writer
+        if writer is not None:
+            try:
+                writer.flush()
+                if self.capture_path is not None and self.capture_path.exists():
+                    capture_sha256 = file_sha256(self.capture_path)
+            except Exception as exc:
+                _LOGGER.exception("Unable to flush or hash the capture")
+                self.stats.set_capture_error(message("capture_flush_error", error=str(exc)))
         recorder = self._recorder
         if recorder is not None:
             try:
-                recorder.stop()
+                recorder.stop(
+                    final_metrics=self._metrics_engine.snapshot(),
+                    capture_sha256=capture_sha256,
+                )
             except Exception as exc:
                 _LOGGER.exception("Unable to stop the session recorder")
                 self.stats.record_consumer_error(message("recorder_error", error=str(exc)))
             finally:
+                self._check_recorder_state()
                 self._recorder = None
         store = self._store
         if store is not None:
@@ -102,8 +119,12 @@ class CaptureSession:
                 self.stats.record_consumer_error(message("recorder_error", error=str(exc)))
             finally:
                 self._store = None
-        if self._writer is not None:
-            self._writer.close()
+        if writer is not None:
+            try:
+                writer.close()
+            except Exception as exc:
+                _LOGGER.exception("Unable to close capture")
+                self.stats.set_capture_error(message("capture_close_error", error=str(exc)))
 
     def snapshot(self) -> StatsSnapshot:
         return self.stats.snapshot()
@@ -116,6 +137,7 @@ class CaptureSession:
                 recorder = SessionRecorder(
                     store,
                     self.config.recording,
+                    run_info=build_run_info(self.config),
                     capture_path=self.capture_path,
                     config_json=serialize_config(self.config),
                 )
@@ -139,6 +161,20 @@ class CaptureSession:
             except Exception:
                 _LOGGER.exception("Unable to record a consumer error")
 
+    def _check_recorder_state(self) -> None:
+        """Propaga una sola vez los fallos y las pérdidas del grabador."""
+        recorder = self._recorder
+        if recorder is None:
+            return
+        error = recorder.error
+        if error is not None and error is not self._reported_recorder_error:
+            self._reported_recorder_error = error
+            self.stats.record_consumer_error(message("recorder_error", error=str(error)))
+        dropped = recorder.dropped_batches
+        if dropped > self._reported_dropped_batches:
+            self._reported_dropped_batches = dropped
+            self.stats.record_consumer_error(message("recorder_dropped", count=dropped))
+
     def race_snapshot(self) -> RaceStateSnapshot:
         return self._race_state.snapshot()
 
@@ -152,6 +188,7 @@ class CaptureSession:
             except queue.Empty:
                 continue
 
+            self._check_recorder_state()
             try:
                 header = parse_header(packet.payload)
                 self.stats.record_header(header)

@@ -7,6 +7,7 @@ import struct
 import time
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +16,7 @@ import pytest
 from f1_strategist.capture import CapturedPacket, CaptureWriter
 from f1_strategist.cli import main
 from f1_strategist.config import AppConfig, CaptureConfig, RecordingConfig, TelemetryConfig
+from f1_strategist.fingerprint import fingerprint_capture
 from f1_strategist.messages import message
 from f1_strategist.metrics.engine import MetricsSnapshot
 from f1_strategist.metrics.export import run_metrics_capture
@@ -49,7 +51,8 @@ class _FakeStore:
         self.delay = delay
         self.fail = fail
         self.sessions: list[SessionInfo] = []
-        self.finished: list[tuple[int, str, bool, str | None]] = []
+        self.finished: list[tuple[int, str, bool, str | None, str | None, str | None]] = []
+        self.updated: list[tuple[int, SessionInfo]] = []
         self.participants: list[Participant] = []
         self.laps: list[LapRecord] = []
         self.events: list[StoredEvent] = []
@@ -78,8 +81,22 @@ class _FakeStore:
         ended_at_utc: str,
         incomplete: bool = False,
         fingerprint: str | None = None,
+        final_metrics_json: str | None = None,
+        capture_sha256: str | None = None,
     ) -> None:
-        self.finished.append((session_id, ended_at_utc, incomplete, fingerprint))
+        self.finished.append(
+            (
+                session_id,
+                ended_at_utc,
+                incomplete,
+                fingerprint,
+                final_metrics_json,
+                capture_sha256,
+            )
+        )
+
+    def update_session(self, session_id: int, info: SessionInfo) -> None:
+        self.updated.append((session_id, info))
 
     def add_participants(self, session_id: int, participants: Iterable[Participant]) -> None:
         self.participants.extend(participants)
@@ -259,6 +276,7 @@ def test_ingest_stores_the_same_laps_as_the_metrics_export(
     assert result.laps == len(expected_records)
     assert result.packets_read == result.packets_parsed
     assert result.offline is not None and not result.offline.truncated
+    assert result.fingerprint == fingerprint_capture(path, AppConfig()).fingerprint
 
 
 def test_ingesting_twice_is_idempotent_and_replace_does_not_duplicate(
@@ -427,8 +445,8 @@ def test_metric_samples_respect_the_interval_and_lap_changes(tmp_path: Path) -> 
             recorder.stop()
 
         samples = list(store.iter_metric_samples(_session_id(recorder)))
-        assert [sample.value_num for sample in samples] == [10.0, 9.0, 9.0]
-        assert [sample.lap for sample in samples] == [1, 1, 2]
+        assert [sample.value_num for sample in samples] == [10.0, 9.0, 9.0, 9.0]
+        assert [sample.lap for sample in samples] == [1, 1, 2, 2]
         assert all(sample.key == "fuel.in_tank_kg" for sample in samples)
 
 
@@ -497,6 +515,49 @@ def test_capture_session_writes_live_sessions_to_sqlite(
         assert sum(1 for _ in store.iter_metric_samples(session_id)) > 0
 
 
+class _FakeRecorder:
+    """Grabador mínimo para probar la propagación de su estado."""
+
+    def __init__(self) -> None:
+        self.error: Exception | None = None
+        self.dropped_batches = 0
+        self.recorded: list[object] = []
+
+    def record_error(self, issue: object) -> None:
+        self.recorded.append(issue)
+
+
+def test_capture_session_propagates_recorder_state_only_once() -> None:
+    session = CaptureSession(AppConfig(recording=RecordingConfig(enabled=False)))
+    recorder = _FakeRecorder()
+    session._recorder = recorder  # type: ignore[assignment]
+
+    session._check_recorder_state()
+    assert session.stats.snapshot().consumer_errors == 0
+
+    recorder.error = RuntimeError("boom")
+    session._check_recorder_state()
+    snapshot = session.stats.snapshot()
+    assert snapshot.consumer_errors == 1
+    assert snapshot.consumer_error is not None
+    assert snapshot.consumer_error.key == "recorder_error"
+
+    session._check_recorder_state()
+    assert session.stats.snapshot().consumer_errors == 1
+
+    recorder.dropped_batches = 3
+    session._check_recorder_state()
+    snapshot = session.stats.snapshot()
+    assert snapshot.consumer_errors == 2
+    assert snapshot.consumer_error is not None
+    assert snapshot.consumer_error.key == "recorder_dropped"
+    assert snapshot.consumer_error.get("count") == 3
+
+    session._check_recorder_state()
+    assert session.stats.snapshot().consumer_errors == 2
+    assert recorder.recorded == []
+
+
 def test_ingest_does_not_depend_on_the_capture_path(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -511,3 +572,149 @@ def test_ingest_does_not_depend_on_the_capture_path(
         assert second.skipped
         assert second.session_id == first.session_id
         assert len(store.list_sessions()) == 1
+
+
+def test_late_metadata_is_merged_into_the_session(tmp_path: Path) -> None:
+    with SessionStore.open(tmp_path / "sessions.db") as store:
+        recorder = SessionRecorder(store, RecordingConfig(batch_size=1, flush_interval_s=0.01))
+        try:
+            initial = _snapshot()
+            empty_session = replace(
+                initial.session,
+                track=None,
+                session_type=None,
+                total_laps=None,
+            )
+            recorder.observe(
+                1.0,
+                1.0,
+                replace(initial, session=empty_session),
+                _metrics(),
+                _history(),
+            )
+            recorder.observe(
+                2.0,
+                2.0,
+                _snapshot(lap=2),
+                _metrics(9.0, computed_at=2.0),
+                _history(),
+            )
+        finally:
+            recorder.stop()
+
+        session = store.get_session(_session_id(recorder))
+        assert session is not None
+        assert session.track == "Monza"
+        assert session.session_type == "Race"
+        assert session.total_laps == 10
+
+
+def test_metric_samples_keep_capture_and_session_clocks(tmp_path: Path) -> None:
+    with SessionStore.open(tmp_path / "sessions.db") as store:
+        recorder = SessionRecorder(store, RecordingConfig(batch_size=1, flush_interval_s=0.01))
+        try:
+            recorder.observe(5.0, 100.0, _snapshot(), _metrics(), _history())
+        finally:
+            recorder.stop()
+
+        samples = list(store.iter_metric_samples(_session_id(recorder)))
+        assert samples
+        assert samples[0].t_sim_s == pytest.approx(100.0)
+        assert samples[0].t_session_s == pytest.approx(5.0)
+
+
+def test_identical_consecutive_events_are_preserved(tmp_path: Path) -> None:
+    event = RaceEvent(kind="overtake", occurred_at_monotonic=1.0, car_index=0, lap_number=1)
+    with SessionStore.open(tmp_path / "sessions.db") as store:
+        recorder = SessionRecorder(store, RecordingConfig(batch_size=1, flush_interval_s=0.01))
+        try:
+            state = _snapshot(events=(event, event))
+            recorder.observe(1.0, 1.0, state, _metrics(), _history())
+            recorder.observe(1.0, 1.0, state, _metrics(), _history())
+        finally:
+            recorder.stop()
+
+        events = list(store.iter_events(_session_id(recorder)))
+        assert len(events) == 2
+        assert [stored.seq for stored in events] == [1, 2]
+
+
+def test_truncated_capture_marks_the_session_incomplete(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = _capture(tmp_path, monkeypatch)
+    data = path.read_bytes()
+    path.write_bytes(data[:-3])
+
+    with SessionStore.open(tmp_path / "sessions.db") as store:
+        result = ingest_capture(path, store, AppConfig())
+        session = store.get_session(result.session_id)
+
+    assert result.offline is not None and result.offline.truncated
+    assert session is not None and session.incomplete
+
+
+def test_dropped_batches_mark_only_their_own_session_incomplete() -> None:
+    store = _FakeStore(delay=0.2)
+    recorder = SessionRecorder(
+        store,
+        RecordingConfig(queue_size=1, batch_size=1, flush_interval_s=0.01),
+    )
+    try:
+        for lap in range(1, 7):
+            recorder.observe(
+                float(lap),
+                float(lap),
+                _snapshot(uid=11, lap=lap),
+                _metrics(10.0 - lap, computed_at=float(lap)),
+                _history(),
+            )
+        time.sleep(0.3)
+        recorder.observe(
+            30.0, 30.0, _snapshot(uid=22, lap=1), _metrics(computed_at=30.0), _history()
+        )
+    finally:
+        recorder.stop()
+
+    assert recorder.dropped_batches > 0
+    assert [info.session_uid for info in store.sessions] == [11, 22]
+    assert [entry[2] for entry in store.finished] == [True, False]
+
+
+def test_replace_keeps_the_old_session_when_the_new_ingest_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = _capture(tmp_path, monkeypatch)
+
+    with SessionStore.open(tmp_path / "sessions.db") as store:
+        first = ingest_capture(path, store, AppConfig())
+
+        def boom(*args: object, **kwargs: object) -> None:
+            raise RuntimeError("fallo simulado")
+
+        monkeypatch.setattr("f1_strategist.recorder.run_capture_offline", boom)
+        with pytest.raises(RuntimeError, match="fallo simulado"):
+            ingest_capture(path, store, AppConfig(), replace=True)
+
+        sessions = store.list_sessions()
+        assert [session.id for session in sessions] == [first.session_id]
+
+
+def test_incomplete_sessions_are_ingested_again_instead_of_skipped(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = _capture(tmp_path, monkeypatch)
+
+    with SessionStore.open(tmp_path / "sessions.db") as store:
+        first = ingest_capture(path, store, AppConfig())
+        store.connection.execute(
+            "UPDATE sessions SET fingerprint = NULL WHERE id = ?", (first.session_id,)
+        )
+        store.connection.commit()
+
+        second = ingest_capture(path, store, AppConfig())
+        assert not second.skipped
+        assert second.session_id != first.session_id

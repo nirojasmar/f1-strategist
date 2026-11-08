@@ -7,18 +7,18 @@ import math
 import queue
 import threading
 import time
-from collections import deque
 from collections.abc import Iterable
 from contextlib import AbstractContextManager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
 from .config import AppConfig, MetricsConfig, RecordingConfig
-from .fingerprint import RunInfo, build_run_info, compute_fingerprint
+from .fingerprint import RunInfo, build_run_info, compute_capture_fingerprint
 from .messages import DiagnosticMessage
 from .metrics.engine import MetricsEngine, MetricsSnapshot
+from .metrics.export import snapshot_to_dict
 from .metrics.history import LapHistory, LapHistorySnapshot, LapRecord
 from .offline import OfflineResult, run_capture_offline
 from .packets import PacketHeader
@@ -53,7 +53,11 @@ class RecorderStore(Protocol):
         ended_at_utc: str,
         incomplete: bool = False,
         fingerprint: str | None = None,
+        final_metrics_json: str | None = None,
+        capture_sha256: str | None = None,
     ) -> None: ...
+
+    def update_session(self, session_id: int, info: SessionInfo) -> None: ...
 
     def add_participants(self, session_id: int, participants: Iterable[Participant]) -> None: ...
 
@@ -78,6 +82,7 @@ class _Batch:
     metrics: tuple[MetricSample, ...]
     errors: tuple[StoredError, ...]
     incomplete: bool
+    incomplete_uids: frozenset[int] = frozenset()
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,6 +91,9 @@ class _Stop:
 
     fingerprint: str | None
     incomplete: bool
+    incomplete_uids: frozenset[int] = frozenset()
+    final_metrics_json: str | None = None
+    capture_sha256: str | None = None
 
 
 def serialize_config(config: AppConfig) -> str:
@@ -124,26 +132,29 @@ class SessionRecorder:
         self._lock = threading.Lock()
         self._queue: queue.Queue[_Batch | _Stop] = queue.Queue(maxsize=config.queue_size)
 
-        self._dropped = 0
-        self._incomplete = False
+        self._dropped_by_uid: dict[int, int] = {}
+        self._writer_incomplete = False
         self._error: Exception | None = None
         self._stopped = False
         self._stop_requested = False
 
         self._session_uid: int | None = None
-        self._session_info: SessionInfo | None = None
+        self._producer_info: SessionInfo | None = None
         self._session_id: int | None = None
         self._last_session_id: int | None = None
         self._stored_uid: int | None = None
+        self._writer_info: SessionInfo | None = None
         self._session_incomplete = False
         self._pending_errors: list[StoredError] = []
 
         self._last_signature: tuple[Any, ...] | None = None
         self._last_observed_at = 0.0
+        self._last_state: RaceStateSnapshot | None = None
+        self._last_metrics: MetricsSnapshot | None = None
+        self._last_header_time: float | None = None
         self._lap_state: dict[tuple[int, int], LapRecord] = {}
         self._participant_state: dict[int, tuple[str | None, str | None]] = {}
-        self._event_keys: set[tuple[Any, ...]] = set()
-        self._event_order: deque[tuple[Any, ...]] = deque()
+        self._event_window: tuple[tuple[Any, ...], ...] = ()
         self._event_seq = 0
         self._metric_state: dict[str, tuple[object, object]] = {}
         self._last_metrics_at: float | None = None
@@ -161,13 +172,14 @@ class SessionRecorder:
     def dropped_batches(self) -> int:
         """Lotes descartados por falta de espacio en la cola."""
         with self._lock:
-            return self._dropped
+            return sum(self._dropped_by_uid.values())
 
     @property
     def incomplete(self) -> bool:
         """Indica si la sesión actual perdió datos o sufrió errores de escritura."""
         with self._lock:
-            return self._incomplete
+            uid = self._session_uid
+            return self._writer_incomplete or (uid is not None and uid in self._dropped_by_uid)
 
     @property
     def session_id(self) -> int | None:
@@ -233,14 +245,14 @@ class SessionRecorder:
             params_json=_canonical_json(dict(issue.parameters)),
         )
         with self._lock:
-            if self._session_info is None:
+            if self._producer_info is None:
                 if len(self._pending_errors) >= _PENDING_ERROR_LIMIT:
                     self._pending_errors.pop(0)
-                    self._incomplete = True
+                    self._writer_incomplete = True
                 self._pending_errors.append(error)
                 return
-            info = self._session_info
-            incomplete = self._incomplete
+            info = self._producer_info
+            incomplete = self._writer_incomplete or info.session_uid in self._dropped_by_uid
         batch = _Batch(
             session_uid=info.session_uid,
             session_info=info,
@@ -250,17 +262,43 @@ class SessionRecorder:
             metrics=(),
             errors=(error,),
             incomplete=incomplete,
+            incomplete_uids=self._incomplete_uids(),
         )
         self._enqueue(batch)
 
-    def stop(self, *, fingerprint: str | None = None) -> None:
+    def stop(
+        self,
+        *,
+        fingerprint: str | None = None,
+        incomplete: bool = False,
+        final_metrics: MetricsSnapshot | None = None,
+        capture_sha256: str | None = None,
+    ) -> None:
         """Vacía la cola, cierra la sesión abierta y detiene el hilo escritor."""
         with self._lock:
             if self._stop_requested:
                 return
             self._stop_requested = True
-            incomplete = self._incomplete
-        self._queue.put(_Stop(fingerprint=fingerprint, incomplete=incomplete))
+        final_batch = self._final_batch()
+        with self._lock:
+            uid = self._session_uid
+            is_incomplete = (
+                incomplete
+                or self._writer_incomplete
+                or (uid is not None and uid in self._dropped_by_uid)
+            )
+            incomplete_uids = frozenset(self._dropped_by_uid)
+        if final_batch is not None:
+            self._queue.put(final_batch)
+        self._queue.put(
+            _Stop(
+                fingerprint=fingerprint,
+                incomplete=is_incomplete,
+                incomplete_uids=incomplete_uids,
+                final_metrics_json=_final_metrics_json(final_metrics),
+                capture_sha256=capture_sha256,
+            )
+        )
         timeout = 5.0 + self._config.flush_interval_s
         if self._thread is not threading.current_thread():
             self._thread.join(timeout=timeout)
@@ -289,31 +327,48 @@ class SessionRecorder:
             len(state.events),
             state.events[-1] if state.events else None,
             tuple((car.car_index, car.name, car.team) for car in state.cars),
+            state.session.track,
+            state.session.session_type,
+            state.session.total_laps,
+            header.packet_format if header is not None else None,
+            header.game_year if header is not None else None,
+            header.game_major_version if header is not None else None,
+            header.game_minor_version if header is not None else None,
         )
+        self._last_state = state
+        self._last_metrics = metrics
+        self._last_header_time = header_session_time
         if signature == self._last_signature:
             return
         self._last_signature = signature
         self._last_observed_at = observed_at
 
-        sim_time = _simulation_time(header_session_time, observed_at)
         session_changed = uid != self._session_uid
         if session_changed:
             self._reset_session(uid)
-            self._session_info = self._build_session_info(uid, state, header)
-        info = self._session_info
-        assert info is not None
+        info = self._build_session_info(uid, state, header)
+        metadata_changed = info != self._producer_info
+        self._producer_info = info
 
         participants = self._collect_participants(state)
         laps = self._collect_laps(history)
         events = self._collect_events(state.events)
-        samples = self._collect_metric_samples(observed_at, sim_time, state, metrics)
+        samples = self._collect_metric_samples(observed_at, header_session_time, state, metrics)
 
         with self._lock:
             errors = tuple(self._pending_errors)
             self._pending_errors.clear()
-            incomplete = self._incomplete
+            incomplete = self._writer_incomplete or uid in self._dropped_by_uid
 
-        if not (session_changed or participants or laps or events or samples or errors):
+        if not (
+            session_changed
+            or metadata_changed
+            or participants
+            or laps
+            or events
+            or samples
+            or errors
+        ):
             return
         self._enqueue(
             _Batch(
@@ -325,23 +380,25 @@ class SessionRecorder:
                 metrics=samples,
                 errors=errors,
                 incomplete=incomplete,
+                incomplete_uids=self._incomplete_uids(),
             )
         )
 
     def _reset_session(self, uid: int) -> None:
         self._session_uid = uid
         self._session_incomplete = False
+        self._producer_info = None
         self._lap_state.clear()
         self._participant_state.clear()
-        self._event_keys.clear()
-        self._event_order.clear()
+        self._event_window = ()
         self._event_seq = 0
         self._metric_state.clear()
         self._last_metrics_at = None
         self._last_metrics_computed_at = None
         self._last_metrics_lap = None
-        with self._lock:
-            self._incomplete = False
+        self._last_state = None
+        self._last_metrics = None
+        self._last_header_time = None
 
     def _build_session_info(
         self,
@@ -357,23 +414,34 @@ class SessionRecorder:
             if header is not None
             else None
         )
-        return SessionInfo(
-            session_uid=uid,
-            source=self._source,
-            started_at_utc=datetime.now(UTC).isoformat(),
-            game_format=game_format,
-            game_year=game_year,
-            game_version=game_version,
-            track=state.session.track,
-            session_type=state.session.session_type,
-            total_laps=state.session.total_laps,
-            capture_path=self._capture_path,
-            capture_sha256=run_info.capture_sha256 or None,
-            tool_version=run_info.tool_version,
-            parser_version=run_info.parser_version,
-            config_hash=run_info.config_hash,
-            config_json=self._config_json,
+        previous = self._producer_info
+        base = (
+            previous
+            if previous is not None and previous.session_uid == uid
+            else SessionInfo(
+                session_uid=uid,
+                source=self._source,
+                started_at_utc=datetime.now(UTC).isoformat(),
+            )
         )
+        updates: dict[str, object] = {}
+        for field, value in (
+            ("game_format", game_format),
+            ("game_year", game_year),
+            ("game_version", game_version),
+            ("track", state.session.track),
+            ("session_type", state.session.session_type),
+            ("total_laps", state.session.total_laps),
+            ("capture_path", self._capture_path),
+            ("capture_sha256", run_info.capture_sha256 or None),
+            ("tool_version", run_info.tool_version),
+            ("parser_version", run_info.parser_version),
+            ("config_hash", run_info.config_hash),
+            ("config_json", self._config_json),
+        ):
+            if value is not None:
+                updates[field] = value
+        return replace(base, **updates)  # type: ignore[arg-type]
 
     def _collect_participants(self, state: RaceStateSnapshot) -> tuple[Participant, ...]:
         participants: list[Participant] = []
@@ -398,22 +466,12 @@ class SessionRecorder:
         return tuple(laps)
 
     def _collect_events(self, events: Iterable[RaceEvent]) -> tuple[StoredEvent, ...]:
+        current_events = tuple(events)
+        current_keys = tuple(_event_key(event) for event in current_events)
+        overlap = _event_overlap(self._event_window, current_keys)
+        self._event_window = current_keys[-_EVENT_MEMORY_LIMIT:]
         stored: list[StoredEvent] = []
-        for event in events:
-            key = (
-                event.kind,
-                event.occurred_at_monotonic,
-                event.car_index,
-                event.lap_number,
-                event.value,
-                event.previous_value,
-            )
-            if key in self._event_keys:
-                continue
-            self._event_keys.add(key)
-            self._event_order.append(key)
-            if len(self._event_order) > _EVENT_MEMORY_LIMIT:
-                self._event_keys.discard(self._event_order.popleft())
+        for event in current_events[overlap:]:
             self._event_seq += 1
             stored.append(
                 StoredEvent(
@@ -431,9 +489,11 @@ class SessionRecorder:
     def _collect_metric_samples(
         self,
         observed_at: float,
-        sim_time: float,
+        header_session_time: float | None,
         state: RaceStateSnapshot,
         metrics: MetricsSnapshot,
+        *,
+        force: bool = False,
     ) -> tuple[MetricSample, ...]:
         lap_changed = (
             self._last_metrics_lap is not None and state.current_lap != self._last_metrics_lap
@@ -443,22 +503,33 @@ class SessionRecorder:
             or observed_at - self._last_metrics_at >= self._config.metrics_interval_s
         )
         publication_changed = metrics.computed_at_monotonic != self._last_metrics_computed_at
+        value_changed = any(
+            self._metric_state.get(key) != (metric.value, metric.quality)
+            for key, metric in metrics.metrics.items()
+        )
         should_sample = bool(metrics.metrics) and (
-            lap_changed or (publication_changed and interval_elapsed)
+            force or lap_changed or value_changed or (publication_changed and interval_elapsed)
+        )
+        session_time = (
+            header_session_time
+            if header_session_time is not None
+            and math.isfinite(header_session_time)
+            and header_session_time >= 0
+            else None
         )
         samples: list[MetricSample] = []
         if should_sample:
             for key in sorted(metrics.metrics):
                 metric = metrics.metrics[key]
                 marker: tuple[object, object] = (metric.value, metric.quality)
-                if not lap_changed and self._metric_state.get(key) == marker:
+                if not (force or lap_changed) and self._metric_state.get(key) == marker:
                     continue
                 self._metric_state[key] = marker
                 value_num, value_text = _metric_value(metric.value)
                 samples.append(
                     MetricSample(
-                        t_sim_s=sim_time,
-                        t_session_s=sim_time,
+                        t_sim_s=observed_at,
+                        t_session_s=session_time,
                         lap=state.current_lap,
                         key=key,
                         value_num=value_num,
@@ -473,19 +544,54 @@ class SessionRecorder:
         self._last_metrics_lap = state.current_lap
         return tuple(samples)
 
+    def _final_batch(self) -> _Batch | None:
+        uid = self._session_uid
+        info = self._producer_info
+        state = self._last_state
+        metrics = self._last_metrics
+        if uid is None or info is None or state is None or metrics is None:
+            return None
+        samples = self._collect_metric_samples(
+            self._last_observed_at,
+            self._last_header_time,
+            state,
+            metrics,
+            force=True,
+        )
+        if not samples:
+            return None
+        with self._lock:
+            incomplete = self._writer_incomplete or uid in self._dropped_by_uid
+        return _Batch(
+            session_uid=uid,
+            session_info=info,
+            participants=(),
+            laps=(),
+            events=(),
+            metrics=samples,
+            errors=(),
+            incomplete=incomplete,
+            incomplete_uids=self._incomplete_uids(),
+        )
+
+    def _incomplete_uids(self) -> frozenset[int]:
+        with self._lock:
+            return frozenset(self._dropped_by_uid)
+
     def _enqueue(self, batch: _Batch) -> None:
         try:
             self._queue.put_nowait(batch)
         except queue.Full:
             with self._lock:
-                self._dropped += 1
-                self._incomplete = True
+                self._dropped_by_uid[batch.session_uid] = (
+                    self._dropped_by_uid.get(batch.session_uid, 0) + 1
+                )
 
     def _remember_error(self, exc: Exception) -> None:
         with self._lock:
             if self._error is None:
                 self._error = exc
-            self._incomplete = True
+            self._writer_incomplete = True
 
     # ------------------------------------------------------------------
     # Hilo escritor
@@ -527,20 +633,32 @@ class SessionRecorder:
             with self._lock:
                 self._session_id = None
                 self._stored_uid = None
-                self._session_info = None
+                self._writer_info = None
 
     def _apply_batch(self, batch: _Batch) -> None:
         if self._stored_uid != batch.session_uid:
-            self._close_current()
+            previous_uid = self._stored_uid
+            self._close_current(
+                incomplete=(
+                    self._writer_incomplete
+                    or (previous_uid is not None and previous_uid in batch.incomplete_uids)
+                )
+            )
             session_id = self._store.create_session(batch.session_info)
             with self._lock:
                 self._session_id = session_id
                 self._stored_uid = batch.session_uid
-                self._session_info = batch.session_info
-        self._session_incomplete = batch.incomplete
+                self._writer_info = batch.session_info
         session_id = self._session_id
         if session_id is None:
             return
+        if self._writer_info != batch.session_info:
+            self._store.update_session(session_id, batch.session_info)
+            with self._lock:
+                self._writer_info = batch.session_info
+        self._session_incomplete = (
+            self._writer_incomplete or batch.session_uid in batch.incomplete_uids
+        )
         if batch.participants:
             self._store.add_participants(session_id, batch.participants)
         if batch.laps:
@@ -552,26 +670,45 @@ class SessionRecorder:
         if batch.errors:
             self._store.add_errors(session_id, batch.errors)
 
-    def _close_current(self, *, fingerprint: str | None = None) -> None:
+    def _close_current(
+        self,
+        *,
+        fingerprint: str | None = None,
+        final_metrics_json: str | None = None,
+        capture_sha256: str | None = None,
+        incomplete: bool | None = None,
+    ) -> None:
         session_id = self._session_id
         if session_id is None:
             return
         self._store.finish_session(
             session_id,
             ended_at_utc=datetime.now(UTC).isoformat(),
-            incomplete=self._session_incomplete,
+            incomplete=self._session_incomplete if incomplete is None else incomplete,
             fingerprint=fingerprint,
+            final_metrics_json=final_metrics_json,
+            capture_sha256=capture_sha256,
         )
         with self._lock:
             self._last_session_id = session_id
             self._session_id = None
             self._stored_uid = None
+            self._writer_info = None
 
     def _finish(self, stop: _Stop) -> None:
         try:
             with self._store.transaction():
-                self._session_incomplete = stop.incomplete
-                self._close_current(fingerprint=stop.fingerprint)
+                uid = self._stored_uid
+                self._session_incomplete = (
+                    stop.incomplete
+                    or self._writer_incomplete
+                    or (uid is not None and uid in stop.incomplete_uids)
+                )
+                self._close_current(
+                    fingerprint=stop.fingerprint,
+                    final_metrics_json=stop.final_metrics_json,
+                    capture_sha256=stop.capture_sha256,
+                )
         except Exception as exc:  # noqa: BLE001 - se conserva para diagnóstico
             self._remember_error(exc)
         finally:
@@ -602,7 +739,8 @@ class _IngestCollector:
     def __init__(self, engine: MetricsEngine, recorder: SessionRecorder) -> None:
         self.engine = engine
         self.recorder = recorder
-        self.state = RaceState()
+        self.events: list[RaceEvent] = []
+        self.state = RaceState(self.events.append)
         self.last_state: RaceStateSnapshot | None = None
         self.last_observed_at: float | None = None
         self.last_header_time: float | None = None
@@ -637,11 +775,9 @@ def ingest_capture(
     app_config = _resolve_config(config)
     run_info = build_run_info(app_config, path)
     existing = _find_ingested(store, run_info)
-    if existing is not None:
-        if not replace:
-            return _result_from_session(store, existing, skipped=True)
-        assert existing.id is not None
-        store.delete_session(existing.id)
+    if existing is not None and not replace:
+        return _result_from_session(store, existing, skipped=True)
+    old_sessions = _find_same_capture(store, run_info) if replace else ()
 
     engine = MetricsEngine(app_config.metrics)
     recorder = SessionRecorder(
@@ -653,31 +789,49 @@ def ingest_capture(
         config_json=serialize_config(app_config),
     )
     collector = _IngestCollector(engine, recorder)
-    offline = run_capture_offline(path, [collector])
-
-    if collector.last_state is not None and collector.last_observed_at is not None:
-        engine.finalize(collector.last_state, collector.last_observed_at)
-        recorder.observe(
-            collector.last_header_time,
-            collector.last_observed_at,
-            collector.last_state,
-            engine.snapshot(),
+    offline: OfflineResult | None = None
+    metrics: MetricsSnapshot | None = None
+    fingerprint: str | None = None
+    try:
+        offline = run_capture_offline(path, [collector])
+        if collector.last_state is not None and collector.last_observed_at is not None:
+            engine.finalize(collector.last_state, collector.last_observed_at)
+            recorder.observe(
+                collector.last_header_time,
+                collector.last_observed_at,
+                collector.last_state,
+                engine.snapshot(),
+                engine.history,
+                header=collector.last_header,
+            )
+        metrics = engine.snapshot()
+        fingerprint = compute_capture_fingerprint(
+            tuple(collector.events),
             engine.history,
-            header=collector.last_header,
+            metrics,
+            app_config,
+            path,
+            run_info=run_info,
+        )
+    finally:
+        recorder.stop(
+            fingerprint=fingerprint,
+            incomplete=offline is None or offline.truncated,
+            final_metrics=metrics,
+            capture_sha256=run_info.capture_sha256 or None,
         )
 
-    events = collector.last_state.events if collector.last_state is not None else ()
-    fingerprint = compute_fingerprint(
-        events,
-        engine.history,
-        engine.snapshot(),
-    )
-    recorder.stop(fingerprint=fingerprint)
     if recorder.error is not None:
         raise StoreError(f"No se pudo grabar la sesión: {recorder.error}") from recorder.error
     session_id = recorder.session_id
     if session_id is None:
         raise StoreError("La captura no contiene una sesión reconocible")
+
+    if old_sessions:
+        with store.transaction():
+            for old in old_sessions:
+                if old.id is not None and old.id != session_id:
+                    store.delete_session(old.id)
 
     session = store.get_session(session_id)
     if session is None:
@@ -694,15 +848,28 @@ def _resolve_config(config: AppConfig | MetricsConfig | None) -> AppConfig:
 
 
 def _find_ingested(store: SessionStore, run_info: RunInfo) -> SessionInfo | None:
-    for session in store.list_sessions():
-        if session.source != "ingest" or session.id is None:
-            continue
+    for session in _find_same_capture(store, run_info):
         if (
-            session.capture_sha256 == run_info.capture_sha256
-            and session.config_hash == run_info.config_hash
+            session.tool_version == run_info.tool_version
+            and session.parser_version == run_info.parser_version
+            and session.fingerprint
+            and session.ended_at_utc is not None
+            and not session.incomplete
+            and session.final_metrics_json is not None
         ):
             return session
     return None
+
+
+def _find_same_capture(store: SessionStore, run_info: RunInfo) -> tuple[SessionInfo, ...]:
+    return tuple(
+        session
+        for session in store.list_sessions()
+        if session.source == "ingest"
+        and session.id is not None
+        and session.capture_sha256 == run_info.capture_sha256
+        and session.config_hash == run_info.config_hash
+    )
 
 
 def _result_from_session(
@@ -729,10 +896,37 @@ def _result_from_session(
     )
 
 
-def _simulation_time(session_time: float | None, observed_at: float) -> float:
-    if session_time is not None and math.isfinite(session_time) and session_time >= 0:
-        return session_time
-    return observed_at
+def _event_key(event: RaceEvent) -> tuple[Any, ...]:
+    return (
+        event.kind,
+        event.occurred_at_monotonic,
+        event.car_index,
+        event.lap_number,
+        event.value,
+        event.previous_value,
+    )
+
+
+def _event_overlap(
+    previous: tuple[tuple[Any, ...], ...],
+    current: tuple[tuple[Any, ...], ...],
+) -> int:
+    """Longitud del solape ordenado entre la ventana anterior y la nueva.
+
+    Preservar la multiplicidad permite distinguir dos eventos idénticos
+    consecutivos de uno solo repetido en la observación.
+    """
+    limit = min(len(previous), len(current))
+    for size in range(limit, 0, -1):
+        if previous[-size:] == current[:size]:
+            return size
+    return 0
+
+
+def _final_metrics_json(metrics: MetricsSnapshot | None) -> str | None:
+    if metrics is None:
+        return None
+    return _canonical_json(snapshot_to_dict(metrics))
 
 
 def _metric_value(value: object) -> tuple[float | None, str | None]:

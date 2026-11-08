@@ -11,7 +11,7 @@ import sqlite3
 from dataclasses import dataclass
 
 #: Versión que entiende este código.
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 class StoreError(Exception):
@@ -171,8 +171,14 @@ _V1_STATEMENTS: tuple[str, ...] = (
     "CREATE INDEX idx_app_errors_session ON app_errors(session_id)",
 )
 
+#: La instantánea final de métricas permite exportar el JSON tal cual se publicó.
+_V2_STATEMENTS: tuple[str, ...] = ("ALTER TABLE sessions ADD COLUMN final_metrics_json TEXT",)
+
 #: Migraciones ordenadas; el índice 0 lleva el esquema a la versión 1.
-MIGRATIONS: tuple[Migration, ...] = (Migration(version=1, statements=_V1_STATEMENTS),)
+MIGRATIONS: tuple[Migration, ...] = (
+    Migration(version=1, statements=_V1_STATEMENTS),
+    Migration(version=2, statements=_V2_STATEMENTS),
+)
 
 
 def apply_migrations(
