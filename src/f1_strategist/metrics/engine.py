@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import math
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
@@ -15,6 +16,8 @@ from .history_ingest import ingest_session_history
 from .lap_tracker import LapTracker
 from .registry import create_metric_modules
 from .types import Metric, Quality, Window
+
+_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,6 +81,7 @@ class MetricsEngine:
         self._snapshot = MetricsSnapshot()
         self._last_publish_at: float | None = None
         self._last_signature: tuple[object, ...] | None = None
+        self._reported_history_anomalies: set[tuple[int, int, str]] = set()
 
     @property
     def config(self) -> MetricsConfig:
@@ -108,7 +112,16 @@ class MetricsEngine:
         self._tracker.observe(state_snapshot, observed_at)
         history_updated = isinstance(packet, SessionHistoryPacket)
         if history_updated:
-            ingest_session_history(packet, self._tracker.history)
+            anomaly = ingest_session_history(packet, self._tracker.history)
+            if anomaly is not None:
+                key = (packet.header.session_uid, packet.car_index, anomaly)
+                if key not in self._reported_history_anomalies:
+                    self._reported_history_anomalies.add(key)
+                    _LOGGER.warning(
+                        "Ignoring invalid tyre stint history: "
+                        "session_uid=%s car_index=%s reason=%s",
+                        *key,
+                    )
 
         signature = self._state_signature(state_snapshot)
         changed = signature != self._last_signature

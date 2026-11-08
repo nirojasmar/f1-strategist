@@ -10,7 +10,9 @@ from f1_strategist.parser import (
     CarDamagePacket,
     CarStatusPacket,
     EnumValue,
+    EventDetail,
     EventPacket,
+    FinalClassificationPacket,
     LapDataPacket,
     NoEventDetail,
     ParsedPacket,
@@ -1051,9 +1053,168 @@ def test_lap_pit_and_session_events_are_emitted_once_per_transition() -> None:
     assert [event.kind for event in snapshot.events] == [
         "lap_changed",
         "pit_entry",
+        "pit_exit",
         "pit_stop_completed",
         "session_started",
         "session_ended",
     ]
     assert snapshot.session.started is True
     assert snapshot.session.ended is True
+
+
+def test_pit_transitions_are_suppressed_after_retirement() -> None:
+    state = RaceState()
+    event_fixture = _parsed_fixture("event.bin")
+    assert isinstance(event_fixture, EventPacket)
+    state.apply(_lap_packet(lap=1, pit_status="none"), 1.0)
+    state.apply(
+        replace(
+            event_fixture,
+            event_code=EnumValue("RTMT", "retirement"),
+            detail=EventDetail((0, EnumValue(0, "invalid"))),
+        ),
+        2.0,
+    )
+    state.apply(_lap_packet(lap=1, pit_status="pitting"), 3.0)
+
+    assert not any(event.kind == "pit_entry" for event in state.snapshot().events)
+    assert state.snapshot().cars[0].result_status == "retired"
+
+
+def test_session_end_is_not_cleared_by_late_start_event_with_same_uid() -> None:
+    state = RaceState()
+    event_fixture = _parsed_fixture("event.bin")
+    assert isinstance(event_fixture, EventPacket)
+    header = replace(event_fixture.header, session_uid=1, player_car_index=0)
+
+    state.apply(
+        replace(event_fixture, header=header, event_code=EnumValue("SEND", "session_ended")),
+        observed_at=1.0,
+    )
+    state.apply(
+        replace(event_fixture, header=header, event_code=EnumValue("SSTA", "session_started")),
+        observed_at=1.0,
+    )
+
+    snapshot = state.snapshot()
+    assert snapshot.session.ended is True
+    assert snapshot.session.started is None
+    assert [event.kind for event in snapshot.events].count("session_ended") == 1
+    assert "session_started" not in [event.kind for event in snapshot.events]
+
+
+def test_retirement_event_updates_only_its_car_and_is_idempotent() -> None:
+    state = RaceState()
+    participants = _parsed_fixture("participants.bin")
+    event_fixture = _parsed_fixture("event.bin")
+    assert isinstance(participants, ParticipantsPacket)
+    assert isinstance(event_fixture, EventPacket)
+    state.apply(_with_header(participants), 1.0)
+    retirement = replace(
+        event_fixture,
+        event_code=EnumValue("RTMT", "retirement"),
+        detail=EventDetail((0, EnumValue(0, "invalid"))),
+    )
+
+    state.apply(_with_header(retirement), 2.0)
+    state.apply(_with_header(retirement), 3.0)
+    state.apply(
+        _with_header(replace(retirement, detail=EventDetail((1, EnumValue(1, "retired"))))),
+        4.0,
+    )
+    state.apply(
+        _with_header(
+            replace(
+                retirement,
+                detail=EventDetail((len(state.snapshot().cars), EnumValue(0, "invalid"))),
+            )
+        ),
+        5.0,
+    )
+
+    snapshot = state.snapshot()
+    assert snapshot.cars[0].result_status == "retired"
+    assert snapshot.cars[1].result_status == "retired"
+    assert snapshot.session.ended is not True
+    retirements = [event for event in snapshot.events if event.kind == "retirement"]
+    assert len(retirements) == 2
+    assert retirements[0].value == "invalid"
+
+
+def test_matching_uid_classification_updates_player_and_ends_session() -> None:
+    state = RaceState()
+    participants = _parsed_fixture("participants.bin")
+    classification_packet = _parsed_fixture("final_classification.bin")
+    assert isinstance(participants, ParticipantsPacket)
+    assert isinstance(classification_packet, FinalClassificationPacket)
+    state.apply(_with_header(participants, session_uid=1), 1.0)
+    state.apply(_lap_packet(lap=6, session_uid=1), 2.0)
+    player = classification_packet.classification[0]
+    assert player is not None
+    entries = list(classification_packet.classification)
+    entries[0] = replace(player, result_status=EnumValue(4, "did_not_finish"))
+    packet = replace(
+        classification_packet,
+        classification=tuple(entries),
+        header=replace(
+            classification_packet.header,
+            session_uid=1,
+            player_car_index=0,
+        ),
+    )
+
+    state.apply(packet, 3.0)
+
+    assert state.snapshot().cars[0].result_status == "did_not_finish"
+    assert state.snapshot().session.ended is True
+
+
+def test_zero_uid_classification_updates_matching_player_without_ending_session() -> None:
+    state = RaceState()
+    participants = _parsed_fixture("participants.bin")
+    classification_packet = _parsed_fixture("final_classification.bin")
+    assert isinstance(participants, ParticipantsPacket)
+    assert isinstance(classification_packet, FinalClassificationPacket)
+    state.apply(_with_header(participants, session_uid=1), 1.0)
+    state.apply(_lap_packet(lap=6, session_uid=1), 2.0)
+    player = classification_packet.classification[0]
+    assert player is not None
+    entries = list(classification_packet.classification)
+    entries[0] = replace(player, laps=5, result_status=EnumValue(4, "did_not_finish"))
+    packet = replace(
+        classification_packet,
+        classification=tuple(entries),
+        header=replace(
+            classification_packet.header,
+            session_uid=0,
+            player_car_index=0,
+        ),
+    )
+
+    state.apply(packet, 3.0)
+
+    snapshot = state.snapshot()
+    assert snapshot.session.uid == 1
+    assert snapshot.session.ended is not True
+    assert snapshot.cars[0].result_status == "did_not_finish"
+    assert snapshot.freshness_for("final_classification").updated_at_monotonic == 3.0
+
+
+def test_zero_uid_classification_from_other_player_is_ignored() -> None:
+    state = RaceState()
+    participants = _parsed_fixture("participants.bin")
+    classification_packet = _parsed_fixture("final_classification.bin")
+    assert isinstance(participants, ParticipantsPacket)
+    assert isinstance(classification_packet, FinalClassificationPacket)
+    state.apply(_with_header(participants, session_uid=1), 1.0)
+    state.apply(_lap_packet(lap=6, session_uid=1), 2.0)
+    packet = replace(
+        classification_packet,
+        header=replace(classification_packet.header, session_uid=0, player_car_index=1),
+    )
+
+    state.apply(packet, 3.0)
+
+    assert state.snapshot().session.uid == 1
+    assert state.snapshot().cars[0].result_status == "active"
+    assert state.snapshot().freshness_for("final_classification").updated_at_monotonic is None

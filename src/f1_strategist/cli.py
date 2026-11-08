@@ -28,8 +28,18 @@ from .offline import OfflineResult
 from .packets import packet_name
 from .playback import PlaybackSession
 from .receiver import ReceiverError
+from .recorder import ingest_capture
 from .replay import replay_capture
 from .session import CaptureSession
+from .store import SessionStore, StoreError
+from .store.queries import (
+    held_metric_values,
+    list_session_summaries,
+    render_session_export,
+    require_session,
+    session_events,
+    session_laps,
+)
 from .summary import summarize
 from .trim import trim_capture
 
@@ -178,6 +188,22 @@ def _build_parser() -> argparse.ArgumentParser:
     verify.add_argument("--expect", metavar="HUELLA", help="huella SHA-256 esperada")
     verify.add_argument("--config", type=Path, help="archivo TOML de configuración")
 
+    ingest = sub.add_parser(
+        "ingest", help="genera la base de datos a partir de una captura offline"
+    )
+    ingest.add_argument("file", type=Path, help="captura de entrada (.f1cap o .f1cap.gz)")
+    ingest.add_argument(
+        "--db",
+        type=Path,
+        help="base de datos SQLite (por defecto, la de la configuración)",
+    )
+    ingest.add_argument("--config", type=Path, help="archivo TOML de configuración")
+    ingest.add_argument(
+        "--replace",
+        action="store_true",
+        help="reemplaza la sesión ya ingerida con la misma captura y configuración",
+    )
+
     datasets = sub.add_parser("datasets", help="consulta el catálogo de capturas de referencia")
     datasets_sub = datasets.add_subparsers(dest="datasets_command", required=True)
     datasets_list = datasets_sub.add_parser("list", help="lista los escenarios del manifiesto")
@@ -196,6 +222,78 @@ def _build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=DEFAULT_MANIFEST,
         help=f"manifiesto TOML (por defecto, {DEFAULT_MANIFEST})",
+    )
+
+    sessions = sub.add_parser(
+        "sessions", help="consulta las sesiones guardadas en la base de datos"
+    )
+    sessions_sub = sessions.add_subparsers(dest="sessions_command", required=True)
+
+    sessions_list = sessions_sub.add_parser("list", help="lista las sesiones guardadas")
+    sessions_list.add_argument(
+        "--db",
+        type=Path,
+        help="base de datos SQLite (por defecto, la de la configuración)",
+    )
+
+    sessions_show = sessions_sub.add_parser("show", help="muestra los metadatos de una sesión")
+    sessions_show.add_argument("session_id", type=_positive_int, metavar="ID")
+    sessions_show.add_argument(
+        "--db",
+        type=Path,
+        help="base de datos SQLite (por defecto, la de la configuración)",
+    )
+
+    sessions_laps = sessions_sub.add_parser("laps", help="lista las vueltas de una sesión")
+    sessions_laps.add_argument("session_id", type=_positive_int, metavar="ID")
+    sessions_laps.add_argument("--car", type=int, metavar="N", help="filtrar por índice de coche")
+    sessions_laps.add_argument(
+        "--db",
+        type=Path,
+        help="base de datos SQLite (por defecto, la de la configuración)",
+    )
+
+    sessions_events = sessions_sub.add_parser("events", help="lista los eventos de una sesión")
+    sessions_events.add_argument("session_id", type=_positive_int, metavar="ID")
+    sessions_events.add_argument("--kind", metavar="TIPO", help="filtrar por tipo de evento")
+    sessions_events.add_argument(
+        "--db",
+        type=Path,
+        help="base de datos SQLite (por defecto, la de la configuración)",
+    )
+
+    sessions_metrics = sessions_sub.add_parser(
+        "metrics", help="muestra el valor mantenido de las métricas por vuelta"
+    )
+    sessions_metrics.add_argument("session_id", type=_positive_int, metavar="ID")
+    sessions_metrics.add_argument(
+        "--key",
+        required=True,
+        metavar="PATRÓN",
+        help="patrón glob de la clave (por ejemplo, 'fuel.*')",
+    )
+    sessions_metrics.add_argument("--lap", type=int, metavar="N", help="mostrar solo esta vuelta")
+    sessions_metrics.add_argument(
+        "--db",
+        type=Path,
+        help="base de datos SQLite (por defecto, la de la configuración)",
+    )
+
+    sessions_export = sessions_sub.add_parser(
+        "export", help="exporta una sesión con el formato del comando metrics"
+    )
+    sessions_export.add_argument("session_id", type=_positive_int, metavar="ID")
+    sessions_export.add_argument(
+        "--format",
+        default="json",
+        metavar="FORMATO",
+        help=f"formato de salida: {', '.join(EXPORT_FORMATS)}",
+    )
+    sessions_export.add_argument("--out", type=Path, help="archivo de salida (por defecto, stdout)")
+    sessions_export.add_argument(
+        "--db",
+        type=Path,
+        help="base de datos SQLite (por defecto, la de la configuración)",
     )
     return parser
 
@@ -481,6 +579,265 @@ def _cmd_metrics(args: argparse.Namespace, console: Console, err: Console) -> in
     return 0
 
 
+def _cmd_ingest(args: argparse.Namespace, console: Console, err: Console) -> int:
+    cfg = load_config(args.config)
+    if args.db is not None:
+        cfg = cfg.model_copy(
+            update={
+                "recording": cfg.recording.model_copy(update={"database": args.db}),
+            }
+        )
+    with SessionStore.open(cfg.recording.database) as store:
+        result = ingest_capture(args.file, store, cfg, replace=args.replace)
+    if result.skipped:
+        console.print(
+            f"La captura ya estaba ingerida en la sesión {result.session_id}; "
+            "usa --replace para reemplazarla."
+        )
+        return 0
+    console.print(
+        f"Sesión {result.session_id} ingerida: {result.laps} vueltas, "
+        f"{result.events} eventos, {result.metric_samples} muestras y "
+        f"{result.errors} errores."
+    )
+    console.print(f"Huella determinista: [bold]{result.fingerprint}[/]")
+    if result.offline is not None:
+        _warn_offline_issues(result.offline, err)
+        if result.offline.truncated:
+            err.print("[yellow]Aviso:[/] La sesión se guardó marcada como incompleta.")
+    return 0
+
+
+def _sessions_database(args: argparse.Namespace) -> Path:
+    """Devuelve la base indicada o la configurada por defecto."""
+    if args.db is not None:
+        return args.db
+    return load_config(None).recording.database
+
+
+def _text(value: object) -> str:
+    """Convierte un valor opcional a texto para las tablas."""
+    return "-" if value is None else str(value)
+
+
+def _yes_no(value: bool | None) -> str:
+    """Convierte un booleano opcional a texto en español."""
+    if value is None:
+        return "-"
+    return "sí" if value else "no"
+
+
+def _metric_text(value: object) -> str:
+    """Representa un valor de métrica en una celda de tabla."""
+    if value is None:
+        return "-"
+    if isinstance(value, bool):
+        return "sí" if value else "no"
+    if isinstance(value, tuple):
+        return ", ".join(str(item) for item in value)
+    return str(value)
+
+
+def _cmd_sessions(args: argparse.Namespace, console: Console, err: Console) -> int:
+    db = _sessions_database(args)
+    with SessionStore.open(db, readonly=True) as store:
+        command = args.sessions_command
+        if command == "list":
+            return _sessions_list(store, console)
+        if command == "show":
+            return _sessions_show(store, args.session_id, console)
+        if command == "laps":
+            return _sessions_laps(store, args.session_id, args.car, console)
+        if command == "events":
+            return _sessions_events(store, args.session_id, args.kind, console)
+        if command == "metrics":
+            return _sessions_metrics(store, args, console)
+        return _sessions_export(store, args, db, console)
+
+
+def _sessions_list(store: SessionStore, console: Console) -> int:
+    summaries = list_session_summaries(store)
+    if not summaries:
+        console.print("No hay sesiones grabadas.")
+        return 0
+    table = Table(title="Sesiones grabadas", expand=False)
+    table.add_column("ID", justify="right")
+    table.add_column("Circuito", overflow="fold")
+    table.add_column("Tipo")
+    table.add_column("Vueltas", justify="right")
+    table.add_column("Origen")
+    table.add_column("Huella")
+    table.add_column("Incompleta")
+    for summary in summaries:
+        session = summary.session
+        fingerprint = session.fingerprint or "-"
+        if len(fingerprint) > 12:
+            fingerprint = fingerprint[:12] + "…"
+        table.add_row(
+            str(session.id),
+            _text(session.track),
+            _text(session.session_type),
+            _text(session.total_laps),
+            session.source,
+            fingerprint,
+            _yes_no(session.incomplete),
+        )
+    console.print(table)
+    return 0
+
+
+def _sessions_show(store: SessionStore, session_id: int, console: Console) -> int:
+    session = require_session(store, session_id)
+    assert session.id is not None
+    table = Table(title=f"Sesión {session.id}", show_header=False, expand=False)
+    table.add_column("Campo", style="bold")
+    table.add_column("Valor", overflow="fold")
+    rows = (
+        ("ID", session.id),
+        ("UID", session.session_uid),
+        ("Origen", session.source),
+        ("Inicio (UTC)", session.started_at_utc),
+        ("Fin (UTC)", session.ended_at_utc),
+        ("Incompleta", session.incomplete),
+        ("Juego", session.game_format),
+        ("Año", session.game_year),
+        ("Versión", session.game_version),
+        ("Circuito", session.track),
+        ("Tipo de sesión", session.session_type),
+        ("Vueltas totales", session.total_laps),
+        ("Captura", session.capture_path),
+        ("SHA-256 de la captura", session.capture_sha256),
+        ("Herramienta", session.tool_version),
+        ("Parser", session.parser_version),
+        ("Hash de configuración", session.config_hash),
+        ("Configuración", session.config_json),
+        ("Huella", session.fingerprint),
+        ("Vueltas guardadas", sum(1 for _ in store.iter_laps(session.id))),
+        ("Eventos", sum(1 for _ in store.iter_events(session.id))),
+        ("Muestras de métricas", sum(1 for _ in store.iter_metric_samples(session.id))),
+        ("Errores", sum(1 for _ in store.iter_errors(session.id))),
+    )
+    for label, value in rows:
+        table.add_row(label, _yes_no(value) if isinstance(value, bool) else _text(value))
+    console.print(table)
+    return 0
+
+
+def _sessions_laps(
+    store: SessionStore, session_id: int, car_index: int | None, console: Console
+) -> int:
+    laps = session_laps(store, session_id, car_index=car_index)
+    if not laps:
+        console.print("No hay vueltas para los filtros indicados.")
+        return 0
+    table = Table(title=f"Vueltas de la sesión {session_id}", expand=False)
+    table.add_column("Coche", justify="right")
+    table.add_column("Vuelta", justify="right")
+    table.add_column("Tiempo", justify="right")
+    table.add_column("Compuesto")
+    table.add_column("Edad", justify="right")
+    table.add_column("Válida")
+    table.add_column("Pos.", justify="right")
+    table.add_column("Parada")
+    table.add_column("Cerrada")
+    for lap in laps:
+        lap_time = "-" if lap.lap_time_s is None else f"{lap.lap_time_s:.3f} s"
+        table.add_row(
+            str(lap.car_index),
+            str(lap.lap_number),
+            lap_time,
+            _text(lap.compound),
+            _text(lap.tyre_age_end),
+            _yes_no(lap.valid),
+            _text(lap.position_end),
+            _yes_no(lap.pit_entry),
+            _yes_no(lap.closed),
+        )
+    console.print(table)
+    return 0
+
+
+def _sessions_events(
+    store: SessionStore, session_id: int, kind: str | None, console: Console
+) -> int:
+    events = session_events(store, session_id, kind=kind)
+    if not events:
+        console.print("No hay eventos para los filtros indicados.")
+        return 0
+    table = Table(title=f"Eventos de la sesión {session_id}", expand=False)
+    table.add_column("Secuencia", justify="right")
+    table.add_column("Tipo", overflow="fold")
+    table.add_column("t_sim (s)", justify="right")
+    table.add_column("Coche", justify="right")
+    table.add_column("Vuelta", justify="right")
+    table.add_column("Valor", overflow="fold")
+    table.add_column("Valor anterior", overflow="fold")
+    for event in events:
+        table.add_row(
+            str(event.seq),
+            event.kind,
+            f"{event.t_sim_s:.3f}",
+            _text(event.car_index),
+            _text(event.lap_number),
+            _text(event.value),
+            _text(event.previous_value),
+        )
+    console.print(table)
+    return 0
+
+
+def _sessions_metrics(store: SessionStore, args: argparse.Namespace, console: Console) -> int:
+    held = held_metric_values(store, args.session_id, key_pattern=args.key, lap=args.lap)
+    if not held:
+        console.print("No hay métricas para los filtros indicados.")
+        return 0
+    table = Table(title=f"Métricas de la sesión {args.session_id}", expand=False)
+    table.add_column("Vuelta", justify="right")
+    table.add_column("Clave", overflow="fold")
+    table.add_column("Valor", overflow="fold")
+    table.add_column("Unidad")
+    table.add_column("Calidad")
+    table.add_column("Muestras", justify="right")
+    for item in held:
+        table.add_row(
+            str(item.lap),
+            item.key,
+            _metric_text(item.value),
+            _text(item.unit),
+            item.quality,
+            str(item.sample_count),
+        )
+    console.print(table)
+    return 0
+
+
+def _sessions_export(
+    store: SessionStore,
+    args: argparse.Namespace,
+    db: Path,
+    console: Console,
+) -> int:
+    export_format = args.format.lower()
+    if export_format not in EXPORT_FORMATS:
+        valid = ", ".join(EXPORT_FORMATS)
+        raise ValueError(f"Formato de exportación no válido: {args.format!r}; usa {valid}")
+    session = require_session(store, args.session_id)
+    if args.out is not None:
+        if _same_file(args.out, db):
+            raise ValueError("La salida no puede sobrescribir la base de datos.")
+        if session.capture_path is not None and _same_file(args.out, Path(session.capture_path)):
+            raise ValueError("La salida no puede sobrescribir la captura asociada.")
+    output = render_session_export(store, args.session_id, export_format)
+    if args.out is None:
+        _write_stdout(output)
+    else:
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        with args.out.open("w", encoding="utf-8", newline="") as handle:
+            handle.write(output)
+        console.print(f"Exportación de la sesión {args.session_id} escrita en {args.out}")
+    return 0
+
+
 def _cmd_datasets(args: argparse.Namespace, console: Console, err: Console) -> int:
     manifest = load_manifest(args.manifest)
     if args.datasets_command == "list":
@@ -555,7 +912,9 @@ def _datasets_verify(
 
 def _same_file(left: Path, right: Path) -> bool:
     try:
-        return left.resolve() == right.resolve()
+        if left.resolve() == right.resolve():
+            return True
+        return left.exists() and right.exists() and os.path.samefile(left, right)
     except OSError:
         return False
 
@@ -627,11 +986,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         "inspect": _cmd_inspect,
         "metrics": _cmd_metrics,
         "trim": _cmd_trim,
+        "ingest": _cmd_ingest,
         "datasets": _cmd_datasets,
+        "sessions": _cmd_sessions,
     }
     try:
         return handlers[args.command](args, console, err)
-    except (ConfigError, CaptureError, ValueError) as exc:
+    except (ConfigError, CaptureError, StoreError, ValueError) as exc:
         err.print(f"[red]Error:[/] {exc}")
         return 2
     except OSError as exc:

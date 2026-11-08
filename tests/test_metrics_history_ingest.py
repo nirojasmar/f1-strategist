@@ -3,11 +3,18 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
+import pytest
+
 from f1_strategist.config import MetricsConfig
 from f1_strategist.metrics.history import LapHistory, LapRecord, TyreStint
 from f1_strategist.metrics.history_ingest import ingest_session_history
 from f1_strategist.metrics.lap_tracker import LapTracker
-from f1_strategist.parser import SessionHistoryPacket, parse_packet
+from f1_strategist.parser import (
+    EnumValue,
+    SessionHistoryPacket,
+    TyreStintHistory,
+    parse_packet,
+)
 from f1_strategist.race_state import RaceState
 from tests.scenarios import ScenarioCar, build_race_timed
 
@@ -93,7 +100,7 @@ def test_session_history_updates_an_existing_lap_and_duplicate_is_idempotent() -
     packet = next(
         packet
         for packet, _ in build_race_timed((_car(),), 2)
-        if isinstance(packet, SessionHistoryPacket)
+        if isinstance(packet, SessionHistoryPacket) and packet.num_laps >= 1
     )
     history.upsert(
         LapRecord(car_index=0, lap_number=1, lap_time_s=95.0, lap_time_source="lap_data")
@@ -139,7 +146,7 @@ def test_session_history_replaces_tyre_stints_for_one_and_two_compounds() -> Non
             ),
             4,
         )
-        if isinstance(packet, SessionHistoryPacket)
+        if isinstance(packet, SessionHistoryPacket) and packet.num_laps >= 3
     )
     history = LapHistory()
     history.reset(packet_with_stop.header.session_uid)
@@ -163,6 +170,74 @@ def test_session_history_ingests_a_single_tyre_stint() -> None:
     ingest_session_history(packet, history)
 
     assert history.snapshot().stints_for(0) == (TyreStint("soft", 1, None, "soft"),)
+
+
+@pytest.mark.parametrize(
+    ("ends", "expected_anomaly"),
+    [
+        ((None, 0), "open_stint_not_last"),
+        ((0, 0), "invalid_stint_end_lap"),
+        ((0, None), "invalid_stint_end_lap"),
+        ((2, 0), "invalid_stint_end_lap"),
+    ],
+)
+def test_invalid_stint_history_preserves_last_valid_stints_and_official_times(
+    ends: tuple[int | None, int | None],
+    expected_anomaly: str,
+) -> None:
+    packet = next(
+        packet
+        for packet, _ in build_race_timed((_car(),), 4)
+        if isinstance(packet, SessionHistoryPacket) and packet.num_laps >= 1
+    )
+    history = LapHistory()
+    history.reset(packet.header.session_uid)
+    valid_stints = (TyreStint("soft", 1, None, "soft"),)
+    history.replace_tyre_stints(0, valid_stints)
+    history.upsert(
+        LapRecord(car_index=0, lap_number=1, lap_time_s=91.0, lap_time_source="lap_data")
+    )
+    malformed = replace(
+        packet,
+        tyre_stint_history=tuple(
+            TyreStintHistory(
+                EnumValue(-1, "unknown"),
+                EnumValue(-1, "unknown"),
+                end_lap,
+            )
+            for end_lap in ends
+        ),
+    )
+
+    anomaly = ingest_session_history(malformed, history)
+
+    assert anomaly == expected_anomaly
+    assert history.snapshot().stints_for(0) == valid_stints
+    record = history.get(0, 1)
+    assert record is not None
+    assert record.lap_time_source == "session_history"
+
+
+def test_valid_unknown_compounds_are_preserved_as_unavailable() -> None:
+    packet = next(
+        packet
+        for packet, _ in build_race_timed((_car(),), 2)
+        if isinstance(packet, SessionHistoryPacket) and packet.num_laps >= 1
+    )
+    packet = replace(
+        packet,
+        tyre_stint_history=(
+            TyreStintHistory(
+                EnumValue(-1, "unknown"),
+                EnumValue(-1, "unknown"),
+                None,
+            ),
+        ),
+    )
+    history = LapHistory()
+
+    assert ingest_session_history(packet, history) is None
+    assert history.snapshot().stints_for(0) == (TyreStint(None, 1, None, None),)
 
 
 def test_flashback_discards_pending_times_from_later_laps() -> None:

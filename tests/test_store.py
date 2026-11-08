@@ -323,17 +323,21 @@ def test_migrations_are_idempotent_and_enable_wal(tmp_path: Path) -> None:
         connection.close()
 
 
-def test_a_test_migration_upgrades_v1_to_v2(tmp_path: Path) -> None:
+def test_a_test_migration_upgrades_the_schema(tmp_path: Path) -> None:
     path = tmp_path / "sessions.db"
     SessionStore.open(path).close()
-    upgrades = (*MIGRATIONS, Migration(2, ("ALTER TABLE sessions ADD COLUMN note TEXT",)))
+    next_version = SCHEMA_VERSION + 1
+    upgrades = (
+        *MIGRATIONS,
+        Migration(next_version, ("ALTER TABLE sessions ADD COLUMN note TEXT",)),
+    )
 
     with SessionStore.open(path, migrations=upgrades) as store:
-        assert store.connection.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert store.connection.execute("PRAGMA user_version").fetchone()[0] == next_version
         store.connection.execute("UPDATE sessions SET note = 'ok'")
 
     with SessionStore.open(path, migrations=upgrades) as store:
-        assert store.connection.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert store.connection.execute("PRAGMA user_version").fetchone()[0] == next_version
         assert store.connection.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
 
 
@@ -387,9 +391,9 @@ def test_failed_migration_rolls_back_ddl_and_version(tmp_path: Path) -> None:
     path = tmp_path / "sessions.db"
     upgrades = (
         *MIGRATIONS,
-        Migration(2, ("CREATE TABLE migration_v2 (id INTEGER)",)),
+        Migration(SCHEMA_VERSION + 1, ("CREATE TABLE migration_v2 (id INTEGER)",)),
         Migration(
-            3,
+            SCHEMA_VERSION + 2,
             (
                 "CREATE TABLE migration_v3 (id INTEGER)",
                 "CREATE TABLE migration_v3 (id INTEGER)",
@@ -407,7 +411,7 @@ def test_failed_migration_rolls_back_ddl_and_version(tmp_path: Path) -> None:
                 "SELECT name FROM sqlite_master WHERE type = 'table'"
             )
         }
-        assert version == 2
+        assert version == SCHEMA_VERSION + 1
         assert "migration_v2" in tables
         assert "migration_v3" not in tables
 
@@ -457,6 +461,38 @@ def test_lap_record_fields_have_a_column_or_an_explicit_exclusion(tmp_path: Path
             if row["name"] != "session_id"
         }
     assert names == columns | set(LAP_COLUMN_EXCLUSIONS)
+
+
+def test_finish_session_stores_the_final_metrics_and_capture_hash(tmp_path: Path) -> None:
+    with SessionStore.open(tmp_path / "sessions.db") as store:
+        session_id = store.create_session(_session())
+        store.finish_session(
+            session_id,
+            ended_at_utc="2026-11-05T11:00:00Z",
+            final_metrics_json='{"schema_version":1}',
+            capture_sha256="d" * 64,
+        )
+        session = store.get_session(session_id)
+
+    assert session is not None
+    assert session.final_metrics_json == '{"schema_version":1}'
+    assert session.capture_sha256 == "d" * 64
+
+
+def test_update_session_completes_metadata_without_erasing_it(tmp_path: Path) -> None:
+    with SessionStore.open(tmp_path / "sessions.db") as store:
+        session_id = store.create_session(_session(track=None))
+        store.update_session(
+            session_id,
+            _session(track="spa", game_version=None, session_type="qualifying"),
+        )
+        session = store.get_session(session_id)
+
+    assert session is not None
+    assert session.track == "spa"
+    assert session.session_type == "qualifying"
+    assert session.game_version == "1.26"
+    assert session.started_at_utc == "2026-11-05T10:00:00Z"
 
 
 def test_reads_work_while_another_connection_writes(tmp_path: Path) -> None:

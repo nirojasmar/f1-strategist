@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -50,6 +51,7 @@ _SESSION_COLUMNS: tuple[str, ...] = (
     "config_hash",
     "config_json",
     "fingerprint",
+    "final_metrics_json",
 )
 
 _LAP_COLUMNS: tuple[str, ...] = tuple(LAP_COLUMN_TYPES)
@@ -92,6 +94,7 @@ class SessionInfo:
     config_hash: str | None = None
     config_json: str | None = None
     fingerprint: str | None = None
+    final_metrics_json: str | None = None
 
     def __post_init__(self) -> None:
         if self.session_uid < 0 or self.session_uid > 2**64 - 1:
@@ -200,8 +203,26 @@ class SessionStore:
         self.close()
 
     # ------------------------------------------------------------------
-    # Escritura (una transacción por método)
+    # Transacciones y escritura
     # ------------------------------------------------------------------
+
+    @contextmanager
+    def transaction(self) -> Iterator[sqlite3.Connection]:
+        """Agrupa varias escrituras en una sola transacción.
+
+        Si ya hay una transacción abierta se reutiliza, de modo que los métodos
+        de escritura pueden invocarse tanto sueltos como dentro de un lote.
+        """
+        if self._connection.in_transaction:
+            yield self._connection
+            return
+        self._connection.execute("BEGIN")
+        try:
+            yield self._connection
+            self._connection.commit()
+        except BaseException:
+            self._connection.rollback()
+            raise
 
     def create_session(self, info: SessionInfo) -> int:
         """Inserta la cabecera de una sesión y devuelve su id."""
@@ -224,10 +245,11 @@ class SessionStore:
             info.config_hash,
             info.config_json,
             info.fingerprint,
+            info.final_metrics_json,
         )
         columns = _SESSION_COLUMNS[1:]
-        with self._connection:
-            cursor = self._connection.execute(
+        with self.transaction() as connection:
+            cursor = connection.execute(
                 f"INSERT INTO sessions ({', '.join(columns)}) "
                 f"VALUES ({', '.join('?' for _ in columns)})",
                 values,
@@ -243,13 +265,65 @@ class SessionStore:
         ended_at_utc: str,
         incomplete: bool = False,
         fingerprint: str | None = None,
+        final_metrics_json: str | None = None,
+        capture_sha256: str | None = None,
     ) -> None:
         """Cierra una sesión abierta con su estado final."""
-        with self._connection:
-            cursor = self._connection.execute(
+        with self.transaction() as connection:
+            cursor = connection.execute(
                 "UPDATE sessions SET ended_at_utc = ?, incomplete = ?, "
-                "fingerprint = COALESCE(?, fingerprint) WHERE id = ?",
-                (ended_at_utc, int(incomplete), fingerprint, session_id),
+                "fingerprint = COALESCE(?, fingerprint), "
+                "final_metrics_json = COALESCE(?, final_metrics_json), "
+                "capture_sha256 = COALESCE(?, capture_sha256) WHERE id = ?",
+                (
+                    ended_at_utc,
+                    int(incomplete),
+                    fingerprint,
+                    final_metrics_json,
+                    capture_sha256,
+                    session_id,
+                ),
+            )
+        if cursor.rowcount == 0:
+            raise StoreError(f"No existe la sesión {session_id}")
+
+    def update_session(self, session_id: int, info: SessionInfo) -> None:
+        """Completa los metadatos de una sesión sin borrar los ya conocidos.
+
+        Solo se rellenan los campos que llegan con valor; los que ya estaban
+        guardados se conservan mediante ``COALESCE``.
+        """
+        with self.transaction() as connection:
+            cursor = connection.execute(
+                "UPDATE sessions SET "
+                "game_format = COALESCE(?, game_format), "
+                "game_year = COALESCE(?, game_year), "
+                "game_version = COALESCE(?, game_version), "
+                "track = COALESCE(?, track), "
+                "session_type = COALESCE(?, session_type), "
+                "total_laps = COALESCE(?, total_laps), "
+                "capture_path = COALESCE(?, capture_path), "
+                "capture_sha256 = COALESCE(?, capture_sha256), "
+                "tool_version = COALESCE(?, tool_version), "
+                "parser_version = COALESCE(?, parser_version), "
+                "config_hash = COALESCE(?, config_hash), "
+                "config_json = COALESCE(?, config_json) "
+                "WHERE id = ?",
+                (
+                    info.game_format,
+                    info.game_year,
+                    info.game_version,
+                    info.track,
+                    info.session_type,
+                    info.total_laps,
+                    info.capture_path,
+                    info.capture_sha256,
+                    info.tool_version,
+                    info.parser_version,
+                    info.config_hash,
+                    info.config_json,
+                    session_id,
+                ),
             )
         if cursor.rowcount == 0:
             raise StoreError(f"No existe la sesión {session_id}")
@@ -268,8 +342,8 @@ class SessionStore:
         ]
         if not rows:
             return
-        with self._connection:
-            self._connection.executemany(
+        with self.transaction() as connection:
+            connection.executemany(
                 "INSERT INTO participants (session_id, car_index, name, team, ai_controlled) "
                 "VALUES (?, ?, ?, ?, ?) "
                 "ON CONFLICT(session_id, car_index) DO UPDATE SET "
@@ -289,8 +363,8 @@ class SessionStore:
         ]
         if not rows:
             return
-        with self._connection:
-            self._connection.executemany(_UPSERT_LAP_SQL, rows)
+        with self.transaction() as connection:
+            connection.executemany(_UPSERT_LAP_SQL, rows)
 
     def add_events(self, session_id: int, events: Iterable[StoredEvent]) -> None:
         """Añade eventos de carrera."""
@@ -309,8 +383,8 @@ class SessionStore:
         ]
         if not rows:
             return
-        with self._connection:
-            self._connection.executemany(
+        with self.transaction() as connection:
+            connection.executemany(
                 "INSERT INTO events "
                 "(session_id, seq, kind, t_sim_s, car_index, lap_number, value, previous_value) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -336,8 +410,8 @@ class SessionStore:
         ]
         if not rows:
             return
-        with self._connection:
-            self._connection.executemany(
+        with self.transaction() as connection:
+            connection.executemany(
                 "INSERT INTO metric_samples "
                 "(session_id, t_session_s, t_sim_s, lap, key, value_num, value_text, unit, "
                 "quality, sample_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -349,12 +423,19 @@ class SessionStore:
         rows = [(session_id, error.t_sim_s, error.code, error.params_json) for error in errors]
         if not rows:
             return
-        with self._connection:
-            self._connection.executemany(
+        with self.transaction() as connection:
+            connection.executemany(
                 "INSERT INTO app_errors (session_id, t_sim_s, code, params_json) "
                 "VALUES (?, ?, ?, ?)",
                 rows,
             )
+
+    def delete_session(self, session_id: int) -> None:
+        """Elimina una sesión y todos sus datos asociados (cascada)."""
+        with self.transaction() as connection:
+            cursor = connection.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+        if cursor.rowcount == 0:
+            raise StoreError(f"No existe la sesión {session_id}")
 
     # ------------------------------------------------------------------
     # Lectura
@@ -461,7 +542,11 @@ def _open_writable(location: str) -> sqlite3.Connection:
         expanded = Path(location).expanduser()
         expanded.parent.mkdir(parents=True, exist_ok=True)
         path = str(expanded)
-    return sqlite3.connect(path, timeout=BUSY_TIMEOUT_MS / 1000)
+    return sqlite3.connect(
+        path,
+        timeout=BUSY_TIMEOUT_MS / 1000,
+        check_same_thread=False,
+    )
 
 
 def _open_readonly(location: str) -> sqlite3.Connection:
@@ -501,6 +586,7 @@ def _session_from_row(row: sqlite3.Row) -> SessionInfo:
         config_hash=_optional_str(row["config_hash"]),
         config_json=_optional_str(row["config_json"]),
         fingerprint=_optional_str(row["fingerprint"]),
+        final_metrics_json=_optional_str(row["final_metrics_json"]),
     )
 
 

@@ -71,7 +71,7 @@ def build_run_info(
     """
     resolved = _complete_config(config)
     config_hash = compute_config_hash(resolved)
-    capture_sha256 = _file_sha256(capture_path) if capture_path is not None else ""
+    capture_sha256 = file_sha256(capture_path) if capture_path is not None else ""
     return RunInfo(
         tool_version=__version__,
         parser_version=PARSER_VERSION,
@@ -141,6 +141,38 @@ def compute_fingerprint(
     return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()
 
 
+def compute_capture_fingerprint(
+    events: Iterable[RaceEvent] | RaceStateSnapshot,
+    laps: LapHistory | LapHistorySnapshot,
+    metrics: MetricsSnapshot,
+    config: AppConfig | MetricsConfig | None = None,
+    capture_path: Path | None = None,
+    *,
+    run_info: RunInfo | None = None,
+    float_digits: int = 9,
+) -> str:
+    """Calcula la huella canónica de una captura con su configuración y metadatos.
+
+    Es la misma construcción que usa ``fingerprint_capture`` para el comando
+    ``verify``; ``ingest`` la reutiliza para que ambas huellas coincidan.
+    """
+    complete_config = _complete_config(config)
+    info = run_info if run_info is not None else build_run_info(complete_config, capture_path)
+    return compute_fingerprint(
+        events,
+        laps,
+        {
+            "metrics": metrics,
+            "config": _config_value(complete_config.model_dump()),
+            "run_info": {
+                "parser_version": info.parser_version,
+                "capture_sha256": info.capture_sha256,
+            },
+        },
+        float_digits=float_digits,
+    )
+
+
 def fingerprint_capture(
     path: Path,
     config: AppConfig | MetricsConfig | None = None,
@@ -160,17 +192,13 @@ def fingerprint_capture(
     history = collector.engine.history.snapshot()
     events = tuple(collector.events)
     run_info = build_run_info(complete_config, path)
-    fingerprint = compute_fingerprint(
+    fingerprint = compute_capture_fingerprint(
         events,
         history,
-        {
-            "metrics": metrics,
-            "config": _config_value(complete_config.model_dump()),
-            "run_info": {
-                "parser_version": run_info.parser_version,
-                "capture_sha256": run_info.capture_sha256,
-            },
-        },
+        metrics,
+        complete_config,
+        path,
+        run_info=run_info,
         float_digits=float_digits,
     )
     return FingerprintRun(
@@ -269,7 +297,8 @@ def _canonical_json(value: object) -> str:
     )
 
 
-def _file_sha256(path: Path) -> str:
+def file_sha256(path: Path) -> str:
+    """Devuelve el SHA-256 de un archivo leyéndolo por bloques."""
     digest = hashlib.sha256()
     with path.open("rb") as handle:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
