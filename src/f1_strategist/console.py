@@ -45,6 +45,22 @@ def _display_enum(value: str | None) -> str:
     return value.replace("_", " ").title() if value is not None else "—"
 
 
+def _display_driver_result(value: str) -> str:
+    labels = {
+        "active": "En curso",
+        "finished": "Finalizado",
+        "did_not_finish": "No terminó (DNF)",
+        "disqualified": "Descalificado",
+        "not_classified": "No clasificado",
+        "retired": "Retirado",
+        "invalid": "Inválido",
+        "inactive": "Inactivo",
+    }
+    if value.startswith("unknown:"):
+        return f"Desconocido ({value.removeprefix('unknown:')})"
+    return labels.get(value, _display_enum(value))
+
+
 def _render_race_summary(race: RaceStateSnapshot, now: float) -> Panel:
     player = race.player_car
     table = Table.grid(padding=(0, 2))
@@ -63,6 +79,8 @@ def _render_race_summary(race: RaceStateSnapshot, now: float) -> Panel:
         "Posición",
         str(player.position) if player is not None and player.position is not None else "—",
     )
+    if player is not None and player.result_status is not None:
+        table.add_row("Estado del piloto", _display_driver_result(player.result_status))
     table.add_row(
         "Combustible",
         f"{player.fuel_kg:.1f} kg" if player is not None and player.fuel_kg is not None else "—",

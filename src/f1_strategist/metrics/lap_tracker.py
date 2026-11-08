@@ -10,6 +10,9 @@ from .history import LapHistory, LapRecord
 
 _INVALID_RESULT_STATUSES = frozenset({"invalid", "inactive"})
 _NON_TRACKING_RESULT_STATUSES = _INVALID_RESULT_STATUSES | {"retired"}
+_TERMINAL_RESULT_STATUSES = frozenset(
+    {"finished", "did_not_finish", "disqualified", "not_classified", "retired"}
+)
 _PIT_STATUSES = frozenset({"pitting", "in_pit_area"})
 _TRACKED_FRESHNESS_GROUPS = ("lap_data", "car_status", "car_damage", "tyre_sets", "session")
 PARTIAL_LAP_MIN_TIME_S = 3.0
@@ -457,8 +460,12 @@ class LapTracker:
         car: CarSnapshot,
         previous: CarSnapshot | None,
     ) -> None:
+        if car.result_status in _TERMINAL_RESULT_STATUSES:
+            return
         in_pits = car.pit_status in _PIT_STATUSES
         if previous is not None:
+            if previous.result_status in _TERMINAL_RESULT_STATUSES:
+                return
             was_in_pits = previous.pit_status in _PIT_STATUSES
             if in_pits and not was_in_pits:
                 open_lap.pit_entry = True

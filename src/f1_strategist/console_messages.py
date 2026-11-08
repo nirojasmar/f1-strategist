@@ -151,7 +151,20 @@ def _live_metrics_are_stale(race: RaceStateSnapshot | None, now: float | None) -
 
 
 def _render_metric_value(metric: Metric | None) -> str:
-    if metric is None or metric.value is None:
+    if metric is None:
+        return "—"
+    if metric.value is None:
+        required = next(
+            (
+                int(note.removeprefix("required_samples:"))
+                for note in metric.notes
+                if note.startswith("required_samples:")
+                and note.removeprefix("required_samples:").isdigit()
+            ),
+            None,
+        )
+        if metric.quality is Quality.INSUFFICIENT and required is not None:
+            return f"— ({metric.sample_count}/{required} muestras válidas)"
         return "—"
     value = metric.value
     if isinstance(value, bool):
@@ -180,7 +193,7 @@ def render_race_event(event: RaceEvent, cars: tuple[CarSnapshot, ...]) -> str:
         return "Sesión finalizada"
     if event.kind == "lap_changed":
         return f"Vuelta {event.lap_number}"
-    if event.kind in {"pit_entry", "pit_stop_completed"}:
+    if event.kind in {"pit_entry", "pit_exit", "pit_stop_completed", "retirement"}:
         car = (
             cars[event.car_index]
             if event.car_index is not None and 0 <= event.car_index < len(cars)
@@ -191,7 +204,13 @@ def render_race_event(event: RaceEvent, cars: tuple[CarSnapshot, ...]) -> str:
             if car is not None and car.name
             else (f"Coche {event.car_index + 1}" if event.car_index is not None else "Coche")
         )
-        action = "entra en boxes" if event.kind == "pit_entry" else "completa parada"
+        actions = {
+            "pit_entry": "entra en boxes",
+            "pit_exit": "sale de boxes",
+            "pit_stop_completed": "completa parada",
+            "retirement": f"retirada comunicada (motivo del juego: {event.value or 'desconocido'})",
+        }
+        action = actions[event.kind]
         return f"{name}: {action}"
     return event.kind
 

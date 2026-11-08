@@ -92,9 +92,11 @@ def test_console_renders_race_summary_fields() -> None:
 
 def test_race_event_with_out_of_range_car_index_renders_safely() -> None:
     event = RaceEvent("pit_entry", occurred_at_monotonic=1.0, car_index=22)
+    exit_event = RaceEvent("pit_exit", occurred_at_monotonic=2.0, car_index=0)
     cars = tuple(CarSnapshot(car_index=index) for index in range(22))
 
     assert render_race_event(event, cars) == "Coche 23: entra en boxes"
+    assert render_race_event(exit_event, cars) == "Coche 1: sale de boxes"
 
 
 def test_console_renders_untrusted_markup_as_literal_text(monkeypatch) -> None:
@@ -128,15 +130,24 @@ def test_console_renders_untrusted_markup_as_literal_text(monkeypatch) -> None:
     assert "disk [red]failure[/red]" in rendered
 
 
-def _metric(key: str, value: float | None, unit: str, quality: Quality) -> Metric:
+def _metric(
+    key: str,
+    value: float | None,
+    unit: str,
+    quality: Quality,
+    *,
+    sample_count: int = 4,
+    notes: tuple[str, ...] = (),
+) -> Metric:
     return Metric(
         key=key,
         value=value,
         unit=unit,
         window=Window("instant"),
         quality=quality,
-        sample_count=4,
+        sample_count=sample_count,
         computed_at_monotonic=3.0,
+        notes=notes,
     )
 
 
@@ -208,6 +219,50 @@ def test_console_metrics_panel_renders_empty_snapshot_with_dashes() -> None:
     ):
         line = next(line for line in text.splitlines() if label in line)
         assert "—" in line
+
+
+def test_console_explains_required_samples_for_insufficient_metrics(monkeypatch) -> None:
+    config = AppConfig()
+    session = CaptureSession(config)
+    metrics = MetricsSnapshot(
+        metrics={
+            "pace.trend_s_per_lap": _metric(
+                "pace.trend_s_per_lap",
+                None,
+                "s/lap",
+                Quality.INSUFFICIENT,
+                sample_count=1,
+                notes=("required_samples:3",),
+            ),
+        },
+        computed_at_monotonic=3.0,
+        session_uid=1,
+    )
+    monkeypatch.setattr(session, "metrics_snapshot", lambda: metrics)
+
+    output = StringIO()
+    Console(file=output, width=120, no_color=True).print(render(config, session, now=5.0))
+
+    assert "1/3 muestras válidas" in output.getvalue()
+
+
+def test_console_renders_pilot_result_and_retirement_reason_without_inference() -> None:
+    race = CaptureSession(AppConfig()).race_snapshot()
+    player = replace(race.cars[0], result_status="retired")
+    race = replace(
+        race,
+        player_car_index=0,
+        cars=(player, *race.cars[1:]),
+        events=(RaceEvent("retirement", 1.0, car_index=0, value="invalid"),),
+    )
+    output = StringIO()
+    Console(file=output, width=120, no_color=True).print(_render_race_summary(race, now=2.0))
+
+    assert "Estado del piloto" in output.getvalue()
+    assert "Retirado" in output.getvalue()
+    assert render_race_event(race.events[0], race.cars) == (
+        "Coche 1: retirada comunicada (motivo del juego: invalid)"
+    )
 
 
 def test_metrics_update_error_renders_in_spanish() -> None:

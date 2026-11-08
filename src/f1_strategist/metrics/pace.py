@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from dataclasses import replace
 from statistics import mean
 
 from ..race_state import PacketFreshness
@@ -80,6 +81,12 @@ def _time_metric(
         computed_at_monotonic=now,
         sources=sources,
     )
+
+
+def _with_required_samples(metric: Metric, required: int) -> Metric:
+    if metric.quality is not Quality.INSUFFICIENT:
+        return metric
+    return replace(metric, notes=(*metric.notes, f"required_samples:{required}"))
 
 
 class PaceMetrics:
@@ -181,18 +188,21 @@ class PaceMetrics:
                 low_at=inputs.config.thresholds("pace")[0],
                 ok_at=inputs.config.thresholds("pace")[1],
             ),
-            _time_metric(
-                "pace.trend_s_per_lap",
-                trend,
-                now=inputs.now,
-                stale=stale,
-                count=len(clean),
-                unit="s/lap",
-                window=Window("stint"),
-                sources=sources,
-                reason="fewer_than_three_clean_laps",
-                low_at=max(3, inputs.config.thresholds("pace")[0]),
-                ok_at=max(3, inputs.config.thresholds("pace")[1]),
+            _with_required_samples(
+                _time_metric(
+                    "pace.trend_s_per_lap",
+                    trend,
+                    now=inputs.now,
+                    stale=stale,
+                    count=len(clean),
+                    unit="s/lap",
+                    window=Window("stint"),
+                    sources=sources,
+                    reason="fewer_than_three_clean_laps",
+                    low_at=max(3, inputs.config.thresholds("pace")[0]),
+                    ok_at=max(3, inputs.config.thresholds("pace")[1]),
+                ),
+                max(3, inputs.config.thresholds("pace")[0]),
             ),
             _time_metric(
                 "pace.delta_to_best_s",

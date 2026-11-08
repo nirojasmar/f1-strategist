@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from statistics import StatisticsError, fmean, linear_regression
 
 from ..race_state import PacketFreshness
@@ -176,6 +177,11 @@ class TyreMetrics:
                 sources=history_sources,
             )
         )
+        if rate_metric.quality is Quality.INSUFFICIENT:
+            rate_metric = replace(
+                rate_metric,
+                notes=(*rate_metric.notes, f"required_samples:{minimum_samples}"),
+            )
 
         wear_limit = inputs.config.tyre_wear_limit_pct
         if wear_limit is None:

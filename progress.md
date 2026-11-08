@@ -1,6 +1,6 @@
 # Progreso del proyecto --- F1 Strategist
 
-**Última actualización:** 2026-11-05
+**Última actualización:** 2026-11-07
 **Propósito de este archivo:** llevar trazabilidad del avance importante y dejar el contexto
 necesario para que cualquier persona o agente que llegue al proyecto entienda dónde estamos, qué
 está decidido, qué está verificado y qué falta.
@@ -68,8 +68,8 @@ Documentos de diseño:
 
 **Verificado:**
 
--   La suite `pytest` (488 pruebas funcionales y 1 benchmark excluido por defecto), Ruff (lint y formato,
-    89 archivos) y Pyright pasan en Windows (2026-11-06). El wheel se probó desde un directorio externo
+-   La suite `pytest` (560 pruebas funcionales y 1 benchmark excluido por defecto), Ruff (lint y formato,
+    92 archivos) y Pyright pasan en Windows (2026-11-07). El wheel se probó desde un directorio externo
     al repositorio y carga el manifiesto empaquetado.
 -   CI de GitHub Actions exitoso para `phase-1-udp-parser`, commit `096eceb`, en Ubuntu y Windows; también
     pasaron Ruff (lint y formato) y Pyright (2026-11-02).
@@ -387,6 +387,27 @@ Documentos de diseño:
 -   Validación local: 488 pruebas pasan, 1 benchmark se excluye por defecto, Ruff (lint/formato),
     Pyright y `git diff --check` pasan. El wheel se construyó y su comando de catálogo se probó desde
     fuera del repositorio. CI remota no se ejecutó.
+
+### 2026-11-07
+
+-   Endurecida la ingesta de stints de `SessionHistory`: se valida la secuencia antes de reemplazarla;
+    ante datos incoherentes se conserva el último historial válido, pero se siguen ingiriendo tiempos
+    oficiales disponibles. El motor registra una advertencia por sesión/coche/causa, no una por paquete.
+-   `RaceState` aplica `RTMT` al coche indicado una sola vez, acepta con UID 0 solo una clasificación
+    compatible con el índice y las vueltas del jugador activo, conserva resultados terminales frente a
+    `LapData` activo tardío y no convierte esos resultados en fin global de sesión. `SEND` seguido por
+    `SSTA` con el mismo UID conserva el fin observado.
+-   Los eventos de boxes incluyen salida; `RaceState` y `LapTracker` evitan inferir transiciones de
+    boxes para coches en estado terminal. La consola muestra el resultado del piloto y el motivo crudo
+    comunicado por el juego sin inferir una causa de retirada.
+-   Pace y desgaste anotan el mínimo de muestras aplicable; la consola muestra `m/n muestras válidas`
+    para valores insuficientes. Se añadieron regresiones para secuencias inválidas de stints, recuperación,
+    UID 0, retiro, fin de sesión, boxes y 0–3 muestras con umbrales configurados.
+-   Validación local: 560 pruebas pasan y 1 benchmark queda excluido; las 15 pruebas de captura real
+    pasan y `f1-strategist metrics` termina correctamente con el fixture local de Monza. Ruff (lint y
+    formato, 92 archivos), Pyright y `git diff --check` pasan. La captura original de Baku del 7 de
+    noviembre no está disponible en este workspace, por lo que estos cambios no se validaron contra ella.
+    CI remota no se ejecutó.
 
 ## 7. Hallazgos de la primera captura real
 

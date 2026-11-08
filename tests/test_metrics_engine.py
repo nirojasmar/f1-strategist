@@ -9,7 +9,13 @@ from f1_strategist.config import MetricsConfig
 from f1_strategist.metrics.engine import MetricsEngine, MetricsSnapshot
 from f1_strategist.metrics.history import MetricInputs
 from f1_strategist.metrics.types import Metric, Quality, Window
-from f1_strategist.parser import ParsedPacket, SessionPacket
+from f1_strategist.parser import (
+    EnumValue,
+    ParsedPacket,
+    SessionHistoryPacket,
+    SessionPacket,
+    TyreStintHistory,
+)
 from f1_strategist.race_state import RaceState, RaceStateSnapshot
 from tests.scenarios import ScenarioCar, build_race, build_race_timed
 
@@ -131,6 +137,42 @@ def test_module_failure_does_not_prevent_other_modules_or_history() -> None:
     assert failure.notes[0] == "metric_module_failed"
     assert "RuntimeError" in failure.notes
     assert snapshot.get("constant.value").value == 7  # type: ignore[union-attr]
+
+
+def test_invalid_stint_history_warning_is_deduplicated_and_valid_history_recovers(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    packet = next(
+        packet
+        for packet, _ in build_race_timed(_cars(), total_laps=3)
+        if isinstance(packet, SessionHistoryPacket) and packet.num_laps >= 1
+    )
+    invalid_packet = replace(
+        packet,
+        tyre_stint_history=(
+            TyreStintHistory(
+                EnumValue(-1, "unknown"),
+                EnumValue(-1, "unknown"),
+                0,
+            ),
+        ),
+    )
+    state = RaceState().snapshot()
+    state = replace(state, session=replace(state.session, uid=packet.header.session_uid))
+    engine = MetricsEngine()
+
+    with caplog.at_level("WARNING", logger="f1_strategist.metrics.engine"):
+        engine.apply(invalid_packet, 1.0, state)
+        engine.apply(invalid_packet, 2.0, state)
+        engine.apply(packet, 3.0, state)
+
+    warnings = [
+        record
+        for record in caplog.records
+        if "Ignoring invalid tyre stint history" in record.message
+    ]
+    assert len(warnings) == 1
+    assert engine.history.snapshot().stints_for(0)
 
 
 def test_session_change_resets_history_and_publication() -> None:

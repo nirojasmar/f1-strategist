@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+import pytest
+
 from f1_strategist.config import MetricsConfig, SampleThresholds
 from f1_strategist.metrics.history import LapHistorySnapshot, LapRecord, MetricInputs, TyreStint
 from f1_strategist.metrics.types import Quality
@@ -169,6 +171,55 @@ def test_tyre_outputs_insufficient_or_unavailable_values_as_appropriate() -> Non
     assert metrics["tyres.laps_to_wear_limit"].quality is Quality.UNAVAILABLE
     assert metrics["tyres.compound"].quality is Quality.OK
     assert metrics["tyres.wear_mean_pct"].quality is Quality.UNAVAILABLE
+
+
+@pytest.mark.parametrize("sample_count", [0, 1, 2, 3])
+def test_tyre_rate_reports_required_stint_sample_count(sample_count: int) -> None:
+    records = tuple(
+        _record(lap, "soft", lap - 1, (lap - 1) * 10) for lap in range(2, sample_count + 2)
+    )
+    car = CarSnapshot(
+        car_index=0,
+        actual_tyre_compound="soft",
+        tyre_age_laps=sample_count,
+    )
+    metrics = _metrics(
+        _inputs(
+            records=records,
+            stints=(TyreStint("soft", 1),),
+            car=car,
+        )
+    )
+    rate = metrics["tyres.wear_rate_pct_per_lap"]
+
+    assert rate.sample_count == sample_count
+    if sample_count < 3:
+        assert rate.quality is Quality.INSUFFICIENT
+        assert "required_samples:3" in rate.notes
+    else:
+        assert rate.value == pytest.approx(10.0)
+        assert "required_samples:3" not in rate.notes
+
+
+def test_tyre_rate_uses_configured_minimum_above_three_samples() -> None:
+    config = MetricsConfig(
+        min_samples={"tyres": SampleThresholds(low=4, ok=5)},
+    )
+    records = tuple(_record(lap, "soft", lap - 1, (lap - 1) * 10) for lap in (2, 3, 4))
+    car = CarSnapshot(car_index=0, actual_tyre_compound="soft", tyre_age_laps=3)
+    metrics = _metrics(
+        _inputs(
+            records=records,
+            stints=(TyreStint("soft", 1),),
+            car=car,
+            config=config,
+        )
+    )
+    rate = metrics["tyres.wear_rate_pct_per_lap"]
+
+    assert rate.quality is Quality.INSUFFICIENT
+    assert rate.sample_count == 3
+    assert "required_samples:4" in rate.notes
 
 
 def test_tyre_metrics_mark_stale_sources_and_missing_stint_samples() -> None:
