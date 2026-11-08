@@ -718,3 +718,59 @@ def test_incomplete_sessions_are_ingested_again_instead_of_skipped(
         second = ingest_capture(path, store, AppConfig())
         assert not second.skipped
         assert second.session_id != first.session_id
+
+
+class _SlowStore:
+    """Envuelve un almacén real y retrasa cada transacción."""
+
+    def __init__(self, inner: SessionStore, delay: float) -> None:
+        self._inner = inner
+        self._delay = delay
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+    @contextmanager
+    def transaction(self) -> Iterator[object]:
+        time.sleep(self._delay)
+        with self._inner.transaction() as connection:
+            yield connection
+
+
+def test_block_when_full_avoids_dropped_batches() -> None:
+    store = _FakeStore(delay=0.05)
+    recorder = SessionRecorder(
+        store,
+        RecordingConfig(queue_size=1, batch_size=1, flush_interval_s=0.01),
+        block_when_full=True,
+    )
+    try:
+        for lap in range(1, 7):
+            recorder.observe(
+                float(lap),
+                float(lap),
+                _snapshot(lap=lap),
+                _metrics(10.0 - lap, computed_at=float(lap)),
+                _history(),
+            )
+    finally:
+        recorder.stop()
+
+    assert recorder.dropped_batches == 0
+    assert [entry[2] for entry in store.finished] == [False]
+
+
+def test_ingest_waits_for_the_writer_instead_of_dropping_batches(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = _capture(tmp_path, monkeypatch)
+    config = AppConfig(recording=RecordingConfig(queue_size=1, batch_size=1, flush_interval_s=0.01))
+
+    with SessionStore.open(tmp_path / "sessions.db") as store:
+        slow = _SlowStore(store, 0.005)
+        result = ingest_capture(path, slow, config)  # type: ignore[arg-type]
+        session = store.get_session(result.session_id)
+
+    assert session is not None
+    assert not session.incomplete

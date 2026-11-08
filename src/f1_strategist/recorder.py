@@ -122,6 +122,7 @@ class SessionRecorder:
         run_info: RunInfo | None = None,
         capture_path: Path | None = None,
         config_json: str | None = None,
+        block_when_full: bool = False,
     ) -> None:
         self._store = store
         self._config = config
@@ -129,6 +130,7 @@ class SessionRecorder:
         self._run_info = run_info or build_run_info()
         self._capture_path = str(capture_path) if capture_path is not None else None
         self._config_json = config_json
+        self._block_when_full = block_when_full
         self._lock = threading.Lock()
         self._queue: queue.Queue[_Batch | _Stop] = queue.Queue(maxsize=config.queue_size)
 
@@ -579,6 +581,10 @@ class SessionRecorder:
             return frozenset(self._dropped_by_uid)
 
     def _enqueue(self, batch: _Batch) -> None:
+        if self._block_when_full:
+            # La ingesta offline no debe perder datos: espera al hilo escritor.
+            self._queue.put(batch)
+            return
         try:
             self._queue.put_nowait(batch)
         except queue.Full:
@@ -787,6 +793,7 @@ def ingest_capture(
         run_info=run_info,
         capture_path=path,
         config_json=serialize_config(app_config),
+        block_when_full=True,
     )
     collector = _IngestCollector(engine, recorder)
     offline: OfflineResult | None = None
