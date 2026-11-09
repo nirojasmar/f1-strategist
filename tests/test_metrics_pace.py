@@ -4,7 +4,7 @@ from dataclasses import replace
 
 import pytest
 
-from f1_strategist.config import MetricsConfig
+from f1_strategist.config import MetricsConfig, SampleThresholds
 from f1_strategist.metrics.history import LapHistorySnapshot, LapRecord, MetricInputs, TyreStint
 from f1_strategist.metrics.pace import PaceMetrics
 from f1_strategist.metrics.types import Quality
@@ -149,6 +149,34 @@ def test_missing_history_is_insufficient_and_stale_inputs_are_marked() -> None:
     )
     stale = _by_key(PaceMetrics().compute(_inputs((_record(1, 90.0),), freshness=freshness)))
     assert stale["pace.last_lap_s"].quality is Quality.STALE
+
+
+@pytest.mark.parametrize("sample_count", [0, 1, 2, 3])
+def test_pace_trend_reports_required_clean_sample_count(sample_count: int) -> None:
+    records = tuple(_record(lap, 90.0 + lap) for lap in range(2, sample_count + 2))
+
+    trend = _by_key(PaceMetrics().compute(_inputs(records)))["pace.trend_s_per_lap"]
+
+    assert trend.sample_count == sample_count
+    if sample_count < 3:
+        assert trend.quality is Quality.INSUFFICIENT
+        assert "required_samples:3" in trend.notes
+    else:
+        assert trend.value == pytest.approx(1.0)
+        assert "required_samples:3" not in trend.notes
+
+
+def test_pace_trend_uses_configured_minimum_above_three_samples() -> None:
+    config = MetricsConfig(
+        min_samples={"pace": SampleThresholds(low=4, ok=5)},
+    )
+    records = tuple(_record(lap, 90.0 + lap) for lap in (2, 3, 4))
+
+    trend = _by_key(PaceMetrics().compute(_inputs(records, config=config)))["pace.trend_s_per_lap"]
+
+    assert trend.quality is Quality.INSUFFICIENT
+    assert trend.sample_count == 3
+    assert "required_samples:4" in trend.notes
 
 
 def test_pace_uses_stint_containing_current_lap_not_future_stint() -> None:

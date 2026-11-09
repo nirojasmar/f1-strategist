@@ -45,6 +45,22 @@ def _display_enum(value: str | None) -> str:
     return value.replace("_", " ").title() if value is not None else "—"
 
 
+def _display_driver_result(value: str) -> str:
+    labels = {
+        "active": "En curso",
+        "finished": "Finalizado",
+        "did_not_finish": "No terminó (DNF)",
+        "disqualified": "Descalificado",
+        "not_classified": "No clasificado",
+        "retired": "Retirado",
+        "invalid": "Inválido",
+        "inactive": "Inactivo",
+    }
+    if value.startswith("unknown:"):
+        return f"Desconocido ({value.removeprefix('unknown:')})"
+    return labels.get(value, _display_enum(value))
+
+
 def _render_race_summary(race: RaceStateSnapshot, now: float) -> Panel:
     player = race.player_car
     table = Table.grid(padding=(0, 2))
@@ -63,6 +79,8 @@ def _render_race_summary(race: RaceStateSnapshot, now: float) -> Panel:
         "Posición",
         str(player.position) if player is not None and player.position is not None else "—",
     )
+    if player is not None and player.result_status is not None:
+        table.add_row("Estado del piloto", _display_driver_result(player.result_status))
     table.add_row(
         "Combustible",
         f"{player.fuel_kg:.1f} kg" if player is not None and player.fuel_kg is not None else "—",
@@ -122,8 +140,21 @@ def format_bytes(nbytes: int) -> str:
     return f"{nbytes} B"
 
 
-def render(cfg: AppConfig, session: SessionPort, now: float | None = None) -> Group:
+def render(
+    cfg: AppConfig,
+    session: SessionPort,
+    now: float | None = None,
+    *,
+    race_now: float | None = None,
+) -> Group:
+    """Renderiza el estado.
+
+    ``now`` es el reloj monotónico de la interfaz (diagnóstico y tramas). En
+    reproducción, ``race_now`` permite usar el instante de la captura para la
+    frescura de los datos de carrera sin mezclarlo con ese reloj.
+    """
     now = time.monotonic() if now is None else now
+    race_now = now if race_now is None else race_now
     tele = cfg.telemetry
     snap = session.snapshot()
     state = connection_state(tele, snap, now)
@@ -167,8 +198,8 @@ def render(cfg: AppConfig, session: SessionPort, now: float | None = None) -> Gr
 
     parts: list[RenderableType] = [
         Panel(info, title="F1 Strategist · telemetría UDP", expand=False),
-        _render_race_summary(session.race_snapshot(), now),
-        _render_metrics_summary(session.metrics_snapshot(), session.race_snapshot(), now),
+        _render_race_summary(session.race_snapshot(), race_now),
+        _render_metrics_summary(session.metrics_snapshot(), session.race_snapshot(), race_now),
     ]
     if snap.packets_by_id:
         table = Table(title="Paquetes por tipo · huecos estimados", expand=False)

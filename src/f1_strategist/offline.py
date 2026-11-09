@@ -35,6 +35,18 @@ class OfflineResult:
     truncated: bool
     last_observed_at: float = 0.0
 
+    def integrity_problems(self) -> tuple[str, ...]:
+        """Diagnósticos que impiden certificar una reproducción como completa."""
+        problems: list[str] = []
+        if self.truncated:
+            problems.append("la captura termina con un registro incompleto")
+        if self.packets_parsed == 0:
+            problems.append("la captura no contiene paquetes válidos")
+        rejected = sum(self.parser_rejections.values())
+        if rejected:
+            problems.append(f"{rejected} paquete(s) rechazado(s) por el parser")
+        return tuple(problems)
+
 
 def run_capture_offline(
     path: Path,

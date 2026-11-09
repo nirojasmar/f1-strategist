@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 
 from .parser import (
@@ -10,6 +11,7 @@ from .parser import (
     CarDamagePacket,
     CarStatusPacket,
     EnumValue,
+    EventDetail,
     EventPacket,
     FinalClassificationPacket,
     LapDataPacket,
@@ -20,6 +22,9 @@ from .parser import (
 )
 
 _EVENT_HISTORY_LIMIT = 50
+_TERMINAL_RESULT_STATUSES = frozenset(
+    {"finished", "did_not_finish", "disqualified", "not_classified", "retired"}
+)
 # Thresholds allow several missed intervals; event-driven groups have no periodic expiry.
 _PACKET_GROUPS = {
     1: ("session", 2.5),
@@ -36,6 +41,10 @@ _PACKET_GROUPS = {
 
 def _known_enum(value: EnumValue) -> str | None:
     return value.name if value.name != "unknown" else None
+
+
+def _enum_label(value: EnumValue) -> str:
+    return value.name if value.name != "unknown" else f"unknown:{value.raw}"
 
 
 def _positive_int(value: int) -> int | None:
@@ -212,7 +221,8 @@ class RaceStateSnapshot:
 class RaceState:
     """Applies parsed packets from one consumer thread and publishes snapshots."""
 
-    def __init__(self) -> None:
+    def __init__(self, event_sink: Callable[[RaceEvent], None] | None = None) -> None:
+        self._event_sink = event_sink
         self._session_uid: int | None = None
         self._session_type: str | None = None
         self._track: str | None = None
@@ -242,6 +252,7 @@ class RaceState:
             group: None for group, _ in _PACKET_GROUPS.values()
         }
         self._events: deque[RaceEvent] = deque(maxlen=_EVENT_HISTORY_LIMIT)
+        self._retirement_events: set[int] = set()
         self._snapshot = self._build_snapshot()
 
     def snapshot(self) -> RaceStateSnapshot:
@@ -258,6 +269,28 @@ class RaceState:
         if isinstance(packet, EventPacket) and not is_session_event:
             if self._session_uid is None or header.session_uid != self._session_uid:
                 return
+        elif (
+            isinstance(packet, FinalClassificationPacket)
+            and header.session_uid == 0
+            and self._session_uid not in (None, 0)
+        ):
+            player_index = header.player_car_index
+            if (
+                player_index >= MAX_CARS
+                or player_index != self._player_car_index
+                or self._cars[player_index].current_lap is None
+                or player_index >= len(packet.classification)
+                or packet.classification[player_index] is None
+            ):
+                return
+            classification = packet.classification[player_index]
+            assert classification is not None
+            if classification.laps > (self._cars[player_index].current_lap or 0):
+                return
+            self._updated_at["final_classification"] = observed_at
+            self._apply_classification(packet, player_index)
+            self._snapshot = self._build_snapshot()
+            return
         elif (
             self._session_uid is not None
             and header.session_uid != self._session_uid
@@ -294,6 +327,7 @@ class RaceState:
         elif isinstance(packet, EventPacket):
             self._apply_event(packet, observed_at)
         elif isinstance(packet, FinalClassificationPacket):
+            self._apply_classification(packet, self._player_car_index)
             self._mark_session_ended(observed_at)
 
         self._snapshot = self._build_snapshot()
@@ -333,6 +367,7 @@ class RaceState:
         for group in self._updated_at:
             self._updated_at[group] = None
         self._events.clear()
+        self._retirement_events.clear()
         self._append_event("session_changed", observed_at, session_uid=session_uid)
 
     def _apply_session(self, packet: SessionPacket, observed_at: float) -> None:
@@ -432,7 +467,13 @@ class RaceState:
             pit_status = _known_enum(lap_data.pit_status)
             current_lap = lap_data.current_lap_number or None
             position = lap_data.car_position or None
-            result_status = _known_enum(lap_data.result_status)
+            reported_result_status = _known_enum(lap_data.result_status)
+            result_status = (
+                previous.result_status
+                if previous.result_status in _TERMINAL_RESULT_STATUSES
+                and reported_result_status not in _TERMINAL_RESULT_STATUSES
+                else reported_result_status
+            )
             publishes_values = result_status not in {"invalid", "inactive"}
             current = replace(
                 previous,
@@ -502,9 +543,16 @@ class RaceState:
 
             was_in_pits = previous.pit_status in {"pitting", "in_pit_area"}
             is_in_pits = pit_status in {"pitting", "in_pit_area"}
-            if previous.pit_status is not None and is_in_pits and not was_in_pits:
+            terminal = result_status in _TERMINAL_RESULT_STATUSES
+            if previous.pit_status is not None and is_in_pits and not was_in_pits and not terminal:
                 self._append_event("pit_entry", observed_at, car_index=index)
-            if previous.pit_stops is not None and lap_data.pit_stops > previous.pit_stops:
+            elif was_in_pits and pit_status == "none" and not terminal:
+                self._append_event("pit_exit", observed_at, car_index=index)
+            if (
+                previous.pit_stops is not None
+                and lap_data.pit_stops > previous.pit_stops
+                and not terminal
+            ):
                 self._append_event("pit_stop_completed", observed_at, car_index=index)
 
     def _apply_car_status(self, packet: CarStatusPacket) -> None:
@@ -596,12 +644,46 @@ class RaceState:
     def _apply_event(self, packet: EventPacket, observed_at: float) -> None:
         event_name = packet.event_code.name
         if event_name == "session_started":
+            if self._session_ended is True:
+                return
             if self._session_started is not True:
                 self._append_event("session_started", observed_at)
             self._session_started = True
-            self._session_ended = False
         elif event_name == "session_ended":
             self._mark_session_ended(observed_at)
+        elif event_name == "retirement" and isinstance(packet.detail, EventDetail):
+            values = packet.detail.values
+            if len(values) >= 2 and isinstance(values[0], int) and isinstance(values[1], EnumValue):
+                car_index = values[0]
+                if 0 <= car_index < len(self._cars) and car_index not in self._retirement_events:
+                    car = self._cars[car_index]
+                    reason = _enum_label(values[1])
+                    self._append_event(
+                        "retirement",
+                        observed_at,
+                        car_index=car_index,
+                        value=reason,
+                        previous_value=car.result_status,
+                    )
+                    self._retirement_events.add(car_index)
+                    if car.result_status not in _TERMINAL_RESULT_STATUSES:
+                        self._cars[car_index] = replace(car, result_status="retired")
+
+    def _apply_classification(
+        self,
+        packet: FinalClassificationPacket,
+        player_index: int | None,
+    ) -> None:
+        if player_index is None or not 0 <= player_index < len(packet.classification):
+            return
+        result = packet.classification[player_index]
+        if result is None:
+            return
+        car = self._cars[player_index]
+        self._cars[player_index] = replace(
+            car,
+            result_status=_enum_label(result.result_status),
+        )
 
     def _mark_session_ended(self, observed_at: float) -> None:
         if self._session_ended is not True:
@@ -619,17 +701,18 @@ class RaceState:
         value: str | None = None,
         previous_value: str | None = None,
     ) -> None:
-        self._events.append(
-            RaceEvent(
-                kind,
-                observed_at,
-                car_index,
-                lap_number,
-                session_uid,
-                value,
-                previous_value,
-            )
+        event = RaceEvent(
+            kind,
+            observed_at,
+            car_index,
+            lap_number,
+            session_uid,
+            value,
+            previous_value,
         )
+        self._events.append(event)
+        if self._event_sink is not None:
+            self._event_sink(event)
 
     def _build_snapshot(self) -> RaceStateSnapshot:
         return RaceStateSnapshot(

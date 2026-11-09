@@ -13,6 +13,10 @@ from .packets import HEADER_SIZE, PacketHeader, packet_name, parse_header
 
 MAX_CARS = 22
 
+# Se incrementa cuando cambia la semántica de decodificación de los paquetes
+# (campos, escalas, enums o correcciones que alteren los valores producidos).
+PARSER_VERSION = "1"
+
 
 class PacketParseError(ValueError):
     """Un datagrama no se puede interpretar con los layouts soportados."""

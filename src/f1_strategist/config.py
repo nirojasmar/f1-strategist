@@ -63,6 +63,19 @@ class CaptureConfig(BaseModel):
     directory: Path = Path("captures")
 
 
+class RecordingConfig(BaseModel):
+    """Grabación de la sesión en SQLite (derivada de la captura cruda)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    database: Path = Path("captures/sessions.db")
+    metrics_interval_s: float = Field(default=1.0, gt=0, allow_inf_nan=False)
+    queue_size: int = Field(default=1000, ge=1)
+    batch_size: int = Field(default=100, ge=1)
+    flush_interval_s: float = Field(default=0.5, gt=0, allow_inf_nan=False)
+
+
 METRIC_FAMILIES = frozenset(
     {"progress", "fuel", "tyres", "pace", "gap", "pit", "ers", "damage", "env", "track"}
 )
@@ -151,6 +164,7 @@ class AppConfig(BaseModel):
     telemetry: TelemetryConfig = Field(default_factory=TelemetryConfig)
     capture: CaptureConfig = Field(default_factory=CaptureConfig)
     metrics: MetricsConfig = Field(default_factory=MetricsConfig)
+    recording: RecordingConfig = Field(default_factory=RecordingConfig)
 
 
 def load_config(path: Path | None) -> AppConfig:

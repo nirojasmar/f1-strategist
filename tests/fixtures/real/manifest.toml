@@ -1,0 +1,55 @@
+# Catálogo de capturas reales usadas como referencia de regresión.
+#
+# Para añadir un escenario basta con copiar el archivo en este directorio y
+# añadir una entrada [[scenario]] con su hash, tamaño y expectativas.
+
+[[scenario]]
+id = "monza-13-laps"
+file = "monza-13-laps.f1cap.gz"
+sha256 = "fe5c2f7d2ebd391b5f79c8cb4246476470d0c6e9d83df1a94a749494896670cc"
+bytes = 5592587
+description = "Gran Premio de Monza, carrera de 13 vueltas con paradas en boxes."
+tags = ["pit_stops"]
+
+[scenario.expected]
+track = "monza"
+session_type = "race"
+total_laps = 13
+cars = 20
+pit_stops_total = 20
+best_lap_ms = 80038
+game_version = "1.26"
+
+[[scenario]]
+id = "baku-13-laps-vsc-retirement"
+file = "baku-13-laps-vsc-retirement.f1cap.gz"
+sha256 = "da470e4c0f79328af8addcbbe5dc60dee72f1ad03b77a11d15f937fa55837c7d"
+bytes = 2733874
+description = "Carrera de Baku de 13 vueltas; VSC, parada y DNF del piloto, aislada de una captura de tres sesiones."
+tags = ["virtual_safety_car", "retirement", "pit_stops", "multi_session_capture"]
+
+[scenario.expected]
+track = "baku"
+session_type = "race"
+total_laps = 13
+cars = 20
+pit_stops_total = 19
+best_lap_ms = 99900
+game_version = "1.26"
+
+[[scenario]]
+id = "melbourne-20-laps-finished"
+file = "melbourne-20-laps-finished.f1cap.gz"
+sha256 = "c6a0ac256b6ddc7ee165bdb568e3339c41f4bbdef0a1f3c213aa6c64873d6e55"
+bytes = 9303462
+description = "Carrera de Melbourne de 20 vueltas finalizada con una parada; captura tomada tras ajustes de métricas."
+tags = ["retirement", "pit_stops", "multi_session_capture", "post_metrics_adjustments"]
+
+[scenario.expected]
+track = "melbourne"
+session_type = "race"
+total_laps = 20
+cars = 22
+pit_stops_total = 22
+best_lap_ms = 81608
+game_version = "1.26"

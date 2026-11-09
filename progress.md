@@ -1,6 +1,6 @@
 # Progreso del proyecto --- F1 Strategist
 
-**Última actualización:** 2026-11-05
+**Última actualización:** 2026-11-08
 **Propósito de este archivo:** llevar trazabilidad del avance importante y dejar el contexto
 necesario para que cualquier persona o agente que llegue al proyecto entienda dónde estamos, qué
 está decidido, qué está verificado y qué falta.
@@ -45,7 +45,9 @@ Documentos de diseño:
 | Lenguaje y entorno | Python 3.12+, `uv`, `ruff`, `pyright`, `pytest` | Acordado (2026-10-31) |
 | Modelos y configuración | `pydantic` v2 y TOML | Acordado |
 | LLM | Cliente HTTP a API compatible con OpenAI, adaptador intercambiable | Acordado; modelo concreto pendiente |
-| Almacenamiento | Captura binaria cruda (`.f1cap`) + SQLite para derivados | Acordado; esquema SQLite pendiente |
+| Almacenamiento | Captura binaria cruda (`.f1cap`) + SQLite para derivados | Implementado; esquema v2 documentado en `docs/almacenamiento_sqlite.md` |
+| Grabación e ingesta | Grabador en vivo con hilo y cola acotada; `ingest` offline idempotente | Implementado (G5); la cola del vivo no bloquea y la ingesta espera al escritor para no perder lotes |
+| Replay y huella | Replay interno (`play`) y reemisión UDP (`replay`); huella canónica compartida por `verify` e `ingest` | Implementado (G2, G4, G5); la velocidad no cambia el tiempo simulado y la captura truncada se marca incompleta |
 | Interfaz | Consola primero; GUI web local (FastAPI + WebSocket) después | Acordado |
 | Topologías | Mismo PC o PC de la red local; solo cambia la configuración | Requisito del usuario |
 | Seguridad de red | Escucha solo en loopback por defecto; apertura a la LAN explícita | Requisito |
@@ -61,16 +63,27 @@ Documentos de diseño:
 | 0. Definición y entorno | Parcial | Repo, CI definido, config, receptor y guía de firewall listos. Falta validar la recepción desde otro PC de la red local y en Linux real. |
 | 1. Receptor, parser y estado | Implementada; CI verde | Snapshots inmutables de sesión y coches, daños, frescura por grupo, eventos y resumen de consola. |
 | 2. Métricas e histórico | Implementada; validación parcial | A1--A4, B1--B3, C1--C4/C2b, D1--D9, E1--E4 y F2--F4 implementados. F3 y la documentación se actualizaron según O5; la semántica/tolerancia del MFD sigue abierta aunque la validación local actual pasa. |
-| 3. Grabación y replay | Parcial | Captura y reemisión UDP listas (se adelantaron en Sprint 1). Falta el replay interno hacia el pipeline y el registro en SQLite. |
+| 3. Grabación y replay | Implementada; validación local completa | G1--G8 implementados: SQLite v2, `play`/`replay`, datasets, huella y `verify`, grabador en vivo e `ingest`, inspección con `sessions`, pruebas E2E y benchmarks. Documentación en `docs/almacenamiento_sqlite.md`. Queda repetir CI en Linux y macOS. |
 | 4--10 | No iniciadas | |
 
 ## 5. Qué está verificado y qué no
 
 **Verificado:**
 
--   La suite `pytest` (410 pruebas funcionales y 1 benchmark excluido por defecto), Ruff (lint y formato,
-    78 archivos) y Pyright pasan en Windows (2026-11-04). Las 9 pruebas de `real_capture` se ejecutaron
-    contra el fixture real de Monza.
+-   La suite `pytest` (567 pruebas funcionales, 3 benchmarks excluidos por defecto), Ruff (lint y formato,
+    96 archivos) y Pyright (0 errores) pasan en Windows (2026-11-08). Incluye las pruebas de captura real
+    con el fixture de Monza y la prueba E2E de grabación. El wheel se probó desde un directorio externo
+    al repositorio y carga el manifiesto empaquetado.
+-   G7: `ingest` y `metrics` coinciden en vueltas, eventos y exportación JSON/JSONL/CSV; `play` a 0x, 1x y
+    4x, con y sin pausas, conserva la misma huella que el runner offline; el extremo a extremo en vivo
+    (replay UDP -> `CaptureSession`) guarda la sesión con sus metadatos y SHA de captura y coincide con
+    `ingest` en vueltas y secuencia de tipos de evento.
+-   Rendimiento: el benchmark de `observe` queda por debajo de 1 ms de media por paquete y un almacén lento
+    simulado no bloquea al consumidor. La ingesta offline usa `block_when_full` para esperar al escritor en
+    lugar de perder lotes.
+-   Integridad de la base: `sessions export --out` rechaza sobrescribir la base o la captura asociada,
+    incluidos enlaces duros; una captura truncada marca la sesión como incompleta; las pérdidas de lotes se
+    atribuyen solo al UID afectado.
 -   CI de GitHub Actions exitoso para `phase-1-udp-parser`, commit `096eceb`, en Ubuntu y Windows; también
     pasaron Ruff (lint y formato) y Pyright (2026-11-02).
 -   El consumidor único aplica los paquetes parseados al estado y publica snapshots inmutables; la frescura
@@ -374,6 +387,91 @@ Documentos de diseño:
     pasa al ejecutarse con `-m benchmark` y las 15 pruebas de `real_capture` pasan con el fixture local.
     Ruff (archivos Python afectados), Pyright y `git diff --check` pasan. CI remota no se ejecutó.
 
+### 2026-11-06
+
+-   Aplicados los nueve hallazgos de `review.md` de la Ola 0: la huella conserva todos los eventos,
+    incluye tiempos simulados y configuración completa; `verify`, `datasets verify` y `play` rechazan
+    capturas truncadas, con rechazos del parser o sin paquetes válidos.
+-   El reloj de `play` avanza también ante paquetes ignorados/rechazados; buscar una vuelta ausente
+    falla claramente y no reintenta en bucle. El catálogo predeterminado se resuelve sin depender del
+    directorio actual y su manifiesto está incluido en el wheel; las capturas siguen siendo opcionales.
+-   SQLite valida versión y tablas en solo lectura, y no cambia journal mode antes de rechazar una
+    base futura; se registraron estos contratos y resultados en esta bitácora.
+-   Validación local: 488 pruebas pasan, 1 benchmark se excluye por defecto, Ruff (lint/formato),
+    Pyright y `git diff --check` pasan. El wheel se construyó y su comando de catálogo se probó desde
+    fuera del repositorio. CI remota no se ejecutó.
+
+### 2026-11-07
+
+-   Endurecida la ingesta de stints de `SessionHistory`: se valida la secuencia antes de reemplazarla;
+    ante datos incoherentes se conserva el último historial válido, pero se siguen ingiriendo tiempos
+    oficiales disponibles. El motor registra una advertencia por sesión/coche/causa, no una por paquete.
+-   `RaceState` aplica `RTMT` al coche indicado una sola vez, acepta con UID 0 solo una clasificación
+    compatible con el índice y las vueltas del jugador activo, conserva resultados terminales frente a
+    `LapData` activo tardío y no convierte esos resultados en fin global de sesión. `SEND` seguido por
+    `SSTA` con el mismo UID conserva el fin observado.
+-   Los eventos de boxes incluyen salida; `RaceState` y `LapTracker` evitan inferir transiciones de
+    boxes para coches en estado terminal. La consola muestra el resultado del piloto y el motivo crudo
+    comunicado por el juego sin inferir una causa de retirada.
+-   Pace y desgaste anotan el mínimo de muestras aplicable; la consola muestra `m/n muestras válidas`
+    para valores insuficientes. Se añadieron regresiones para secuencias inválidas de stints, recuperación,
+    UID 0, retiro, fin de sesión, boxes y 0–3 muestras con umbrales configurados.
+-   Validación local: 560 pruebas pasan y 1 benchmark queda excluido; las 15 pruebas de captura real
+    pasan y `f1-strategist metrics` termina correctamente con el fixture local de Monza. Ruff (lint y
+    formato, 92 archivos), Pyright y `git diff --check` pasan. La captura original de Baku del 7 de
+    noviembre no está disponible en este workspace, por lo que estos cambios no se validaron contra ella.
+    CI remota no se ejecutó.
+
+### 2026-11-08
+
+-   Implementada G5: `SessionRecorder` escribe desde un hilo propio con cola acotada, separa los metadatos
+    del productor y del escritor, atribuye las pérdidas de lotes por `session_uid`, conserva eventos
+    idénticos consecutivos mediante alineación ordenada y muestrea métricas al cambiar el valor o la calidad,
+    al cerrar cada vuelta y al cerrar la sesión. Guarda `t_sim_s` (captura) y `t_session_s` (cabecera) por
+    separado y propaga una sola vez los errores y pérdidas del grabador a las estadísticas.
+-   Implementada la ingesta offline: `ingest` reutiliza el pipeline y el grabador, comparte con `verify` la
+    huella canónica, marca incompletas las capturas truncadas, procesa antes de reemplazar y detiene el
+    grabador también cuando hay error. La opción `block_when_full` evita perder lotes cuando el escritor va
+    por detrás; el vivo mantiene el encolado no bloqueante.
+-   Implementada G6: el comando `sessions` ofrece `list`, `show`, `laps`, `events`, `metrics` y `export`.
+    Las consultas abren la base en solo lectura, `held_metric_values` arrastra el último valor sin extrapolar
+    a `total_laps` y `sessions export --format json` reproduce exactamente la instantánea final de `metrics`;
+    `jsonl` y `csv` reproducen las vueltas.
+-   Aplicados los 15 hallazgos de `review.md`: esquema v2 con `final_metrics_json`, `update_session` con
+    `COALESCE`, huella de ingesta igual a la de `verify`, export JSON exacto, protección de la base y de la
+    captura asociada frente a enlaces duros, metadatos tardíos fusionados, relojes separados, muestreo final
+    forzado, pérdidas por UID, reemplazo atómico, captura truncada incompleta, idempotencia estricta y
+    deduplicación de eventos que conserva la multiplicidad.
+-   Implementada G7: `tests/test_recording_e2e.py` valida `ingest` frente a `metrics`, la huella de `play` a
+    0x/1x/4x con y sin pausas, el flujo en vivo por replay UDP y los benchmarks de `observe` y almacén lento.
+    El fixture real de Monza se usa con el marcador `real_capture`.
+-   Implementada G8: creado `docs/almacenamiento_sqlite.md` con el esquema v2, la semántica de
+    `metric_samples`, consultas de ejemplo, regeneración desde una captura y el procedimiento para añadir
+    una migración; actualizadas la sección 3.11 del outline, la Fase 3 del roadmap y este archivo.
+-   Validación local Windows: `uv run pytest -q` (567 pruebas y 3 benchmarks deseleccionados),
+    `uv run pytest -q -m benchmark` (2 pruebas E2E), Ruff (lint y formato, 96 archivos) y Pyright
+    (0 errores) pasan. La CI remota en Linux y macOS queda pendiente. Los cambios de G8 están en el árbol
+    de trabajo, sin commit.
+-   Se añadieron al catálogo dos recortes anonimizados de sesiones de carrera extraídas por UID de
+    capturas que contenían práctica, clasificación y carrera: Baku (13 vueltas, VSC, parada y DNF;
+    2 733 874 bytes) y Melbourne (20 vueltas, una parada del piloto y resultado finalizado;
+    9 303 462 bytes). Las capturas originales permanecen locales y no se versionan.
+-   El manifiesto registra hashes, tamaños, expectativas y etiquetas de escenario. `datasets verify`
+    validó los tres escenarios (incluido Monza), las 15 pruebas de `test_datasets.py` pasan y Ruff,
+    formato y `git diff --check` pasan.
+-   Cerrada la persistencia multisesión: al cambiar el UID se finaliza la instantánea de métricas de la
+    sesión anterior; tras cerrar el archivo, el SHA-256 final se asigna a todas las sesiones creadas por
+    esa captura. Las pruebas E2E confirman que cada export coincide con el segmento aislado y que
+    `ingest --replace` reemplaza el grupo completo.
+-   Se midió el consumidor UDP con un almacén SQLite normal y otro que retrasa 20 ms cada transacción,
+    sobre el mismo escenario sintético de 27 paquetes. En esta ejecución se recibieron los 27 paquetes
+    en ambos casos, sin pérdidas UDP ni lotes descartados; el máximo observado entre recepción y entrada
+    al consumidor fue 0,42 ms (normal) y 5,71 ms (lento), con picos de cola de 2 y 20 paquetes. Son
+    resultados de este escenario, no un umbral general de rendimiento.
+-   Validación tras estos cambios: `uv run pytest -q` (571 aprobadas, 4 benchmarks excluidos),
+    `uv run pytest -q -m benchmark` (4 aprobadas), Ruff (96 archivos), Pyright (0 errores) y
+    `git diff --check` pasan. La fixture de Monza permanece local y sin seguimiento.
+
 ## 7. Hallazgos de la primera captura real
 
 Captura: 68 541 paquetes, ~66 MB, 795,5 s entre el primer y el último paquete. Salida de `inspect`:
@@ -482,14 +580,20 @@ src/f1_strategist/
   capture.py      Formato .f1cap v1: CaptureWriter, CaptureReader, CapturedPacket
   receiver.py     UdpReceiver (hilo + cola acotada), Stats y StatsSnapshot
   race_state.py   Estado de carrera de un solo escritor y snapshots inmutables
-  session.py      CaptureSession: receptor -> cola -> consumidor (captura + estado + estadísticas)
+  session.py      CaptureSession: receptor -> cola -> consumidor (captura, estado, métricas y grabador)
   diagnostics.py  Estado de conexión y causas probables cuando no llegan datos
   replay.py       Reemisión de una captura por UDP respetando los tiempos
+  playback.py     Replay interno: play/pause, velocidad, bucle y salto a vuelta
+  fingerprint.py  Huella determinista, RunInfo y metadatos reproducibles
+  recorder.py     Grabador en vivo, ingesta offline y serialización de la configuración
   summary.py      Resumen de una captura (comando inspect)
   console.py      Panel de consola con Rich (solo presentación)
-  cli.py          Comandos run, replay, inspect, trim y metrics
-  metrics/        Tipos, configuración, histórico, módulos D, motor y exportación
-tests/            Pruebas unitarias y de extremo a extremo (replay -> receptor -> captura)
+  console_messages.py  Renderizado en español de los diagnósticos
+  cli.py          Comandos run, play, replay, inspect, trim, metrics, verify, datasets, ingest y sessions
+  metrics/        Tipos, configuración, histórico, módulos, motor y exportación
+  store/          SQLite versionado, consultas de sesiones y exportación fiel a metrics
+tests/            Pruebas unitarias, de integración y de extremo a extremo
+docs/             Requerimientos, outline, roadmap y documentación de almacenamiento/exportación
 config/config.example.toml   Ejemplo de configuración
 ```
 
@@ -501,8 +605,12 @@ uv run pytest                        # pruebas
 uv run ruff check . && uv run ruff format --check . && uv run pyright
 uv run f1-strategist run --listen-address 0.0.0.0   # recibir y grabar
 uv run f1-strategist inspect captures/<archivo>.f1cap
+uv run f1-strategist play captures/<archivo>.f1cap --speed 4
 uv run f1-strategist replay captures/<archivo>.f1cap --host 127.0.0.1 --port 20777
 uv run f1-strategist metrics captures/<archivo>.f1cap --format json
+uv run f1-strategist verify captures/<archivo>.f1cap
+uv run f1-strategist ingest captures/<archivo>.f1cap --db captures/sessions.db
+uv run f1-strategist sessions list --db captures/sessions.db
 ```
 
 ## 9. Notas técnicas para agentes
@@ -516,24 +624,24 @@ uv run f1-strategist metrics captures/<archivo>.f1cap --format json
 -   Si el juego envía por broadcast, la app debe escuchar en `0.0.0.0`; en loopback no recibe nada.
 -   Otra aplicación de telemetría usando el puerto 20777 provoca un error claro al abrir el socket.
 
-## 10. Siguiente paso: Fase 3 y calibración diferida
+## 10. Siguiente paso: Fase 4 y calibración diferida
 
-La implementación de la Fase 2 está completada, pero su criterio de aceptación queda **parcialmente
-abierto**: la semántica del indicador de combustible del MFD y su tolerancia aún no están verificadas.
-El fixture de Monza acredita solo los escenarios observados localmente. El siguiente trabajo es:
+La Fase 3 está implementada y documentada. El criterio de salida se verificó localmente en Windows; queda
+repetir CI en Linux y macOS. La Fase 2 mantiene abierta la semántica del indicador de combustible del MFD
+y el fixture de Monza acredita solo los escenarios observados localmente. El siguiente trabajo es:
 
-1.  **Fase 3:** completar el replay interno hacia el pipeline y la persistencia en SQLite.
-2.  **Calibración diferida:** ajustar los parámetros que hoy no tienen valor universal y ampliar la
+1.  **Fase 4:** motor de estrategia mínimo, empezando por la decisión de mantener el plan o parar.
+2.  **CI:** volver a ejecutar GitHub Actions después de la Ola 2.
+3.  **Calibración diferida:** ajustar los parámetros que hoy no tienen valor universal y ampliar la
     validación a capturas con lluvia, safety car y otras condiciones.
-3.  **CI:** volver a ejecutar GitHub Actions después de la Ola 5.
 
 ## 11. Pendientes y decisiones abiertas
 
 -   Captura más variada: safety car y, si es posible, lluvia.
 -   Probar la topología de red local con dos PC; decidir envío dirigido o broadcast y política de
     filtrado por IP de origen.
--   Esquema de SQLite; modelo local concreto del LLM; voz; framework del front-end de la GUI;
-    empaquetado de escritorio; fórmulas de degradación y simulación de paradas; umbrales iniciales;
-    idioma por defecto y cambio en caliente.
+-   Modelo local concreto del LLM; voz; framework del front-end de la GUI; empaquetado de escritorio;
+    fórmulas de degradación y simulación de paradas; umbrales iniciales; idioma por defecto y cambio en
+    caliente.
 -   Ejecutar CI de GitHub Actions después de la Ola 5; la calibración de parámetros abiertos y las
     condiciones de lluvia o safety car quedan para fases posteriores con capturas variadas.
