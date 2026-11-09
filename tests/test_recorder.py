@@ -58,6 +58,7 @@ class _FakeStore:
         self.events: list[StoredEvent] = []
         self.samples: list[MetricSample] = []
         self.errors: list[StoredError] = []
+        self.capture_hash_updates: list[tuple[int, str]] = []
         self._next_id = 1
 
     @contextmanager
@@ -97,6 +98,9 @@ class _FakeStore:
 
     def update_session(self, session_id: int, info: SessionInfo) -> None:
         self.updated.append((session_id, info))
+
+    def update_capture_sha256(self, session_id: int, sha256: str) -> None:
+        self.capture_hash_updates.append((session_id, sha256))
 
     def add_participants(self, session_id: int, participants: Iterable[Participant]) -> None:
         self.participants.extend(participants)

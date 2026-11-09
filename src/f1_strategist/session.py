@@ -16,7 +16,7 @@ from .config import AppConfig
 from .fingerprint import build_run_info, file_sha256
 from .messages import DiagnosticMessage, message
 from .metrics.engine import MetricsEngine, MetricsSnapshot
-from .packets import parse_header
+from .packets import PacketHeader, parse_header
 from .parser import PacketParseError, is_ignored_by_design, parse_packet
 from .race_state import RaceState, RaceStateSnapshot
 from .receiver import Stats, StatsSnapshot, UdpReceiver
@@ -48,6 +48,8 @@ class CaptureSession:
         self._recorder: SessionRecorder | None = None
         self._reported_recorder_error: Exception | None = None
         self._reported_dropped_batches = 0
+        self._last_observed_at: float | None = None
+        self._last_header: PacketHeader | None = None
 
     @property
     def bound_port(self) -> int:
@@ -86,17 +88,19 @@ class CaptureSession:
         self._receiver.stop()
         self._stop_consumer.set()
         if self._consumer is not None:
-            self._consumer.join(timeout=5.0)
+            self._consumer.join()
         capture_sha256: str | None = None
         writer = self._writer
         if writer is not None:
             try:
-                writer.flush()
+                writer.close()
+                self._writer = None
                 if self.capture_path is not None and self.capture_path.exists():
                     capture_sha256 = file_sha256(self.capture_path)
             except Exception as exc:
-                _LOGGER.exception("Unable to flush or hash the capture")
+                _LOGGER.exception("Unable to close or hash the capture")
                 self.stats.set_capture_error(message("capture_flush_error", error=str(exc)))
+                self._writer = None
         recorder = self._recorder
         if recorder is not None:
             try:
@@ -214,6 +218,7 @@ class CaptureSession:
                     observed_at = packet.recv_monotonic
                     if observed_at is None:
                         observed_at = time.monotonic()
+                    previous_state = self._race_state.snapshot()
                     self._race_state.apply(parsed_packet, observed_at)
                     state_snapshot = self._race_state.snapshot()
                 except Exception as exc:
@@ -221,6 +226,22 @@ class CaptureSession:
                     self._record_error(message("race_state_update_error", error=str(exc)))
                 else:
                     try:
+                        if (
+                            previous_state.session.uid is not None
+                            and state_snapshot.session.uid != previous_state.session.uid
+                            and self._last_observed_at is not None
+                        ):
+                            self._metrics_engine.finalize(previous_state, self._last_observed_at)
+                            recorder = self._recorder
+                            if recorder is not None and self._last_header is not None:
+                                recorder.end_session(
+                                    self._last_header.session_time,
+                                    self._last_observed_at,
+                                    previous_state,
+                                    self._metrics_engine.snapshot(),
+                                    self._metrics_engine.history,
+                                    header=self._last_header,
+                                )
                         self._metrics_engine.apply(parsed_packet, observed_at, state_snapshot)
                     except Exception as exc:
                         _LOGGER.exception("Unexpected error while updating metrics")
@@ -240,6 +261,8 @@ class CaptureSession:
                             except Exception as exc:
                                 _LOGGER.exception("Unexpected error while recording the session")
                                 self._record_error(message("recorder_error", error=str(exc)))
+                        self._last_observed_at = observed_at
+                        self._last_header = parsed_packet.header
         writer = self._writer
         if writer is not None:
             try:

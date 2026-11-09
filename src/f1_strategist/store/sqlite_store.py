@@ -328,6 +328,16 @@ class SessionStore:
         if cursor.rowcount == 0:
             raise StoreError(f"No existe la sesión {session_id}")
 
+    def update_capture_sha256(self, session_id: int, sha256: str) -> None:
+        """Asocia el hash de una captura ya cerrada a una sesión de esa ejecución."""
+        with self.transaction() as connection:
+            cursor = connection.execute(
+                "UPDATE sessions SET capture_sha256 = ? WHERE id = ?",
+                (sha256, session_id),
+            )
+        if cursor.rowcount == 0:
+            raise StoreError(f"No existe la sesión {session_id}")
+
     def add_participants(self, session_id: int, participants: Iterable[Participant]) -> None:
         """Inserta o actualiza los participantes de una sesión."""
         rows = [
