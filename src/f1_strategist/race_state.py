@@ -88,6 +88,20 @@ class FittedTyreSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class TyreSetSnapshot:
+    index: int
+    actual_tyre_compound: str | None
+    visual_tyre_compound: str | None
+    wear_pct: float
+    available: bool | None
+    recommended_session: str | None
+    lifespan_laps: int
+    usable_life_laps: int
+    lap_delta_time_ms: int
+    fitted: bool | None
+
+
+@dataclass(frozen=True, slots=True)
 class CarSnapshot:
     car_index: int
     name: str | None = None
@@ -209,6 +223,8 @@ class RaceStateSnapshot:
     cars: tuple[CarSnapshot, ...]
     freshness: tuple[PacketFreshness, ...]
     events: tuple[RaceEvent, ...]
+    tyre_inventory: tuple[TyreSetSnapshot, ...] = ()
+    tyre_inventory_updated_at_monotonic: float | None = None
 
     @property
     def player_car(self) -> CarSnapshot | None:
@@ -258,6 +274,8 @@ class RaceState:
         self._session_started: bool | None = None
         self._session_ended: bool | None = None
         self._cars = [CarSnapshot(car_index=index) for index in range(MAX_CARS)]
+        self._tyre_inventory: tuple[TyreSetSnapshot, ...] = ()
+        self._tyre_inventory_updated_at_monotonic: float | None = None
         self._updated_at: dict[str, float | None] = {
             group: None for group, _ in _PACKET_GROUPS.values()
         }
@@ -379,6 +397,8 @@ class RaceState:
         self._session_started = None
         self._session_ended = None
         self._cars = [CarSnapshot(car_index=index) for index in range(MAX_CARS)]
+        self._tyre_inventory = ()
+        self._tyre_inventory_updated_at_monotonic = None
         for group in self._updated_at:
             self._updated_at[group] = None
         self._events.clear()
@@ -606,12 +626,12 @@ class RaceState:
     def _apply_tyre_sets(self, packet: TyreSetsPacket) -> None:
         if not 0 <= packet.car_index < MAX_CARS:
             return
+        restricted = self._is_telemetry_restricted(packet.car_index)
+        is_player_car = packet.car_index == self._player_car_index
+        updated_at = self._updated_at["tyre_sets"]
+        assert updated_at is not None
         fitted_tyre: FittedTyreSnapshot | None = None
-        if not self._is_telemetry_restricted(packet.car_index) and 0 <= packet.fitted_index < len(
-            packet.tyre_sets
-        ):
-            updated_at = self._updated_at["tyre_sets"]
-            assert updated_at is not None
+        if not restricted and 0 <= packet.fitted_index < len(packet.tyre_sets):
             tyre_set = packet.tyre_sets[packet.fitted_index]
             fitted_tyre = FittedTyreSnapshot(
                 actual_tyre_compound=_known_enum(tyre_set.actual_tyre_compound),
@@ -623,6 +643,27 @@ class RaceState:
             )
         car = self._cars[packet.car_index]
         self._cars[packet.car_index] = replace(car, fitted_tyre=fitted_tyre)
+        if is_player_car:
+            self._tyre_inventory = (
+                ()
+                if restricted
+                else tuple(
+                    TyreSetSnapshot(
+                        index=index,
+                        actual_tyre_compound=_known_enum(tyre_set.actual_tyre_compound),
+                        visual_tyre_compound=_known_enum(tyre_set.visual_tyre_compound),
+                        wear_pct=float(tyre_set.wear),
+                        available=tyre_set.available.value,
+                        recommended_session=_known_enum(tyre_set.recommended_session),
+                        lifespan_laps=tyre_set.lifespan,
+                        usable_life_laps=tyre_set.usable_life,
+                        lap_delta_time_ms=tyre_set.lap_delta_time_ms,
+                        fitted=tyre_set.fitted.value,
+                    )
+                    for index, tyre_set in enumerate(packet.tyre_sets)
+                )
+            )
+            self._tyre_inventory_updated_at_monotonic = updated_at
 
     def _apply_car_damage(self, packet: CarDamagePacket) -> None:
         for index, damage in enumerate(packet.cars):
@@ -777,4 +818,6 @@ class RaceState:
                 for group, stale_after in _PACKET_GROUPS.values()
             ),
             events=tuple(self._events),
+            tyre_inventory=self._tyre_inventory,
+            tyre_inventory_updated_at_monotonic=self._tyre_inventory_updated_at_monotonic,
         )

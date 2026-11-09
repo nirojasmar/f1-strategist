@@ -57,10 +57,39 @@ uv run f1-strategist verify captures/session-YYYYMMDD-HHMMSS.f1cap
 uv run f1-strategist ingest captures/session-YYYYMMDD-HHMMSS.f1cap --db captures/sessions.db
 uv run f1-strategist sessions list --db captures/sessions.db
 uv run f1-strategist sessions export ID --format json --db captures/sessions.db
+
+# Agrupar sesiones del mismo circuito en un fin de semana y consultarlo
+uv run f1-strategist weekends list --db captures/sessions.db
+uv run f1-strategist weekends link 1 2 3 --label "Monza" --db captures/sessions.db
+uv run f1-strategist weekends show 1 --db captures/sessions.db
+uv run f1-strategist weekends unlink 3 --db captures/sessions.db
 ```
 
 `ingest` informa del ID de la sesión creada; usa ese valor (o el que muestra `sessions list`)
-en los comandos `sessions`.
+en los comandos `sessions` y `weekends`.
+
+### Fines de semana
+
+Las sesiones se agrupan en fines de semana de dos formas:
+
+- **Identificadores del juego.** Si el paquete `Session` trae `season_link_identifier`,
+  `weekend_link_identifier` y `session_link_identifier` con valor distinto de cero, la sesión se
+  enlaza automáticamente en un fin de semana con `source = game_ids`. Los identificadores a cero se
+  guardan como `NULL` y no crean fin de semana: la sesión queda «sin enlace».
+- **Enlace manual.** `weekends link` agrupa sesiones ya grabadas. Exige que todas sean del mismo
+  circuito (rechaza el enlace con un error si no lo son) y es idempotente: volver a enlazar las
+  mismas sesiones reutiliza el fin de semana existente y absorbe los que queden vacíos. Con
+  `--label` se fija o cambia el nombre; si se omite, se usa el circuito.
+
+| Comando | Qué hace |
+| --- | --- |
+| `weekends list` | Lista los fines de semana con su circuito, origen, número de sesiones y enlace del juego. Añade al final las sesiones que aún no tienen fin de semana. |
+| `weekends show ID` | Muestra los metadatos de un fin de semana y la lista de sus sesiones. |
+| `weekends link ID [ID ...]` | Enlaza manualmente las sesiones indicadas (`--label` opcional). |
+| `weekends unlink ID` | Separa una sesión de su fin de semana; si el fin de semana queda vacío, se elimina. |
+
+`sessions show ID` incluye el fin de semana asignado, el enlace del juego y la estructura del fin
+de semana cuando el juego los publica.
 
 El esquema de la base, la semántica de las muestras de métricas y cómo regenerar una base desde
 una captura están documentados en [`docs/almacenamiento_sqlite.md`](docs/almacenamiento_sqlite.md).
