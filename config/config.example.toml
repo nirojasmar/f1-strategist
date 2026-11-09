@@ -38,6 +38,8 @@ fuel_window_laps = 5
 # Muestras mínimas para las calidades low y ok.
 min_samples_low = 3
 min_samples_ok = 5
+# Vueltas limpias mínimas para considerar representativa una tanda del fin de semana.
+min_representative_laps = 3
 # Umbral de tráfico y ventana de tendencia de intervalos.
 traffic_gap_s = 1.0
 traffic_lap_fraction = 0.5
