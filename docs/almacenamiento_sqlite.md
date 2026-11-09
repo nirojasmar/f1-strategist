@@ -8,13 +8,18 @@ La Fase 3 guarda cada sesión en dos capas complementarias:
 2. La **base SQLite** guarda datos derivados y consultables: metadatos de la sesión,
    participantes, vueltas, muestras de métricas, eventos y errores de la aplicación.
 
-La base no sustituye a la captura. Si se borra, se puede reconstruir con `ingest` mientras
-la captura siga disponible y la configuración efectiva sea la misma.
+La captura no es una copia de seguridad completa de la base. Regenerarla con `ingest` crea
+una sesión con la fecha de la ingesta, no con la original, y no restaura los errores de la
+aplicación registrados durante una ejecución en vivo. Borrar la base sin copia pierde esos
+registros de forma permanente; conviene conservar copias de `sessions.db` junto a las
+capturas.
 
 El esquema vive en [`src/f1_strategist/store/schema.py`](../src/f1_strategist/store/schema.py)
-y la versión actual es `SCHEMA_VERSION = 2`. La versión se guarda en `PRAGMA user_version`;
-al abrir una base se aplican las migraciones pendientes y se rechaza una base creada por una
-versión más nueva de la herramienta.
+y la versión actual es `SCHEMA_VERSION = 2`. La versión se guarda en `PRAGMA user_version`.
+Al abrir la base en modo escritura se aplican las migraciones pendientes. Los comandos
+`sessions` la abren en solo lectura: ante una base con un esquema anterior la rechazan sin
+migrarla y piden abrirla antes en modo escritura; una base creada por una versión más nueva
+de la herramienta también se rechaza.
 
 ## Tablas
 
@@ -148,7 +153,7 @@ Las mismas consultas están expuestas por la CLI, que abre la base en solo lectu
 uv run f1-strategist sessions list --db captures/sessions.db
 uv run f1-strategist sessions show 1 --db captures/sessions.db
 uv run f1-strategist sessions laps 1 --car 0 --db captures/sessions.db
-uv run f1-strategist sessions events 1 --kind safety_car --db captures/sessions.db
+uv run f1-strategist sessions events 1 --kind safety_car_changed --db captures/sessions.db
 uv run f1-strategist sessions metrics 1 --key 'fuel.*' --db captures/sessions.db
 uv run f1-strategist sessions export 1 --format json --db captures/sessions.db
 ```
@@ -156,15 +161,22 @@ uv run f1-strategist sessions export 1 --format json --db captures/sessions.db
 `held_metric_values` no se limita a leer la última fila: rellena las vueltas observadas
 arrastrando el valor anterior, que es lo que muestra `sessions metrics`. `sessions export`
 con `--format json` reproduce exactamente la instantánea final guardada en
-`final_metrics_json`; con `jsonl` y `csv` reproduce las vueltas y coincide con la salida de
-`metrics`.
+`final_metrics_json`. Las sesiones migradas desde el esquema v1 pueden tener ese campo vacío:
+en ese caso la instantánea se reconstruye con valores neutros (ventana instantánea y calidad
+de la última muestra) y puede no coincidir exactamente con la salida de `metrics`. Con
+`jsonl` y `csv` se reproducen las vueltas y coinciden con `metrics`.
 
 ## Regenerar una base desde una captura
 
 ```bash
 uv run f1-strategist ingest captures/session-YYYYMMDD-HHMMSS.f1cap \
+  --config config/config.toml \
   --db captures/sessions.db
 ```
+
+Usa `--config` con el mismo archivo TOML que estaba activo al grabar la captura. La
+configuración afecta a las métricas personalizadas y al hash canónico, así que conviene
+conservarla junto a la captura para regenerar la base con los mismos parámetros.
 
 `ingest` reproduce la captura de forma offline con el mismo motor de métricas y el mismo
 grabador que la sesión en vivo. La operación es idempotente: si ya existe una sesión

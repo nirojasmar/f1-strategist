@@ -225,8 +225,10 @@ sin volver a conducir. El criterio medido es:
 3.  `ingest` genera vueltas y eventos que coinciden con `metrics` sobre
     la misma captura, y `sessions export` reproduce la salida de
     `metrics` en JSON, JSON Lines y CSV.
-4.  Cada sesión grabada guarda la versión de la herramienta, la versión
-    del parser, el hash de la configuración y el hash de la captura.
+4.  Cada sesión con captura disponible guarda la versión de la herramienta,
+    la versión del parser, el hash de la configuración y el hash de la
+    captura. Las sesiones en vivo grabadas con la captura desactivada no
+    tienen hash de captura, porque ambas opciones son independientes.
 5.  En vivo, el grabador añade menos de 1 ms de media por paquete y un
     almacén lento no retrasa al consumidor.
 
@@ -238,10 +240,10 @@ grabador en vivo e `ingest`, consultas con `sessions`, pruebas de extremo
 a extremo y benchmarks. La documentación del almacén está en
 [`almacenamiento_sqlite.md`](almacenamiento_sqlite.md).
 
-La validación local en Windows pasa: 567 pruebas funcionales y 3
-deseleccionadas por los marcadores `benchmark` y `real_capture`; los
-benchmarks pasan por separado y las pruebas de captura real con el
-fixture de Monza también. La huella de `verify` sobre Monza es estable y
+La validación local en Windows pasa: 569 pruebas funcionales y 3
+deseleccionadas por el marcador `benchmark`; los benchmarks pasan por
+separado y las pruebas de captura real con los fixtures de Monza, Bakú y
+Melbourne también. La huella de `verify` sobre Monza es estable y
 coincide con la de `ingest`. Queda volver a ejecutar CI en Linux y macOS
 después de la Ola 2.
 

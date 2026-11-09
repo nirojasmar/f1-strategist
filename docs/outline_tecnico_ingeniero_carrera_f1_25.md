@@ -439,11 +439,17 @@ semántica y las consultas de ejemplo están en
 En vivo, el receptor entrega los paquetes a un consumidor único que
 actualiza el estado de carrera y el motor de métricas. El `SessionRecorder`
 recibe esos snapshots y los escribe desde un hilo propio con una cola
-acotada, de modo que un almacén lento no bloquea al consumidor. Cada
-sesión guarda la versión de la herramienta, la versión del parser, el
-hash de la configuración y el hash de la captura. La instantánea final de
-métricas se conserva para que `sessions export --format json` reproduzca
-exactamente la salida de `metrics`.
+acotada, de modo que un almacén lento no bloquea al consumidor. La
+grabación SQLite está desactivada por defecto: `run` solo arranca el
+grabador cuando `recording.enabled = true` en la configuración. Se puede
+activar en el TOML antes de ejecutar o reconstruir la base después con
+`ingest`. Cada sesión con captura disponible guarda la versión de la
+herramienta, la versión del parser, el hash de la configuración y el hash
+de la captura. La instantánea final de métricas permite que
+`sessions export --format json` reproduzca la salida de `metrics`; la
+igualdad exacta se garantiza en la ingesta offline, mientras que una sesión
+en vivo conserva tiempos monotónicos absolutos y `metrics` usa tiempos
+relativos al primer paquete, por lo que sus JSON pueden diferir.
 
 La ingesta offline (`ingest`) reproduce una captura con el mismo motor y
 el mismo grabador. Es idempotente por captura y configuración, marca la
@@ -468,9 +474,12 @@ Los registros usan códigos e identificadores neutros al idioma (tipos de
 evento, claves de mensaje, enums). El texto localizado se guarda como
 dato adicional, no como la única representación, para poder reproducir
 una sesión en cualquier idioma. La validación de extremo a extremo
-comprueba que `ingest` coincide con `metrics`, que el replay a varias
-velocidades y con pausas conserva la misma huella y que un almacén lento
-no retrasa al consumidor.
+comprueba que `ingest` coincide con `metrics` y que el replay a varias
+velocidades y con pausas conserva la misma huella de la instantánea. Esa
+huella usa el estado de carrera, que retiene solo los últimos 50 eventos,
+y no la huella canónica de `verify`; la paridad con `verify` solo se afirma
+en la prueba de captura real, que compara todos los eventos, la
+configuración y el SHA de la captura.
 
 ### 3.12 Interfaces de usuario (Presentation Adapters)
 

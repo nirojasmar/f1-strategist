@@ -3,12 +3,13 @@
 Ingeniero de carrera con IA para **F1 25 (2026 Season Pack)**: recibe la telemetría UDP del juego,
 calcula estrategia y se comunica con el piloto.
 
-**Estado:** Fases 0 a 3 implementadas y validadas localmente en Windows. La aplicación recibe y
-graba telemetría UDP, decodifica los nueve tipos de paquete F1 25, mantiene snapshots inmutables
-de la sesión y los coches, calcula métricas derivadas, guarda sesiones en SQLite y permite
-reproducirlas de forma determinista. Incluye captura `.f1cap`, replay interno y por UDP, ingesta
-offline, exportación de métricas y consultas de sesiones. La estrategia y el LLM llegan en fases
-posteriores. Queda repetir CI en Linux y macOS después de la Ola 2.
+**Estado:** Fases 0 a 3 implementadas y validadas localmente en Windows. La aplicación
+recibe y graba telemetría UDP, decodifica los nueve tipos de paquete F1 25, mantiene snapshots
+inmutables de la sesión y los coches, calcula métricas derivadas y permite reproducir sesiones
+de forma determinista. La grabación SQLite está desactivada por defecto y se activa con
+`recording.enabled = true` en el TOML. Incluye captura `.f1cap`, replay interno y por UDP,
+ingesta offline, exportación de métricas y consultas de sesiones. La estrategia y el LLM
+llegan en fases posteriores. Queda repetir CI en Linux y macOS después de la Ola 2.
 
 La documentación de diseño está en [`docs/`](docs/): requerimientos, outline técnico y roadmap.
 
@@ -55,8 +56,11 @@ uv run f1-strategist verify captures/session-YYYYMMDD-HHMMSS.f1cap
 # Guardar la sesión en SQLite y consultarla después
 uv run f1-strategist ingest captures/session-YYYYMMDD-HHMMSS.f1cap --db captures/sessions.db
 uv run f1-strategist sessions list --db captures/sessions.db
-uv run f1-strategist sessions export 1 --format json --db captures/sessions.db
+uv run f1-strategist sessions export ID --format json --db captures/sessions.db
 ```
+
+`ingest` informa del ID de la sesión creada; usa ese valor (o el que muestra `sessions list`)
+en los comandos `sessions`.
 
 El esquema de la base, la semántica de las muestras de métricas y cómo regenerar una base desde
 una captura están documentados en [`docs/almacenamiento_sqlite.md`](docs/almacenamiento_sqlite.md).

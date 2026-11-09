@@ -456,7 +456,7 @@ def test_a_slow_store_does_not_block_live_observations() -> None:
         store,
         RecordingConfig(queue_size=1_000, batch_size=1, flush_interval_s=0.01),
     )
-    snapshots = _benchmark_inputs(10)
+    snapshots = _benchmark_inputs(100)
     try:
         started = time.perf_counter()
         for index, (state, metrics) in enumerate(snapshots):
@@ -466,6 +466,7 @@ def test_a_slow_store_does_not_block_live_observations() -> None:
         recorder.stop()
 
     assert recorder.dropped_batches == 0
+    # Una escritura síncrona tardaría unos 2 s (100 lotes de 20 ms).
     assert elapsed < 0.5
 
 
