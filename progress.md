@@ -48,6 +48,7 @@ Documentos de diseño:
 | Almacenamiento | Captura binaria cruda (`.f1cap`) + SQLite para derivados | Implementado; esquema actual v5 documentado en `docs/almacenamiento_sqlite.md` |
 | Grabación e ingesta | Grabador en vivo con hilo y cola acotada; `ingest` offline idempotente | Implementado (G5); la cola del vivo no bloquea y la ingesta espera al escritor para no perder lotes |
 | Replay y huella | Replay interno (`play`) y reemisión UDP (`replay`); huella canónica compartida por `verify` e `ingest` | Implementado (G2, G4, G5); la velocidad no cambia el tiempo simulado y la captura truncada se marca incompleta |
+| Perfil del fin de semana | Se construye al empezar la carrera y se registra en la sesión (`profile_json` + `profile_hash`); la reproducción usa el registrado | Implementado (Fase 3.5, P1--P8); sin fin de semana enlazado no hay perfil y la captura continúa |
 | Interfaz | Consola primero; GUI web local (FastAPI + WebSocket) después | Acordado |
 | Topologías | Mismo PC o PC de la red local; solo cambia la configuración | Requisito del usuario |
 | Seguridad de red | Escucha solo en loopback por defecto; apertura a la LAN explícita | Requisito |
@@ -191,6 +192,28 @@ Documentos de diseño:
 -   Validación local Windows tras E1--E4 y la review: `uv run pytest -q` (401 pruebas funcionales y
     1 benchmark excluido), `uv run pytest -q -m benchmark` (1 prueba), `uv run ruff check .`,
     `uv run ruff format --check .` (77 archivos) y `uv run pyright` (0 errores/avisos) pasan.
+-   Fase 3.5 (P1--P8), validada localmente en Windows. Cierra el ciclo completo del perfil del fin de
+    semana: enlace de sesiones del juego o manual, inventario de neumáticos del piloto, resumen de tandas,
+    persistencia en SQLite (esquema v5), perfil versionado y determinista, registro del perfil exacto al
+    empezar la carrera, comando `weekend show` y métricas `profile.*` como prior de calidad `low`.
+    -   P1: el enlace por identificadores del juego agrupa práctica, clasificación y carrera; el enlace
+        manual exige un circuito común y lo rechaza si difieren. Migraciones desde v1 y v2 verificadas.
+    -   P2: `RaceSessionSnapshot` publica el inventario completo de juegos del piloto (compuestos real y
+        visual, desgaste, disponibilidad, vida útil, delta de vuelta y recomendación). Se limita al coche
+        del piloto con telemetría no restringida y se reinicia al cambiar de sesión.
+    -   P3/P4: `StintSummary` combina desgaste medido y ritmo con mediana ponderada por vueltas limpias;
+        `min_representative_laps = 4`. Los resúmenes y el inventario `race_start`/`session_end` se
+        guardan sin duplicados al reingerir.
+    -   P5: el perfil es puro e inmutable; sin datos devuelve `unavailable` y nunca lanza. La huella es
+        SHA-256 del JSON canónico e independiente del orden de entrada.
+    -   P6: sin fin de semana enlazado no hay perfil y la captura sigue sin errores; un fallo de lectura
+        se registra como `weekend_profile_error` y no detiene al consumidor; la reproducción reutiliza el
+        perfil registrado en lugar de recalcularlo.
+    -   P7: las siete métricas `profile.*` nunca superan calidad `low` y llevan la nota `profile_prior`;
+        sin perfil son `unavailable`. El resto de módulos de métricas no cambia de comportamiento.
+-   Validación Windows de la Fase 3.5: `uv run pytest -q` (662 aprobadas, 4 benchmarks excluidos),
+    Ruff (lint y formato, 105 archivos), Pyright (0 errores) y `git diff --check` pasan, con rondas
+    intermedias de 625 pruebas en P5, 646 en P6 y 659 en P7.
 
 **No verificado todavía:**
 
@@ -199,6 +222,9 @@ Documentos de diseño:
     `unavailable` hasta configurarlos.
 -   El fixture real de F3 no incluye lluvia ni safety car; las tolerancias bajo esas condiciones siguen
     sin verificar.
+-   La Fase 3.5 solo está validada en Windows: CI en Linux y macOS queda pendiente (Docker no tiene
+    daemon disponible y WSL solo muestra la distribución interna `docker-desktop`). El perfil del fin de
+    semana tampoco se ha probado todavía contra capturas reales de un fin de semana completo.
 -   Queda volver a ejecutar CI de GitHub Actions después de la Ola 5.
 
 ## 6. Bitácora
@@ -475,23 +501,77 @@ Documentos de diseño:
 
 ### 2026-11-09
 
--   Cerrada P8 de la Fase 3.5: `tests/scenarios.py` genera un fin de semana sintético con práctica,
-    clasificación y carrera, con circuito y enlaces de juego compartidos, UID distinto por sesión y reloj
-    observado monótono. La prueba E2E graba y cierra las sesiones previas, comprueba los resúmenes por
-    compuesto, registra el perfil al empezar la carrera y reingiere la captura de carrera con el mismo
-    perfil y la misma huella.
--   La prueba integrada detectó que el grabador retenía una referencia mutable a `LapHistory`; el motor
-    reiniciaba ese objeto al cambiar de UID antes de persistir el resumen anterior. El grabador ahora
-    retiene el snapshot inmutable, y la prueba confirma que práctica y clasificación guardan sus tandas.
--   Añadido `profile_from_json()` con verificación de versión y round-trip estable. `ingest` valida el hash
-    del perfil registrado y lo aplica al motor solo en sesiones de carrera, de modo que la reproducción de
-    esa captura conserva las métricas `profile.*`; los perfiles JSON incompletos o con hash inválido fallan
-    explícitamente.
--   Documentado el esquema SQLite v5 y las tablas de fines de semana, resúmenes e inventario; actualizados
-    el outline, el roadmap de Fase 3.5 y el estado de P8 en el Anexo B.
--   Validación Windows: `uv run pytest -q` (662 aprobadas, 4 benchmarks excluidos), Ruff (lint y formato,
-    105 archivos), Pyright (0 errores) y `git diff --check` pasan. Linux queda pendiente: Docker no tiene
-    daemon disponible y WSL solo muestra la distribución interna `docker-desktop`.
+Detalle de las tareas P1--P8 de la Fase 3.5, en el orden en que se cerraron. La suite creció de
+625 pruebas (tras P5) a 646 (P6), 659 (P7) y 662 (P8), siempre con Ruff y Pyright limpios.
+
+-   **P1 --- Enlace de sesiones y comando `weekends`** (`7b94e40`). Esquema SQLite v3: columnas
+    `season_link_id`, `weekend_link_id`, `session_link_id`, `weekend_structure_json` y `weekend_id`
+    en `sessions`, más la tabla `weekends` con origen `game_ids` o `manual`. El grabador persiste los
+    identificadores del juego y la estructura del fin de semana; un enlace distinto de cero crea o
+    reutiliza el fin de semana, y la metadata tardía se fusiona. Los identificadores `<= 0` se
+    normalizan a `None`. Comandos `weekends list|show|link|unlink`; el enlace manual agrupa sesiones
+    por circuito y rechaza mezclar circuitos distintos. Servicios de consulta y pruebas de migración
+    desde v1 y v2 incluidas.
+-   **P2 --- Inventario completo de neumáticos del piloto** (`a312732`). `RaceSessionSnapshot` publica
+    `tyre_inventory` (tupla de `TyreSetSnapshot`) y `tyre_inventory_updated_at_monotonic`. Cada juego
+    lleva compuesto real y visual, desgaste, disponibilidad, vida útil, delta de vuelta, sesión
+    recomendada y si está montado. Solo se publica el coche del piloto y solo con telemetría no
+    restringida; el inventario se reinicia al cambiar de sesión. La consola no cambia.
+-   **P3 --- Resumen de tandas** (`a606172`). Nuevo módulo puro `metrics/stint_summary.py` con
+    `summarize_stints(laps, stints, config)` y el modelo `StintSummary` por coche y tanda. El desgaste
+    medido es la señal principal; el ritmo se informa en bruto y solo se corrige por combustible si
+    `fuel_effect_s_per_kg` está configurado, sin inventar la corrección. Los valores se combinan con
+    mediana ponderada por vueltas limpias. `MetricsConfig.min_representative_laps = 4` y 17 pruebas.
+-   **P4 --- Persistencia de tandas e inventario** (`699bb76`). Esquema SQLite v4 con las tablas
+    `stint_summaries` y `tyre_inventory_snapshots`, cuyas claves evitan duplicados al reescribir.
+    `SessionStore` añade `add_stint_summaries`, `add_tyre_inventory`, `iter_stint_summaries` e
+    `iter_tyre_inventory`. El grabador guarda los resúmenes al cerrar cada sesión y el inventario en
+    `race_start` (al empezar la carrera) y `session_end`; la ingesta offline hace lo mismo.
+-   **P5 --- Perfil del fin de semana** (`a30267b`). Nuevo `weekend_profile.py` con `WeekendSession`,
+    `ProfileValue`, `CompoundProfile`, `WeekendProfile`, `build_weekend_profile`, `blend_with_prior`,
+    `profile_to_json` y `profile_hash`. El perfil es inmutable y versionado (`schema_version = 1`);
+    agrega por compuesto con mediana ponderada por vueltas limpias y elige como referencia automática
+    el seco más blando con tandas representativas (forzable por parámetro). La mezcla con el prior usa
+    `k = 3`; la huella es SHA-256 del JSON canónico y no depende del orden de entrada. Sin datos
+    devuelve un perfil vacío `unavailable`, nunca lanza. 11 pruebas.
+-   **P6 --- Proveedor del perfil y comando `weekend show`** (`245d304`). Esquema SQLite v5 con
+    `sessions.profile_json` y `profile_hash`, que guardan el perfil exacto usado al arrancar la carrera.
+    Nuevo `weekend_provider.py`: localiza el fin de semana por `weekend_id`, por los identificadores del
+    juego o por enlace manual del mismo circuito (solo si es único), lee resúmenes e inventario y
+    construye el perfil; nunca lanza, devuelve `error`. `SessionRecorder` gana `set_weekend_profile` y
+    un perfil por defecto para la ingesta; `CaptureSession` resuelve el perfil una vez por UID de
+    carrera, lo expone y se lo entrega al grabador, y un fallo de lectura se registra como
+    `weekend_profile_error` sin detener la captura. `ingest` reutiliza el perfil registrado de la misma
+    captura en lugar de recalcularlo. Comando `f1-strategist weekend show [--session ID]`, que muestra
+    el perfil «registrado al empezar la carrera» o lo calcula y lo rotula «calculado ahora (no
+    registrado)». 21 pruebas nuevas.
+-   **P7 --- Métricas `profile.*`** (`b0dee82`). Nuevo `metrics/profile.py` con siete métricas:
+    desgaste (`profile.wear_rate_pct_per_lap`), ritmo medio, delta contra la referencia, consumo,
+    pérdida en boxes, juegos disponibles y confianza. Todas llevan calidad máxima `low` y la nota
+    `profile_prior`: son un prior, no una medición. Sin perfil son `unavailable` y nada falla; si el
+    compuesto montado no está en el perfil se usa la referencia y, sin ella, la métrica queda
+    `unavailable`. `MetricInputs` recibe `profile` (import diferido para no cerrar un ciclo con
+    `store`), `MetricsEngine` expone `profile` y `set_profile()`, el registro incluye `ProfileMetrics`
+    y `CaptureSession` entrega el perfil al motor. La exportación JSON ya reflejaba las claves nuevas
+    sin cambios. 13 pruebas.
+-   **P8 --- Validación y documentación** (`9247ef2`). `tests/scenarios.py` genera un fin de semana
+    sintético con práctica, clasificación y carrera, con circuito y enlaces de juego compartidos, UID
+    distinto por sesión y reloj observado monótono. La prueba E2E graba y cierra las sesiones previas,
+    comprueba los resúmenes por compuesto, registra el perfil al empezar la carrera y reingiere la
+    captura de carrera con el mismo perfil y la misma huella. Además:
+    -   La prueba integrada detectó que el grabador retenía una referencia mutable a `LapHistory`; el
+        motor reiniciaba ese objeto al cambiar de UID antes de persistir el resumen anterior. El grabador
+        ahora retiene el snapshot inmutable, y la prueba confirma que práctica y clasificación guardan sus
+        tandas.
+    -   Añadido `profile_from_json()` con verificación de versión y round-trip estable. `ingest` valida el
+        hash del perfil registrado y lo aplica al motor solo en sesiones de carrera, de modo que la
+        reproducción de esa captura conserva las métricas `profile.*`; los perfiles JSON incompletos o con
+        hash inválido fallan explícitamente.
+    -   Documentado el esquema SQLite v5 y las tablas de fines de semana, resúmenes e inventario;
+        actualizados el outline, el roadmap de Fase 3.5 y el estado de P8 en el Anexo B.
+    -   Validación Windows: `uv run pytest -q` (662 aprobadas, 4 benchmarks excluidos), Ruff (lint y
+        formato, 105 archivos), Pyright (0 errores) y `git diff --check` pasan. Linux queda pendiente:
+        Docker no tiene daemon disponible y WSL solo muestra la distribución interna `docker-desktop`.
 
 ## 7. Hallazgos de la primera captura real
 
@@ -607,11 +687,14 @@ src/f1_strategist/
   playback.py     Replay interno: play/pause, velocidad, bucle y salto a vuelta
   fingerprint.py  Huella determinista, RunInfo y metadatos reproducibles
   recorder.py     Grabador en vivo, ingesta offline y serialización de la configuración
+  weekend_profile.py   Perfil del fin de semana: agregación por compuesto, JSON canónico y huella
+  weekend_provider.py  Localiza el fin de semana en SQLite y construye su perfil para el motor
   summary.py      Resumen de una captura (comando inspect)
   console.py      Panel de consola con Rich (solo presentación)
   console_messages.py  Renderizado en español de los diagnósticos
-  cli.py          Comandos run, play, replay, inspect, trim, metrics, verify, datasets, ingest y sessions
-  metrics/        Tipos, configuración, histórico, módulos, motor y exportación
+  cli.py          Comandos run, play, replay, inspect, trim, metrics, verify, datasets, ingest, sessions,
+                  weekends y weekend
+  metrics/        Tipos, configuración, histórico, resúmenes de tanda, módulos, motor y exportación
   store/          SQLite versionado, consultas de sesiones y exportación fiel a metrics
 tests/            Pruebas unitarias, de integración y de extremo a extremo
 docs/             Requerimientos, outline, roadmap y documentación de almacenamiento/exportación
@@ -632,6 +715,9 @@ uv run f1-strategist metrics captures/<archivo>.f1cap --format json
 uv run f1-strategist verify captures/<archivo>.f1cap
 uv run f1-strategist ingest captures/<archivo>.f1cap --db captures/sessions.db
 uv run f1-strategist sessions list --db captures/sessions.db
+uv run f1-strategist weekends list --db captures/sessions.db
+uv run f1-strategist weekends link 3 4 --db captures/sessions.db
+uv run f1-strategist weekend show --session 4 --db captures/sessions.db
 ```
 
 ## 9. Notas técnicas para agentes
