@@ -452,6 +452,13 @@ Documentos de diseño:
     `uv run pytest -q -m benchmark` (2 pruebas E2E), Ruff (lint y formato, 96 archivos) y Pyright
     (0 errores) pasan. La CI remota en Linux y macOS queda pendiente. Los cambios de G8 están en el árbol
     de trabajo, sin commit.
+-   Se añadieron al catálogo dos recortes anonimizados de sesiones de carrera extraídas por UID de
+    capturas que contenían práctica, clasificación y carrera: Baku (13 vueltas, VSC, parada y DNF;
+    2 733 874 bytes) y Melbourne (20 vueltas, una parada del piloto y resultado finalizado;
+    9 303 462 bytes). Las capturas originales permanecen locales y no se versionan.
+-   El manifiesto registra hashes, tamaños, expectativas y etiquetas de escenario. `datasets verify`
+    validó los tres escenarios (incluido Monza), las 15 pruebas de `test_datasets.py` pasan y Ruff,
+    formato y `git diff --check` pasan.
 
 ## 7. Hallazgos de la primera captura real
 
