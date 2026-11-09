@@ -17,6 +17,8 @@ from pathlib import Path
 from typing import Any, Literal
 
 from ..metrics.history import LapRecord
+from ..metrics.stint_summary import StintSummary
+from ..metrics.types import Quality
 from .schema import (
     LAP_BOOL_COLUMNS,
     LAP_COLUMN_TYPES,
@@ -33,6 +35,8 @@ SessionSource = Literal["live", "ingest"]
 SESSION_SOURCES: frozenset[str] = frozenset({"live", "ingest"})
 WeekendSource = Literal["game_ids", "manual"]
 WEEKEND_SOURCES: frozenset[str] = frozenset({"game_ids", "manual"})
+InventoryKind = Literal["session_end", "race_start"]
+INVENTORY_KINDS: frozenset[str] = frozenset({"session_end", "race_start"})
 
 _SESSION_COLUMNS: tuple[str, ...] = (
     "id",
@@ -203,6 +207,29 @@ class StoredError:
     t_sim_s: float
     code: str
     params_json: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class TyreInventorySnapshot:
+    """Una fila de ``tyre_inventory_snapshots``: un juego de neumáticos del piloto."""
+
+    kind: InventoryKind
+    set_index: int
+    actual_tyre_compound: str | None
+    visual_tyre_compound: str | None
+    wear_pct: float
+    available: bool | None
+    lifespan_laps: int
+    usable_life_laps: int
+    lap_delta_time_ms: int
+    recommended_session: str | None
+    fitted: bool | None
+
+    def __post_init__(self) -> None:
+        if self.kind not in INVENTORY_KINDS:
+            raise ValueError(f"kind no válido: {self.kind!r}")
+        if self.set_index < 0:
+            raise ValueError("set_index no puede ser negativo")
 
 
 class SessionStore:
@@ -535,6 +562,94 @@ class SessionStore:
         if cursor.rowcount == 0:
             raise StoreError(f"No existe la sesión {session_id}")
 
+    def add_stint_summaries(
+        self,
+        session_id: int,
+        summaries: Iterable[StintSummary],
+    ) -> None:
+        """Guarda los resúmenes de tanda, reemplazando los de la misma tanda."""
+        rows = [
+            (
+                session_id,
+                summary.car_index,
+                summary.stint_index,
+                summary.start_lap,
+                summary.end_lap,
+                summary.laps,
+                summary.compound,
+                summary.visual_compound,
+                summary.clean_laps,
+                summary.tyre_age_start,
+                summary.tyre_age_end,
+                summary.fuel_start_kg,
+                summary.fuel_end_kg,
+                summary.pace_mean_s,
+                summary.pace_mean_fuel_corrected_s,
+                summary.pace_trend_s_per_lap,
+                summary.pace_trend_fuel_corrected_s_per_lap,
+                summary.wear_start_pct,
+                summary.wear_end_pct,
+                summary.wear_rate_pct_per_lap,
+                summary.track_temperature_mean_c,
+                json.dumps(list(summary.weather), ensure_ascii=False, separators=(",", ":")),
+                int(summary.representative),
+                summary.quality.value,
+            )
+            for summary in summaries
+        ]
+        if not rows:
+            return
+        with self.transaction() as connection:
+            connection.executemany(
+                "INSERT OR REPLACE INTO stint_summaries "
+                "(session_id, car_index, stint_index, start_lap, end_lap, laps, compound, "
+                "visual_compound, clean_laps, tyre_age_start, tyre_age_end, fuel_start_kg, "
+                "fuel_end_kg, pace_mean_s, pace_mean_fuel_corrected_s, pace_trend_s_per_lap, "
+                "pace_trend_fuel_corrected_s_per_lap, wear_start_pct, wear_end_pct, "
+                "wear_rate_pct_per_lap, track_temperature_mean_c, weather_json, "
+                "representative, quality) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                rows,
+            )
+
+    def add_tyre_inventory(
+        self,
+        session_id: int,
+        snapshots: Iterable[TyreInventorySnapshot],
+    ) -> None:
+        """Guarda una instantánea del inventario de neumáticos del piloto.
+
+        La clave incluye el tipo de instantánea, así que volver a escribir la misma
+        sesión no duplica filas.
+        """
+        rows = [
+            (
+                session_id,
+                snapshot.kind,
+                snapshot.set_index,
+                snapshot.actual_tyre_compound,
+                snapshot.visual_tyre_compound,
+                snapshot.wear_pct,
+                _bool_or_none(snapshot.available),
+                snapshot.lifespan_laps,
+                snapshot.usable_life_laps,
+                snapshot.lap_delta_time_ms,
+                snapshot.recommended_session,
+                _bool_or_none(snapshot.fitted),
+            )
+            for snapshot in snapshots
+        ]
+        if not rows:
+            return
+        with self.transaction() as connection:
+            connection.executemany(
+                "INSERT OR REPLACE INTO tyre_inventory_snapshots "
+                "(session_id, kind, set_index, actual_tyre_compound, visual_tyre_compound, "
+                "wear_pct, available, lifespan_laps, usable_life_laps, lap_delta_time_ms, "
+                "recommended_session, fitted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                rows,
+            )
+
     # ------------------------------------------------------------------
     # Fines de semana
     # ------------------------------------------------------------------
@@ -841,6 +956,77 @@ class SessionStore:
                 params_json=_optional_str(row["params_json"]),
             )
 
+    def iter_stint_summaries(self, session_id: int) -> Iterator[StintSummary]:
+        """Itera los resúmenes de tanda de una sesión por coche y tanda."""
+        cursor = self._connection.execute(
+            "SELECT car_index, stint_index, start_lap, end_lap, laps, compound, "
+            "visual_compound, clean_laps, tyre_age_start, tyre_age_end, fuel_start_kg, "
+            "fuel_end_kg, pace_mean_s, pace_mean_fuel_corrected_s, pace_trend_s_per_lap, "
+            "pace_trend_fuel_corrected_s_per_lap, wear_start_pct, wear_end_pct, "
+            "wear_rate_pct_per_lap, track_temperature_mean_c, weather_json, representative, "
+            "quality FROM stint_summaries WHERE session_id = ? "
+            "ORDER BY car_index, stint_index",
+            (session_id,),
+        )
+        for row in cursor:
+            yield StintSummary(
+                car_index=int(row["car_index"]),
+                stint_index=int(row["stint_index"]),
+                start_lap=int(row["start_lap"]),
+                end_lap=_optional_int(row["end_lap"]),
+                laps=int(row["laps"]),
+                compound=_optional_str(row["compound"]),
+                visual_compound=_optional_str(row["visual_compound"]),
+                clean_laps=int(row["clean_laps"]),
+                tyre_age_start=_optional_int(row["tyre_age_start"]),
+                tyre_age_end=_optional_int(row["tyre_age_end"]),
+                fuel_start_kg=_optional_float(row["fuel_start_kg"]),
+                fuel_end_kg=_optional_float(row["fuel_end_kg"]),
+                pace_mean_s=_optional_float(row["pace_mean_s"]),
+                pace_mean_fuel_corrected_s=_optional_float(row["pace_mean_fuel_corrected_s"]),
+                pace_trend_s_per_lap=_optional_float(row["pace_trend_s_per_lap"]),
+                pace_trend_fuel_corrected_s_per_lap=_optional_float(
+                    row["pace_trend_fuel_corrected_s_per_lap"]
+                ),
+                wear_start_pct=_optional_float(row["wear_start_pct"]),
+                wear_end_pct=_optional_float(row["wear_end_pct"]),
+                wear_rate_pct_per_lap=_optional_float(row["wear_rate_pct_per_lap"]),
+                track_temperature_mean_c=_optional_float(row["track_temperature_mean_c"]),
+                weather=tuple(str(item) for item in json.loads(row["weather_json"])),
+                representative=bool(row["representative"]),
+                quality=Quality(str(row["quality"])),
+            )
+
+    def iter_tyre_inventory(
+        self,
+        session_id: int,
+        *,
+        kind: InventoryKind | None = None,
+    ) -> Iterator[TyreInventorySnapshot]:
+        """Itera las instantáneas del inventario de neumáticos de una sesión."""
+        sql = (
+            "SELECT kind, set_index, actual_tyre_compound, visual_tyre_compound, wear_pct, "
+            "available, lifespan_laps, usable_life_laps, lap_delta_time_ms, "
+            "recommended_session, fitted FROM tyre_inventory_snapshots WHERE session_id = ?"
+            + (" AND kind = ?" if kind is not None else "")
+            + " ORDER BY kind, set_index"
+        )
+        parameters: tuple[Any, ...] = (session_id, kind) if kind is not None else (session_id,)
+        for row in self._connection.execute(sql, parameters):
+            yield TyreInventorySnapshot(
+                kind=row["kind"],
+                set_index=int(row["set_index"]),
+                actual_tyre_compound=_optional_str(row["actual_tyre_compound"]),
+                visual_tyre_compound=_optional_str(row["visual_tyre_compound"]),
+                wear_pct=float(row["wear_pct"]),
+                available=_bool_from_column(row["available"]),
+                lifespan_laps=int(row["lifespan_laps"]),
+                usable_life_laps=int(row["usable_life_laps"]),
+                lap_delta_time_ms=int(row["lap_delta_time_ms"]),
+                recommended_session=_optional_str(row["recommended_session"]),
+                fitted=_bool_from_column(row["fitted"]),
+            )
+
 
 def _open_writable(location: str) -> sqlite3.Connection:
     if location == ":memory:":
@@ -965,6 +1151,11 @@ def _json_value(value: Any) -> Any:
 
 def _bool_or_none(value: bool | None) -> int | None:
     return None if value is None else int(value)
+
+
+def _bool_from_column(value: Any) -> bool | None:
+    """Interpreta una columna entera como booleano, conservando NULL."""
+    return None if value is None else bool(value)
 
 
 def _optional_int(value: Any) -> int | None:

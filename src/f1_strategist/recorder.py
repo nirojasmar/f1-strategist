@@ -20,6 +20,7 @@ from .messages import DiagnosticMessage
 from .metrics.engine import MetricsEngine, MetricsSnapshot
 from .metrics.export import snapshot_to_dict
 from .metrics.history import LapHistory, LapHistorySnapshot, LapRecord
+from .metrics.stint_summary import StintSummary, summarize_stints
 from .offline import OfflineResult, run_capture_offline
 from .packets import PacketHeader
 from .parser import ParsedPacket
@@ -32,11 +33,13 @@ from .store import (
     StoredError,
     StoredEvent,
     StoreError,
+    TyreInventorySnapshot,
 )
-from .store.sqlite_store import SessionSource
+from .store.sqlite_store import InventoryKind, SessionSource
 
 _EVENT_MEMORY_LIMIT = 8192
 _PENDING_ERROR_LIMIT = 100
+_RACE_SESSION_TYPES = frozenset({"race", "race_2", "race_3"})
 
 
 class RecorderStore(Protocol):
@@ -71,6 +74,22 @@ class RecorderStore(Protocol):
 
     def add_errors(self, session_id: int, errors: Iterable[StoredError]) -> None: ...
 
+    def add_stint_summaries(self, session_id: int, summaries: Iterable[StintSummary]) -> None: ...
+
+    def add_tyre_inventory(
+        self, session_id: int, snapshots: Iterable[TyreInventorySnapshot]
+    ) -> None: ...
+
+
+@dataclass(frozen=True, slots=True)
+class _SessionClose:
+    """Datos agregados que se escriben justo antes de cerrar una sesión."""
+
+    session_uid: int
+    final_metrics_json: str | None = None
+    stint_summaries: tuple[StintSummary, ...] = ()
+    tyre_inventory: tuple[TyreInventorySnapshot, ...] = ()
+
 
 @dataclass(frozen=True, slots=True)
 class _Batch:
@@ -85,8 +104,8 @@ class _Batch:
     errors: tuple[StoredError, ...]
     incomplete: bool
     incomplete_uids: frozenset[int] = frozenset()
-    previous_session_uid: int | None = None
-    previous_final_metrics_json: str | None = None
+    previous_close: _SessionClose | None = None
+    tyre_inventory: tuple[TyreInventorySnapshot, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,7 +118,9 @@ class _Stop:
     final_metrics_json: str | None = None
     capture_sha256: str | None = None
     session_uid: int | None = None
-    pending_closures: tuple[tuple[int, str], ...] = ()
+    pending_closures: tuple[_SessionClose, ...] = ()
+    stint_summaries: tuple[StintSummary, ...] = ()
+    tyre_inventory: tuple[TyreInventorySnapshot, ...] = ()
 
 
 def serialize_config(config: AppConfig) -> str:
@@ -129,6 +150,7 @@ class SessionRecorder:
         capture_path: Path | None = None,
         config_json: str | None = None,
         block_when_full: bool = False,
+        metrics_config: MetricsConfig | None = None,
     ) -> None:
         self._store = store
         self._config = config
@@ -137,6 +159,7 @@ class SessionRecorder:
         self._capture_path = str(capture_path) if capture_path is not None else None
         self._config_json = config_json
         self._block_when_full = block_when_full
+        self._metrics_config = metrics_config or MetricsConfig()
         self._lock = threading.Lock()
         self._queue: queue.Queue[_Batch | _Stop] = queue.Queue(maxsize=config.queue_size)
 
@@ -158,6 +181,7 @@ class SessionRecorder:
         self._last_signature: tuple[Any, ...] | None = None
         self._last_observed_at = 0.0
         self._last_state: RaceStateSnapshot | None = None
+        self._last_history: LapHistory | LapHistorySnapshot | None = None
         self._last_metrics: MetricsSnapshot | None = None
         self._last_header_time: float | None = None
         self._lap_state: dict[tuple[int, int], LapRecord] = {}
@@ -169,8 +193,9 @@ class SessionRecorder:
         self._last_metrics_computed_at: float | None = None
         self._last_metrics_lap: int | None = None
         self._pending_final_metrics: dict[int, str] = {}
-        self._pending_previous_closures: dict[int, tuple[int, str]] = {}
+        self._pending_previous_closures: dict[int, _SessionClose] = {}
         self._session_ids: set[int] = set()
+        self._race_start_saved: set[int] = set()
 
         self._thread = threading.Thread(target=self._run, name="session-recorder", daemon=True)
         self._thread.start()
@@ -328,6 +353,14 @@ class SessionRecorder:
                 or (uid is not None and uid in self._dropped_by_uid)
             )
             incomplete_uids = frozenset(self._dropped_by_uid)
+        current_close = (
+            self._build_session_close(uid, self._last_state, self._last_history)
+            if uid is not None
+            else None
+        )
+        stopped_metrics_json = _final_metrics_json(final_metrics)
+        if stopped_metrics_json is None and current_close is not None:
+            stopped_metrics_json = current_close.final_metrics_json
         if final_batch is not None and self._enqueue(final_batch):
             self._pending_previous_closures.pop(final_batch.session_uid, None)
         self._queue.put(
@@ -335,10 +368,14 @@ class SessionRecorder:
                 fingerprint=fingerprint,
                 incomplete=is_incomplete,
                 incomplete_uids=incomplete_uids,
-                final_metrics_json=_final_metrics_json(final_metrics),
+                final_metrics_json=stopped_metrics_json,
                 capture_sha256=capture_sha256,
                 session_uid=self._session_uid,
                 pending_closures=tuple(self._pending_previous_closures.values()),
+                stint_summaries=(
+                    current_close.stint_summaries if current_close is not None else ()
+                ),
+                tyre_inventory=(current_close.tyre_inventory if current_close is not None else ()),
             )
         )
         if self._thread is not threading.current_thread():
@@ -381,6 +418,7 @@ class SessionRecorder:
             state.session.weekend_link_id,
             state.session.session_link_id,
             state.session.weekend_structure,
+            state.tyre_inventory_updated_at_monotonic,
         )
         if signature == self._last_signature and not force:
             return
@@ -389,15 +427,15 @@ class SessionRecorder:
         previous_session_uid = self._session_uid if session_changed else None
         if session_changed:
             if previous_session_uid is not None:
-                final_metrics_json = self._pending_final_metrics.pop(previous_session_uid, None)
-                if final_metrics_json is not None:
-                    self._pending_previous_closures[uid] = (
-                        previous_session_uid,
-                        final_metrics_json,
-                    )
+                self._pending_previous_closures[uid] = self._build_session_close(
+                    previous_session_uid,
+                    self._last_state,
+                    self._last_history,
+                )
             self._reset_session(uid)
         self._last_signature = signature
         self._last_state = state
+        self._last_history = history
         self._last_metrics = metrics
         self._last_header_time = header_session_time
         self._last_observed_at = observed_at
@@ -427,6 +465,7 @@ class SessionRecorder:
         ):
             return
         pending_close = self._pending_previous_closures.get(uid)
+        race_start_inventory = self._race_start_inventory(uid, state)
         enqueued = self._enqueue(
             _Batch(
                 session_uid=uid,
@@ -438,17 +477,17 @@ class SessionRecorder:
                 errors=errors,
                 incomplete=incomplete,
                 incomplete_uids=self._incomplete_uids(),
-                previous_session_uid=pending_close[0] if pending_close is not None else None,
-                previous_final_metrics_json=(
-                    pending_close[1] if pending_close is not None else None
-                ),
+                previous_close=pending_close,
+                tyre_inventory=race_start_inventory,
             )
         )
+        if enqueued and race_start_inventory:
+            self._race_start_saved.add(uid)
         if enqueued and pending_close is not None:
             self._pending_previous_closures.pop(uid, None)
         elif not enqueued and pending_close is not None:
             with self._lock:
-                previous_uid = pending_close[0]
+                previous_uid = pending_close.session_uid
                 self._dropped_by_uid[previous_uid] = self._dropped_by_uid.get(previous_uid, 0) + 1
 
     def _reset_session(self, uid: int) -> None:
@@ -464,8 +503,83 @@ class SessionRecorder:
         self._last_metrics_computed_at = None
         self._last_metrics_lap = None
         self._last_state = None
+        self._last_history = None
         self._last_metrics = None
         self._last_header_time = None
+
+    def _build_session_close(
+        self,
+        uid: int,
+        state: RaceStateSnapshot | None,
+        history: LapHistory | LapHistorySnapshot | None,
+    ) -> _SessionClose:
+        """Reúne los agregados que acompañan al cierre de una sesión."""
+        return _SessionClose(
+            session_uid=uid,
+            final_metrics_json=self._pending_final_metrics.pop(uid, None),
+            stint_summaries=self._stint_summaries(state, history),
+            tyre_inventory=self._inventory(state, "session_end"),
+        )
+
+    def _stint_summaries(
+        self,
+        state: RaceStateSnapshot | None,
+        history: LapHistory | LapHistorySnapshot | None,
+    ) -> tuple[StintSummary, ...]:
+        """Resume las tandas del piloto a partir de la última historia conocida."""
+        if state is None or history is None:
+            return ()
+        car_index = state.player_car_index
+        if car_index is None:
+            return ()
+        snapshot = history.snapshot() if isinstance(history, LapHistory) else history
+        laps = snapshot.records_for(car_index)
+        stints = snapshot.stints_for(car_index)
+        if not laps or not stints:
+            return ()
+        try:
+            return summarize_stints(laps, stints, self._metrics_config)
+        except Exception as exc:  # noqa: BLE001 - el resumen nunca detiene la captura
+            self._remember_error(exc)
+            return ()
+
+    @staticmethod
+    def _inventory(
+        state: RaceStateSnapshot | None,
+        kind: InventoryKind,
+    ) -> tuple[TyreInventorySnapshot, ...]:
+        """Convierte el inventario del snapshot en filas del almacén."""
+        if state is None:
+            return ()
+        return tuple(
+            TyreInventorySnapshot(
+                kind=kind,
+                set_index=tyre_set.index,
+                actual_tyre_compound=tyre_set.actual_tyre_compound,
+                visual_tyre_compound=tyre_set.visual_tyre_compound,
+                wear_pct=tyre_set.wear_pct,
+                available=tyre_set.available,
+                lifespan_laps=tyre_set.lifespan_laps,
+                usable_life_laps=tyre_set.usable_life_laps,
+                lap_delta_time_ms=tyre_set.lap_delta_time_ms,
+                recommended_session=tyre_set.recommended_session,
+                fitted=tyre_set.fitted,
+            )
+            for tyre_set in state.tyre_inventory
+        )
+
+    def _race_start_inventory(
+        self,
+        uid: int,
+        state: RaceStateSnapshot,
+    ) -> tuple[TyreInventorySnapshot, ...]:
+        """Devuelve el inventario inicial de una carrera si aún no se ha guardado."""
+        if uid in self._race_start_saved:
+            return ()
+        session_type = state.session.session_type
+        if session_type is None or session_type.lower() not in _RACE_SESSION_TYPES:
+            return ()
+        return self._inventory(state, "race_start")
 
     def _build_session_info(
         self,
@@ -643,16 +757,7 @@ class SessionRecorder:
             errors=(),
             incomplete=incomplete,
             incomplete_uids=self._incomplete_uids(),
-            previous_session_uid=(
-                self._pending_previous_closures[uid][0]
-                if uid in self._pending_previous_closures
-                else None
-            ),
-            previous_final_metrics_json=(
-                self._pending_previous_closures[uid][1]
-                if uid in self._pending_previous_closures
-                else None
-            ),
+            previous_close=self._pending_previous_closures.get(uid),
         )
 
     def _incomplete_uids(self) -> frozenset[int]:
@@ -730,12 +835,9 @@ class SessionRecorder:
         created_session_id: int | None = None
         if self._stored_uid != batch.session_uid:
             previous_uid = self._stored_uid
+            close = batch.previous_close
             self._close_current(
-                final_metrics_json=(
-                    batch.previous_final_metrics_json
-                    if previous_uid == batch.previous_session_uid
-                    else None
-                ),
+                close=close if close is not None and close.session_uid == previous_uid else None,
                 incomplete=(
                     self._writer_incomplete
                     or (previous_uid is not None and previous_uid in batch.incomplete_uids)
@@ -767,25 +869,32 @@ class SessionRecorder:
             self._store.add_metric_samples(session_id, batch.metrics)
         if batch.errors:
             self._store.add_errors(session_id, batch.errors)
+        if batch.tyre_inventory:
+            self._store.add_tyre_inventory(session_id, batch.tyre_inventory)
         return created_session_id
 
     def _close_current(
         self,
         *,
+        close: _SessionClose | None = None,
         fingerprint: str | None = None,
-        final_metrics_json: str | None = None,
         capture_sha256: str | None = None,
         incomplete: bool | None = None,
     ) -> None:
         session_id = self._session_id
         if session_id is None:
             return
+        if close is not None:
+            if close.stint_summaries:
+                self._store.add_stint_summaries(session_id, close.stint_summaries)
+            if close.tyre_inventory:
+                self._store.add_tyre_inventory(session_id, close.tyre_inventory)
         self._store.finish_session(
             session_id,
             ended_at_utc=datetime.now(UTC).isoformat(),
             incomplete=self._session_incomplete if incomplete is None else incomplete,
             fingerprint=fingerprint,
-            final_metrics_json=final_metrics_json,
+            final_metrics_json=close.final_metrics_json if close is not None else None,
             capture_sha256=capture_sha256,
         )
         with self._lock:
@@ -803,20 +912,27 @@ class SessionRecorder:
                     or self._writer_incomplete
                     or (uid is not None and uid in stop.incomplete_uids)
                 )
-                self._close_current(
-                    fingerprint=stop.fingerprint,
-                    final_metrics_json=(
-                        stop.final_metrics_json
-                        if uid == stop.session_uid
-                        else next(
+                close: _SessionClose | None = None
+                if uid is not None:
+                    if uid == stop.session_uid:
+                        close = _SessionClose(
+                            session_uid=uid,
+                            final_metrics_json=stop.final_metrics_json,
+                            stint_summaries=stop.stint_summaries,
+                            tyre_inventory=stop.tyre_inventory,
+                        )
+                    else:
+                        close = next(
                             (
-                                metrics_json
-                                for previous_uid, metrics_json in stop.pending_closures
-                                if previous_uid == uid
+                                candidate
+                                for candidate in stop.pending_closures
+                                if candidate.session_uid == uid
                             ),
                             None,
                         )
-                    ),
+                self._close_current(
+                    close=close,
+                    fingerprint=stop.fingerprint,
                     capture_sha256=stop.capture_sha256,
                 )
                 if stop.capture_sha256 is not None:
@@ -918,6 +1034,7 @@ def ingest_capture(
         capture_path=path,
         config_json=serialize_config(app_config),
         block_when_full=True,
+        metrics_config=app_config.metrics,
     )
     collector = _IngestCollector(engine, recorder)
     offline: OfflineResult | None = None

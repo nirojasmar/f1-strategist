@@ -20,7 +20,8 @@ from f1_strategist.fingerprint import fingerprint_capture
 from f1_strategist.messages import message
 from f1_strategist.metrics.engine import MetricsSnapshot
 from f1_strategist.metrics.export import run_metrics_capture
-from f1_strategist.metrics.history import LapHistorySnapshot, LapRecord
+from f1_strategist.metrics.history import LapHistorySnapshot, LapRecord, TyreStint
+from f1_strategist.metrics.stint_summary import StintSummary
 from f1_strategist.metrics.types import Metric, Quality, Window
 from f1_strategist.packets import HEADER_SIZE, HEADER_STRUCT
 from f1_strategist.parser import ParsedPacket
@@ -29,6 +30,7 @@ from f1_strategist.race_state import (
     RaceEvent,
     RaceSessionSnapshot,
     RaceStateSnapshot,
+    TyreSetSnapshot,
 )
 from f1_strategist.recorder import SessionRecorder, ingest_capture
 from f1_strategist.session import CaptureSession
@@ -39,6 +41,7 @@ from f1_strategist.store import (
     SessionStore,
     StoredError,
     StoredEvent,
+    TyreInventorySnapshot,
 )
 from tests.conftest import make_packet
 from tests.scenarios import ScenarioCar, build_race_timed
@@ -59,6 +62,8 @@ class _FakeStore:
         self.samples: list[MetricSample] = []
         self.errors: list[StoredError] = []
         self.capture_hash_updates: list[tuple[int, str]] = []
+        self.stint_summaries: list[tuple[int, StintSummary]] = []
+        self.tyre_inventory: list[tuple[int, TyreInventorySnapshot]] = []
         self._next_id = 1
 
     @contextmanager
@@ -116,6 +121,14 @@ class _FakeStore:
 
     def add_errors(self, session_id: int, errors: Iterable[StoredError]) -> None:
         self.errors.extend(errors)
+
+    def add_stint_summaries(self, session_id: int, summaries: Iterable[StintSummary]) -> None:
+        self.stint_summaries.extend((session_id, summary) for summary in summaries)
+
+    def add_tyre_inventory(
+        self, session_id: int, snapshots: Iterable[TyreInventorySnapshot]
+    ) -> None:
+        self.tyre_inventory.extend((session_id, snapshot) for snapshot in snapshots)
 
 
 def _cars() -> tuple[ScenarioCar, ScenarioCar]:
@@ -183,10 +196,12 @@ def _snapshot(
     lap: int = 1,
     events: tuple[RaceEvent, ...] = (),
     cars: tuple[CarSnapshot, ...] = (),
+    session_type: str = "Race",
+    tyre_inventory: tuple[TyreSetSnapshot, ...] = (),
 ) -> RaceStateSnapshot:
     session = RaceSessionSnapshot(
         uid=uid,
-        session_type="Race",
+        session_type=session_type,
         track="Monza",
         total_laps=10,
         started=True,
@@ -199,6 +214,8 @@ def _snapshot(
         cars=cars,
         freshness=(),
         events=events,
+        tyre_inventory=tyre_inventory,
+        tyre_inventory_updated_at_monotonic=1.0 if tyre_inventory else None,
     )
 
 
@@ -649,6 +666,183 @@ def test_session_links_are_stored_and_grouped_by_game_identifiers(tmp_path: Path
         assert weekend.track == "Monza"
         assert weekend.weekend_link_id == 42
         assert weekend.season_link_id == 7
+
+
+def test_ingest_stores_stint_summaries_and_inventory_snapshots(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = _capture(tmp_path, monkeypatch)
+
+    with SessionStore.open(tmp_path / "sessions.db") as store:
+        result = ingest_capture(path, store, AppConfig())
+        summaries = list(store.iter_stint_summaries(result.session_id))
+        inventory = list(store.iter_tyre_inventory(result.session_id))
+
+    assert len(summaries) == 1
+    summary = summaries[0]
+    assert summary.car_index == 0
+    assert summary.stint_index == 0
+    assert summary.compound == "soft"
+    assert summary.laps == 3
+    assert summary.tyre_age_start == 0
+    assert summary.tyre_age_end == 3
+    assert summary.fuel_start_kg == 38.0
+    assert summary.fuel_end_kg == 34.0
+    assert summary.weather == ("clear",)
+    assert summary.quality is Quality.LOW
+    assert not summary.representative
+
+    kinds = {snapshot.kind for snapshot in inventory}
+    assert kinds == {"race_start", "session_end"}
+    assert len(inventory) == 40
+    assert [snapshot.set_index for snapshot in inventory if snapshot.kind == "race_start"] == list(
+        range(20)
+    )
+    fitted = [snapshot for snapshot in inventory if snapshot.fitted]
+    assert len(fitted) == 2
+    assert {snapshot.kind for snapshot in fitted} == {"race_start", "session_end"}
+
+
+def test_reingesting_replaces_summaries_and_inventory_without_duplicates(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = _capture(tmp_path, monkeypatch)
+
+    with SessionStore.open(tmp_path / "sessions.db") as store:
+        first = ingest_capture(path, store, AppConfig())
+        ingest_capture(path, store, AppConfig(), replace=True)
+        assert len(store.list_sessions()) == 1
+
+        summaries = list(store.iter_stint_summaries(first.session_id))
+        inventory = list(store.iter_tyre_inventory(first.session_id))
+
+    assert summaries == []
+    assert inventory == []
+
+
+def test_an_interrupted_session_keeps_its_summaries_and_is_marked_incomplete(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = _capture(tmp_path, monkeypatch)
+    path.write_bytes(path.read_bytes()[:-3])
+
+    with SessionStore.open(tmp_path / "sessions.db") as store:
+        result = ingest_capture(path, store, AppConfig())
+        session = store.get_session(result.session_id)
+        summaries = list(store.iter_stint_summaries(result.session_id))
+        inventory = list(store.iter_tyre_inventory(result.session_id))
+
+    assert session is not None and session.incomplete
+    assert summaries
+    assert {snapshot.kind for snapshot in inventory} == {"race_start", "session_end"}
+
+
+def test_stint_summaries_are_stored_when_a_live_session_is_closed(tmp_path: Path) -> None:
+    lap = LapRecord(
+        car_index=0,
+        lap_number=1,
+        lap_time_s=90.0,
+        tyre_age_start=0,
+        tyre_age_end=1,
+        fuel_start_kg=40.0,
+        fuel_end_kg=38.0,
+        closed=True,
+        track_temperature_c=30.0,
+    )
+    with SessionStore.open(tmp_path / "sessions.db") as store:
+        recorder = SessionRecorder(store, RecordingConfig(batch_size=1, flush_interval_s=0.01))
+        try:
+            recorder.observe(
+                1.0,
+                1.0,
+                _snapshot(),
+                _metrics(),
+                LapHistorySnapshot(
+                    records={0: (lap,)}, tyre_stints={0: (TyreStint(),)}, session_uid=1
+                ),
+            )
+        finally:
+            recorder.stop()
+
+        summaries = list(store.iter_stint_summaries(_session_id(recorder)))
+        inventory = list(store.iter_tyre_inventory(_session_id(recorder)))
+
+    assert len(summaries) == 1
+    assert summaries[0].laps == 1
+    assert summaries[0].compound is None
+    assert inventory == []
+
+
+def test_race_start_inventory_is_stored_once_per_session(tmp_path: Path) -> None:
+    inventory = (
+        TyreSetSnapshot(
+            index=0,
+            actual_tyre_compound="c5",
+            visual_tyre_compound="soft",
+            wear_pct=0.0,
+            available=True,
+            recommended_session="qualifying_1",
+            lifespan_laps=18,
+            usable_life_laps=18,
+            lap_delta_time_ms=0,
+            fitted=True,
+        ),
+    )
+    with SessionStore.open(tmp_path / "sessions.db") as store:
+        recorder = SessionRecorder(store, RecordingConfig(batch_size=1, flush_interval_s=0.01))
+        try:
+            recorder.observe(1.0, 1.0, _snapshot(tyre_inventory=inventory), _metrics(), _history())
+            recorder.observe(
+                2.0,
+                2.0,
+                _snapshot(lap=2, tyre_inventory=inventory),
+                _metrics(computed_at=2.0),
+                _history(),
+            )
+        finally:
+            recorder.stop()
+
+        snapshots = list(store.iter_tyre_inventory(_session_id(recorder)))
+
+    assert [snapshot.kind for snapshot in snapshots] == ["race_start", "session_end"]
+    assert all(snapshot.set_index == 0 for snapshot in snapshots)
+    assert all(snapshot.fitted for snapshot in snapshots)
+
+
+def test_practice_sessions_get_no_race_start_inventory(tmp_path: Path) -> None:
+    inventory = (
+        TyreSetSnapshot(
+            index=0,
+            actual_tyre_compound="c5",
+            visual_tyre_compound="soft",
+            wear_pct=0.0,
+            available=True,
+            recommended_session="practice_1",
+            lifespan_laps=18,
+            usable_life_laps=18,
+            lap_delta_time_ms=0,
+            fitted=True,
+        ),
+    )
+    with SessionStore.open(tmp_path / "sessions.db") as store:
+        recorder = SessionRecorder(store, RecordingConfig(batch_size=1, flush_interval_s=0.01))
+        try:
+            recorder.observe(
+                1.0,
+                1.0,
+                _snapshot(session_type="Practice", tyre_inventory=inventory),
+                _metrics(),
+                _history(),
+            )
+        finally:
+            recorder.stop()
+
+        snapshots = list(store.iter_tyre_inventory(_session_id(recorder)))
+
+    assert [snapshot.kind for snapshot in snapshots] == ["session_end"]
 
 
 def test_metric_samples_keep_capture_and_session_clocks(tmp_path: Path) -> None:

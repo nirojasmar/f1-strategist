@@ -506,6 +506,12 @@ class _MemoryStore:
     def add_errors(self, session_id: int, errors: Any) -> None:
         return None
 
+    def add_stint_summaries(self, session_id: int, summaries: Any) -> None:
+        return None
+
+    def add_tyre_inventory(self, session_id: int, snapshots: Any) -> None:
+        return None
+
 
 def _benchmark_inputs(count: int) -> list[tuple[RaceStateSnapshot, MetricsSnapshot]]:
     session = RaceSessionSnapshot(

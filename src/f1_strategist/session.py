@@ -144,6 +144,7 @@ class CaptureSession:
                     run_info=build_run_info(self.config),
                     capture_path=self.capture_path,
                     config_json=serialize_config(self.config),
+                    metrics_config=self.config.metrics,
                 )
             except BaseException:
                 store.close()

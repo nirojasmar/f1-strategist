@@ -11,7 +11,7 @@ import sqlite3
 from dataclasses import dataclass
 
 #: Versión que entiende este código.
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 class StoreError(Exception):
@@ -205,11 +205,67 @@ _V3_STATEMENTS: tuple[str, ...] = (
     "CREATE INDEX idx_sessions_weekend_id ON sessions(weekend_id)",
 )
 
+#: Resúmenes por tanda e instantáneas del inventario de neumáticos del piloto.
+#:
+#: Se guardan agregados, no vueltas adicionales: un fin de semana entero cabe en unas
+#: pocas decenas de filas. ``tyre_inventory_snapshots`` distingue la instantánea del
+#: final de cada sesión de la del comienzo de la carrera, que es la que documenta con
+#: qué juegos se arrancó.
+_V4_STATEMENTS: tuple[str, ...] = (
+    """
+    CREATE TABLE stint_summaries (
+        session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        car_index INTEGER NOT NULL,
+        stint_index INTEGER NOT NULL,
+        start_lap INTEGER NOT NULL,
+        end_lap INTEGER,
+        laps INTEGER NOT NULL,
+        compound TEXT,
+        visual_compound TEXT,
+        clean_laps INTEGER NOT NULL,
+        tyre_age_start INTEGER,
+        tyre_age_end INTEGER,
+        fuel_start_kg REAL,
+        fuel_end_kg REAL,
+        pace_mean_s REAL,
+        pace_mean_fuel_corrected_s REAL,
+        pace_trend_s_per_lap REAL,
+        pace_trend_fuel_corrected_s_per_lap REAL,
+        wear_start_pct REAL,
+        wear_end_pct REAL,
+        wear_rate_pct_per_lap REAL,
+        track_temperature_mean_c REAL,
+        weather_json TEXT NOT NULL DEFAULT '[]',
+        representative INTEGER NOT NULL DEFAULT 0,
+        quality TEXT NOT NULL,
+        PRIMARY KEY (session_id, car_index, stint_index)
+    )
+    """,
+    """
+    CREATE TABLE tyre_inventory_snapshots (
+        session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        kind TEXT NOT NULL CHECK (kind IN ('session_end', 'race_start')),
+        set_index INTEGER NOT NULL,
+        actual_tyre_compound TEXT,
+        visual_tyre_compound TEXT,
+        wear_pct REAL NOT NULL,
+        available INTEGER,
+        lifespan_laps INTEGER NOT NULL,
+        usable_life_laps INTEGER NOT NULL,
+        lap_delta_time_ms INTEGER NOT NULL,
+        recommended_session TEXT,
+        fitted INTEGER,
+        PRIMARY KEY (session_id, kind, set_index)
+    )
+    """,
+)
+
 #: Migraciones ordenadas; el índice 0 lleva el esquema a la versión 1.
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(version=1, statements=_V1_STATEMENTS),
     Migration(version=2, statements=_V2_STATEMENTS),
     Migration(version=3, statements=_V3_STATEMENTS),
+    Migration(version=4, statements=_V4_STATEMENTS),
 )
 
 
@@ -275,6 +331,8 @@ def check_supported_version(connection: sqlite3.Connection) -> int:
         "metric_samples",
         "app_errors",
         "weekends",
+        "stint_summaries",
+        "tyre_inventory_snapshots",
     }
     existing_tables = {
         str(row[0])
