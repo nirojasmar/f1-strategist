@@ -377,6 +377,10 @@ class SessionRecorder:
             header.game_year if header is not None else None,
             header.game_major_version if header is not None else None,
             header.game_minor_version if header is not None else None,
+            state.session.season_link_id,
+            state.session.weekend_link_id,
+            state.session.session_link_id,
+            state.session.weekend_structure,
         )
         if signature == self._last_signature and not force:
             return
@@ -501,6 +505,10 @@ class SessionRecorder:
             ("parser_version", run_info.parser_version),
             ("config_hash", run_info.config_hash),
             ("config_json", self._config_json),
+            ("season_link_id", state.session.season_link_id),
+            ("weekend_link_id", state.session.weekend_link_id),
+            ("session_link_id", state.session.session_link_id),
+            ("weekend_structure_json", _weekend_structure_json(state.session.weekend_structure)),
         ):
             if value is not None:
                 updates[field] = value
@@ -1073,3 +1081,10 @@ def _canonical_json(value: object) -> str:
         sort_keys=True,
         separators=(",", ":"),
     )
+
+
+def _weekend_structure_json(structure: tuple[str, ...]) -> str | None:
+    """Serializa la estructura del fin de semana; vacía equivale a «desconocida»."""
+    if not structure:
+        return None
+    return _canonical_json(list(structure))

@@ -295,6 +295,53 @@ def _build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="base de datos SQLite (por defecto, la de la configuración)",
     )
+
+    weekends = sub.add_parser(
+        "weekends", help="agrupa y consulta los fines de semana de la base de datos"
+    )
+    weekends_sub = weekends.add_subparsers(dest="weekends_command", required=True)
+
+    weekends_list = weekends_sub.add_parser("list", help="lista los fines de semana")
+    weekends_list.add_argument(
+        "--db",
+        type=Path,
+        help="base de datos SQLite (por defecto, la de la configuración)",
+    )
+
+    weekends_show = weekends_sub.add_parser("show", help="muestra un fin de semana y sus sesiones")
+    weekends_show.add_argument("weekend_id", type=_positive_int, metavar="ID")
+    weekends_show.add_argument(
+        "--db",
+        type=Path,
+        help="base de datos SQLite (por defecto, la de la configuración)",
+    )
+
+    weekends_link = weekends_sub.add_parser(
+        "link", help="enlaza manualmente sesiones del mismo circuito en un fin de semana"
+    )
+    weekends_link.add_argument(
+        "session_ids",
+        type=_positive_int,
+        nargs="+",
+        metavar="ID",
+        help="sesiones a enlazar (deben ser del mismo circuito)",
+    )
+    weekends_link.add_argument("--label", metavar="TEXTO", help="nombre del fin de semana")
+    weekends_link.add_argument(
+        "--db",
+        type=Path,
+        help="base de datos SQLite (por defecto, la de la configuración)",
+    )
+
+    weekends_unlink = weekends_sub.add_parser(
+        "unlink", help="separa una sesión de su fin de semana"
+    )
+    weekends_unlink.add_argument("session_id", type=_positive_int, metavar="ID")
+    weekends_unlink.add_argument(
+        "--db",
+        type=Path,
+        help="base de datos SQLite (por defecto, la de la configuración)",
+    )
     return parser
 
 
@@ -712,6 +759,11 @@ def _sessions_show(store: SessionStore, session_id: int, console: Console) -> in
         ("Hash de configuración", session.config_hash),
         ("Configuración", session.config_json),
         ("Huella", session.fingerprint),
+        ("Fin de semana", session.weekend_id),
+        ("Enlace del juego", session.weekend_link_id),
+        ("Enlace de sesión", session.session_link_id),
+        ("Enlace de temporada", session.season_link_id),
+        ("Estructura del fin de semana", session.weekend_structure_json),
         ("Vueltas guardadas", sum(1 for _ in store.iter_laps(session.id))),
         ("Eventos", sum(1 for _ in store.iter_events(session.id))),
         ("Muestras de métricas", sum(1 for _ in store.iter_metric_samples(session.id))),
@@ -835,6 +887,113 @@ def _sessions_export(
         with args.out.open("w", encoding="utf-8", newline="") as handle:
             handle.write(output)
         console.print(f"Exportación de la sesión {args.session_id} escrita en {args.out}")
+    return 0
+
+
+def _cmd_weekends(args: argparse.Namespace, console: Console, err: Console) -> int:
+    db = _sessions_database(args)
+    command = args.weekends_command
+    if command in ("link", "unlink"):
+        with SessionStore.open(db) as store:
+            if command == "link":
+                return _weekends_link(store, args, console)
+            return _weekends_unlink(store, args.session_id, console)
+    with SessionStore.open(db, readonly=True) as store:
+        if command == "list":
+            return _weekends_list(store, console)
+        return _weekends_show(store, args.weekend_id, console)
+
+
+def _weekends_list(store: SessionStore, console: Console) -> int:
+    weekends = store.list_weekends()
+    if not weekends:
+        console.print("No hay fines de semana enlazados.")
+    else:
+        table = Table(title="Fines de semana", expand=False)
+        table.add_column("ID", justify="right")
+        table.add_column("Etiqueta", overflow="fold")
+        table.add_column("Circuito")
+        table.add_column("Origen")
+        table.add_column("Sesiones", justify="right")
+        table.add_column("Enlace del juego")
+        for weekend in weekends:
+            sessions = store.list_weekend_sessions(weekend.id)
+            table.add_row(
+                str(weekend.id),
+                _text(weekend.label),
+                _text(weekend.track),
+                weekend.source,
+                str(len(sessions)),
+                _text(weekend.weekend_link_id),
+            )
+        console.print(table)
+    unlinked = store.unlinked_sessions()
+    if unlinked:
+        console.print(
+            f"Sesiones sin fin de semana: {len(unlinked)} "
+            f"({', '.join(str(session.id) for session in unlinked)})."
+        )
+    return 0
+
+
+def _weekends_show(store: SessionStore, weekend_id: int, console: Console) -> int:
+    weekend = store.get_weekend(weekend_id)
+    if weekend is None:
+        raise StoreError(f"No existe el fin de semana {weekend_id}")
+    table = Table(title=f"Fin de semana {weekend.id}", show_header=False, expand=False)
+    table.add_column("Campo", style="bold")
+    table.add_column("Valor", overflow="fold")
+    rows = (
+        ("ID", weekend.id),
+        ("Etiqueta", weekend.label),
+        ("Circuito", weekend.track),
+        ("Origen", weekend.source),
+        ("Enlace del juego", weekend.weekend_link_id),
+        ("Enlace de temporada", weekend.season_link_id),
+        ("Creado (UTC)", weekend.created_at_utc),
+        ("Sesiones", len(store.list_weekend_sessions(weekend.id))),
+    )
+    for label, value in rows:
+        table.add_row(label, _text(value))
+    console.print(table)
+
+    sessions = store.list_weekend_sessions(weekend.id)
+    if not sessions:
+        return 0
+    session_table = Table(title="Sesiones del fin de semana", expand=False)
+    session_table.add_column("ID", justify="right")
+    session_table.add_column("Tipo")
+    session_table.add_column("Enlace del juego")
+    session_table.add_column("Origen")
+    session_table.add_column("Huella")
+    for session in sessions:
+        fingerprint = session.fingerprint or "-"
+        if len(fingerprint) > 12:
+            fingerprint = fingerprint[:12] + "…"
+        session_table.add_row(
+            str(session.id),
+            _text(session.session_type),
+            _text(session.session_link_id),
+            session.source,
+            fingerprint,
+        )
+    console.print(session_table)
+    return 0
+
+
+def _weekends_link(store: SessionStore, args: argparse.Namespace, console: Console) -> int:
+    weekend_id = store.link_sessions(args.session_ids, label=args.label)
+    joined = ", ".join(str(session_id) for session_id in dict.fromkeys(args.session_ids))
+    console.print(f"Sesiones {joined} enlazadas en el fin de semana {weekend_id}.")
+    return 0
+
+
+def _weekends_unlink(store: SessionStore, session_id: int, console: Console) -> int:
+    weekend_id = store.unlink_session(session_id)
+    if weekend_id is None:
+        console.print(f"La sesión {session_id} no estaba enlazada a ningún fin de semana.")
+        return 0
+    console.print(f"Sesión {session_id} separada del fin de semana {weekend_id}.")
     return 0
 
 
@@ -989,6 +1148,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "ingest": _cmd_ingest,
         "datasets": _cmd_datasets,
         "sessions": _cmd_sessions,
+        "weekends": _cmd_weekends,
     }
     try:
         return handlers[args.command](args, console, err)

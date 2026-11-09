@@ -194,6 +194,11 @@ class RaceSessionSnapshot:
     safety_car_periods: int | None = None
     virtual_safety_car_periods: int | None = None
     red_flag_periods: int | None = None
+    season_link_id: int | None = None
+    weekend_link_id: int | None = None
+    session_link_id: int | None = None
+    weekend_structure: tuple[str, ...] = ()
+    num_sessions_in_weekend: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -242,6 +247,11 @@ class RaceState:
         self._safety_car_periods: int | None = None
         self._virtual_safety_car_periods: int | None = None
         self._red_flag_periods: int | None = None
+        self._season_link_id: int | None = None
+        self._weekend_link_id: int | None = None
+        self._session_link_id: int | None = None
+        self._weekend_structure: tuple[str, ...] = ()
+        self._num_sessions_in_weekend: int | None = None
         self._game_paused: bool | None = None
         self._current_lap: int | None = None
         self._player_car_index: int | None = None
@@ -358,6 +368,11 @@ class RaceState:
         self._safety_car_periods = None
         self._virtual_safety_car_periods = None
         self._red_flag_periods = None
+        self._season_link_id = None
+        self._weekend_link_id = None
+        self._session_link_id = None
+        self._weekend_structure = ()
+        self._num_sessions_in_weekend = None
         self._game_paused = None
         self._current_lap = None
         self._player_car_index = None
@@ -429,6 +444,15 @@ class RaceState:
         self._safety_car_periods = packet.session_settings.safety_car_periods
         self._virtual_safety_car_periods = packet.session_settings.virtual_safety_car_periods
         self._red_flag_periods = red_flag_periods
+        self._season_link_id = _positive_int(packet.season_link_identifier)
+        self._weekend_link_id = _positive_int(packet.weekend_link_identifier)
+        self._session_link_id = _positive_int(packet.session_link_identifier)
+        self._weekend_structure = tuple(
+            _enum_label(session_type) for session_type in packet.weekend_structure
+        )
+        self._num_sessions_in_weekend = _positive_int(
+            packet.session_settings.num_sessions_in_weekend
+        )
         self._game_paused = packet.game_paused.value
 
     def _apply_participants(self, packet: ParticipantsPacket) -> None:
@@ -739,6 +763,11 @@ class RaceState:
                 safety_car_periods=self._safety_car_periods,
                 virtual_safety_car_periods=self._virtual_safety_car_periods,
                 red_flag_periods=self._red_flag_periods,
+                season_link_id=self._season_link_id,
+                weekend_link_id=self._weekend_link_id,
+                session_link_id=self._session_link_id,
+                weekend_structure=self._weekend_structure,
+                num_sessions_in_weekend=self._num_sessions_in_weekend,
             ),
             current_lap=self._current_lap,
             player_car_index=self._player_car_index,

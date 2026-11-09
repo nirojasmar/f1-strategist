@@ -11,7 +11,7 @@ import sqlite3
 from dataclasses import dataclass
 
 #: Versión que entiende este código.
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 class StoreError(Exception):
@@ -174,10 +174,42 @@ _V1_STATEMENTS: tuple[str, ...] = (
 #: La instantánea final de métricas permite exportar el JSON tal cual se publicó.
 _V2_STATEMENTS: tuple[str, ...] = ("ALTER TABLE sessions ADD COLUMN final_metrics_json TEXT",)
 
+#: Enlace del fin de semana: tabla ``weekends`` y columnas de enlace en ``sessions``.
+#:
+#: ``weekends`` solo existe para los fines de semana enlazados (identificadores del
+#: juego distintos de cero o agrupación manual). Un fin de semana nunca se crea por
+#: el mero hecho de grabar una sesión: los identificadores a cero significan «sin
+#: enlace». ``sessions.weekend_id`` queda a NULL en ese caso.
+_V3_STATEMENTS: tuple[str, ...] = (
+    """
+    CREATE TABLE weekends (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        label TEXT,
+        track TEXT,
+        weekend_link_id INTEGER,
+        season_link_id INTEGER,
+        source TEXT NOT NULL CHECK (source IN ('game_ids', 'manual')),
+        created_at_utc TEXT NOT NULL
+    )
+    """,
+    "ALTER TABLE sessions ADD COLUMN season_link_id INTEGER",
+    "ALTER TABLE sessions ADD COLUMN weekend_link_id INTEGER",
+    "ALTER TABLE sessions ADD COLUMN session_link_id INTEGER",
+    "ALTER TABLE sessions ADD COLUMN weekend_structure_json TEXT",
+    "ALTER TABLE sessions ADD COLUMN weekend_id INTEGER REFERENCES weekends(id) ON DELETE SET NULL",
+    """
+    CREATE UNIQUE INDEX idx_weekends_game_link
+        ON weekends(season_link_id, weekend_link_id)
+        WHERE weekend_link_id IS NOT NULL AND weekend_link_id <> 0
+    """,
+    "CREATE INDEX idx_sessions_weekend_id ON sessions(weekend_id)",
+)
+
 #: Migraciones ordenadas; el índice 0 lleva el esquema a la versión 1.
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(version=1, statements=_V1_STATEMENTS),
     Migration(version=2, statements=_V2_STATEMENTS),
+    Migration(version=3, statements=_V3_STATEMENTS),
 )
 
 
@@ -235,7 +267,15 @@ def check_supported_version(connection: sqlite3.Connection) -> int:
             f"La base de datos usa el esquema v{current}; se requiere v{SCHEMA_VERSION}. "
             "Ábrela en modo escritura para aplicar las migraciones antes de leerla."
         )
-    required_tables = {"sessions", "participants", "laps", "events", "metric_samples", "app_errors"}
+    required_tables = {
+        "sessions",
+        "participants",
+        "laps",
+        "events",
+        "metric_samples",
+        "app_errors",
+        "weekends",
+    }
     existing_tables = {
         str(row[0])
         for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")

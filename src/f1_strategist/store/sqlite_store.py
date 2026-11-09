@@ -9,9 +9,10 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
@@ -30,6 +31,8 @@ from .schema import (
 BUSY_TIMEOUT_MS = 5000
 SessionSource = Literal["live", "ingest"]
 SESSION_SOURCES: frozenset[str] = frozenset({"live", "ingest"})
+WeekendSource = Literal["game_ids", "manual"]
+WEEKEND_SOURCES: frozenset[str] = frozenset({"game_ids", "manual"})
 
 _SESSION_COLUMNS: tuple[str, ...] = (
     "id",
@@ -52,6 +55,21 @@ _SESSION_COLUMNS: tuple[str, ...] = (
     "config_json",
     "fingerprint",
     "final_metrics_json",
+    "season_link_id",
+    "weekend_link_id",
+    "session_link_id",
+    "weekend_structure_json",
+    "weekend_id",
+)
+
+_WEEKEND_COLUMNS: tuple[str, ...] = (
+    "id",
+    "label",
+    "track",
+    "weekend_link_id",
+    "season_link_id",
+    "source",
+    "created_at_utc",
 )
 
 _LAP_COLUMNS: tuple[str, ...] = tuple(LAP_COLUMN_TYPES)
@@ -95,6 +113,11 @@ class SessionInfo:
     config_json: str | None = None
     fingerprint: str | None = None
     final_metrics_json: str | None = None
+    season_link_id: int | None = None
+    weekend_link_id: int | None = None
+    session_link_id: int | None = None
+    weekend_structure_json: str | None = None
+    weekend_id: int | None = None
 
     def __post_init__(self) -> None:
         if self.session_uid < 0 or self.session_uid > 2**64 - 1:
@@ -103,6 +126,32 @@ class SessionInfo:
             raise ValueError(f"source no válido: {self.source!r}")
         if self.id is not None and self.id < 1:
             raise ValueError("id debe ser positivo")
+        # Un identificador a cero significa «sin enlace» y se guarda como NULL.
+        for name in ("season_link_id", "weekend_link_id", "session_link_id"):
+            value = getattr(self, name)
+            if value is not None and value <= 0:
+                object.__setattr__(self, name, None)
+        if self.weekend_id is not None and self.weekend_id < 1:
+            raise ValueError("weekend_id debe ser positivo")
+
+
+@dataclass(frozen=True, slots=True)
+class WeekendInfo:
+    """Un fin de semana que agrupa sesiones del mismo circuito."""
+
+    id: int
+    source: WeekendSource
+    created_at_utc: str
+    label: str | None = None
+    track: str | None = None
+    weekend_link_id: int | None = None
+    season_link_id: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.id < 1:
+            raise ValueError("id debe ser positivo")
+        if self.source not in WEEKEND_SOURCES:
+            raise ValueError(f"source no válido: {self.source!r}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -225,8 +274,13 @@ class SessionStore:
             raise
 
     def create_session(self, info: SessionInfo) -> int:
-        """Inserta la cabecera de una sesión y devuelve su id."""
-        values = (
+        """Inserta la cabecera de una sesión y devuelve su id.
+
+        Si la sesión trae un identificador de fin de semana del juego distinto de
+        cero, se crea (o se reutiliza) el fin de semana correspondiente. Un
+        identificador nulo o cero deja la sesión sin enlace.
+        """
+        values = [
             str(info.session_uid),
             info.source,
             info.started_at_utc,
@@ -246,9 +300,21 @@ class SessionStore:
             info.config_json,
             info.fingerprint,
             info.final_metrics_json,
-        )
+            info.season_link_id,
+            info.weekend_link_id,
+            info.session_link_id,
+            info.weekend_structure_json,
+            info.weekend_id,
+        ]
         columns = _SESSION_COLUMNS[1:]
         with self.transaction() as connection:
+            if info.weekend_id is None and info.weekend_link_id is not None:
+                values[-1] = self._ensure_game_weekend(
+                    connection,
+                    weekend_link_id=info.weekend_link_id,
+                    season_link_id=info.season_link_id,
+                    track=info.track,
+                )
             cursor = connection.execute(
                 f"INSERT INTO sessions ({', '.join(columns)}) "
                 f"VALUES ({', '.join('?' for _ in columns)})",
@@ -294,6 +360,18 @@ class SessionStore:
         guardados se conservan mediante ``COALESCE``.
         """
         with self.transaction() as connection:
+            weekend_id = info.weekend_id
+            if weekend_id is None and info.weekend_link_id is not None:
+                current = connection.execute(
+                    "SELECT weekend_id FROM sessions WHERE id = ?", (session_id,)
+                ).fetchone()
+                if current is not None and _optional_int(current["weekend_id"]) is None:
+                    weekend_id = self._ensure_game_weekend(
+                        connection,
+                        weekend_link_id=info.weekend_link_id,
+                        season_link_id=info.season_link_id,
+                        track=info.track,
+                    )
             cursor = connection.execute(
                 "UPDATE sessions SET "
                 "game_format = COALESCE(?, game_format), "
@@ -307,7 +385,12 @@ class SessionStore:
                 "tool_version = COALESCE(?, tool_version), "
                 "parser_version = COALESCE(?, parser_version), "
                 "config_hash = COALESCE(?, config_hash), "
-                "config_json = COALESCE(?, config_json) "
+                "config_json = COALESCE(?, config_json), "
+                "season_link_id = COALESCE(?, season_link_id), "
+                "weekend_link_id = COALESCE(?, weekend_link_id), "
+                "session_link_id = COALESCE(?, session_link_id), "
+                "weekend_structure_json = COALESCE(?, weekend_structure_json), "
+                "weekend_id = COALESCE(?, weekend_id) "
                 "WHERE id = ?",
                 (
                     info.game_format,
@@ -322,6 +405,11 @@ class SessionStore:
                     info.parser_version,
                     info.config_hash,
                     info.config_json,
+                    info.season_link_id,
+                    info.weekend_link_id,
+                    info.session_link_id,
+                    info.weekend_structure_json,
+                    weekend_id,
                     session_id,
                 ),
             )
@@ -446,6 +534,215 @@ class SessionStore:
             cursor = connection.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
         if cursor.rowcount == 0:
             raise StoreError(f"No existe la sesión {session_id}")
+
+    # ------------------------------------------------------------------
+    # Fines de semana
+    # ------------------------------------------------------------------
+
+    def create_weekend(
+        self,
+        *,
+        source: WeekendSource,
+        label: str | None = None,
+        track: str | None = None,
+        weekend_link_id: int | None = None,
+        season_link_id: int | None = None,
+        created_at_utc: str | None = None,
+    ) -> int:
+        """Crea un fin de semana y devuelve su id."""
+        created = created_at_utc or datetime.now(UTC).isoformat()
+        with self.transaction() as connection:
+            cursor = connection.execute(
+                "INSERT INTO weekends "
+                "(label, track, weekend_link_id, season_link_id, source, created_at_utc) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    label or _weekend_label(track, season_link_id, weekend_link_id),
+                    track,
+                    weekend_link_id,
+                    season_link_id,
+                    source,
+                    created,
+                ),
+            )
+        if cursor.lastrowid is None:
+            raise StoreError("SQLite no devolvió el id del fin de semana creado")
+        return int(cursor.lastrowid)
+
+    def get_weekend(self, weekend_id: int) -> WeekendInfo | None:
+        """Devuelve un fin de semana por id, o ``None`` si no existe."""
+        row = self._connection.execute(
+            f"SELECT {', '.join(_WEEKEND_COLUMNS)} FROM weekends WHERE id = ?",
+            (weekend_id,),
+        ).fetchone()
+        return None if row is None else _weekend_from_row(row)
+
+    def list_weekends(self) -> list[WeekendInfo]:
+        """Devuelve todos los fines de semana, del más antiguo al más reciente."""
+        rows = self._connection.execute(
+            f"SELECT {', '.join(_WEEKEND_COLUMNS)} FROM weekends ORDER BY id"
+        ).fetchall()
+        return [_weekend_from_row(row) for row in rows]
+
+    def find_weekend(
+        self,
+        *,
+        weekend_link_id: int,
+        season_link_id: int | None = None,
+    ) -> WeekendInfo | None:
+        """Busca el fin de semana que corresponde a los identificadores del juego."""
+        row = self._connection.execute(
+            f"SELECT {', '.join(_WEEKEND_COLUMNS)} FROM weekends "
+            "WHERE weekend_link_id = ? AND season_link_id IS ? ORDER BY id LIMIT 1",
+            (weekend_link_id, season_link_id),
+        ).fetchone()
+        return None if row is None else _weekend_from_row(row)
+
+    def list_weekend_sessions(self, weekend_id: int) -> list[SessionInfo]:
+        """Devuelve las sesiones enlazadas a un fin de semana, por orden de id."""
+        rows = self._connection.execute(
+            f"SELECT {', '.join(_SESSION_COLUMNS)} FROM sessions WHERE weekend_id = ? ORDER BY id",
+            (weekend_id,),
+        ).fetchall()
+        return [_session_from_row(row) for row in rows]
+
+    def unlinked_sessions(self) -> list[SessionInfo]:
+        """Devuelve las sesiones que no pertenecen a ningún fin de semana."""
+        rows = self._connection.execute(
+            f"SELECT {', '.join(_SESSION_COLUMNS)} FROM sessions "
+            "WHERE weekend_id IS NULL ORDER BY id"
+        ).fetchall()
+        return [_session_from_row(row) for row in rows]
+
+    def link_sessions(self, session_ids: Sequence[int], *, label: str | None = None) -> int:
+        """Enlaza manualmente sesiones del mismo circuito en un fin de semana.
+
+        Rechaza sesiones sin circuito conocido y sesiones de circuitos distintos.
+        Si todas las sesiones ya comparten un fin de semana, lo reutiliza y solo
+        incorpora las que falten. Devuelve el id del fin de semana resultante.
+        """
+        unique_ids = list(dict.fromkeys(session_ids))
+        if not unique_ids:
+            raise StoreError("Indica al menos una sesión para enlazar.")
+        with self.transaction() as connection:
+            tracks: list[str] = []
+            current_weekends: list[int | None] = []
+            for session_id in unique_ids:
+                row = connection.execute(
+                    "SELECT track, weekend_id FROM sessions WHERE id = ?", (session_id,)
+                ).fetchone()
+                if row is None:
+                    raise StoreError(f"No existe la sesión {session_id}")
+                track = _optional_str(row["track"])
+                if track is None:
+                    raise StoreError(
+                        f"La sesión {session_id} no tiene circuito conocido; "
+                        "no se puede validar el enlace."
+                    )
+                tracks.append(track)
+                current_weekends.append(_optional_int(row["weekend_id"]))
+            distinct = sorted(set(tracks))
+            if len(distinct) > 1:
+                raise StoreError(
+                    "No se pueden enlazar sesiones de circuitos distintos: " + ", ".join(distinct)
+                )
+            track = distinct[0]
+            existing = {weekend for weekend in current_weekends if weekend is not None}
+            if len(existing) == 1:
+                weekend_id = next(iter(existing))
+                connection.executemany(
+                    "UPDATE sessions SET weekend_id = ? WHERE id = ?",
+                    [(weekend_id, session_id) for session_id in unique_ids],
+                )
+                if label is not None:
+                    connection.execute(
+                        "UPDATE weekends SET label = ? WHERE id = ?", (label, weekend_id)
+                    )
+                return weekend_id
+
+            cursor = connection.execute(
+                "INSERT INTO weekends "
+                "(label, track, weekend_link_id, season_link_id, source, created_at_utc) "
+                "VALUES (?, ?, NULL, NULL, 'manual', ?)",
+                (label or track, track, datetime.now(UTC).isoformat()),
+            )
+            if cursor.lastrowid is None:
+                raise StoreError("SQLite no devolvió el id del fin de semana creado")
+            weekend_id = int(cursor.lastrowid)
+            connection.executemany(
+                "UPDATE sessions SET weekend_id = ? WHERE id = ?",
+                [(weekend_id, session_id) for session_id in unique_ids],
+            )
+            for previous in existing:
+                if previous is None or previous == weekend_id:
+                    continue
+                remaining = connection.execute(
+                    "SELECT COUNT(*) FROM sessions WHERE weekend_id = ?", (previous,)
+                ).fetchone()[0]
+                if remaining == 0:
+                    connection.execute("DELETE FROM weekends WHERE id = ?", (previous,))
+        return weekend_id
+
+    def unlink_session(self, session_id: int) -> int | None:
+        """Desvincula una sesión de su fin de semana.
+
+        Devuelve el id del fin de semana del que se separó, o ``None`` si no estaba
+        enlazada. Un fin de semana que se queda sin sesiones se elimina.
+        """
+        with self.transaction() as connection:
+            row = connection.execute(
+                "SELECT weekend_id FROM sessions WHERE id = ?", (session_id,)
+            ).fetchone()
+            if row is None:
+                raise StoreError(f"No existe la sesión {session_id}")
+            weekend_id = _optional_int(row["weekend_id"])
+            if weekend_id is None:
+                return None
+            connection.execute("UPDATE sessions SET weekend_id = NULL WHERE id = ?", (session_id,))
+            remaining = connection.execute(
+                "SELECT COUNT(*) FROM sessions WHERE weekend_id = ?", (weekend_id,)
+            ).fetchone()[0]
+            if remaining == 0:
+                connection.execute("DELETE FROM weekends WHERE id = ?", (weekend_id,))
+        return weekend_id
+
+    def _ensure_game_weekend(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        weekend_link_id: int,
+        season_link_id: int | None,
+        track: str | None,
+    ) -> int:
+        """Devuelve el fin de semana de los identificadores del juego, creándolo si falta."""
+        row = connection.execute(
+            "SELECT id, track FROM weekends WHERE weekend_link_id = ? "
+            "AND season_link_id IS ? ORDER BY id LIMIT 1",
+            (weekend_link_id, season_link_id),
+        ).fetchone()
+        if row is not None:
+            weekend_id = int(row["id"])
+            if track is not None and _optional_str(row["track"]) is None:
+                connection.execute(
+                    "UPDATE weekends SET track = ?, label = COALESCE(label, ?) WHERE id = ?",
+                    (track, _weekend_label(track, season_link_id, weekend_link_id), weekend_id),
+                )
+            return weekend_id
+        cursor = connection.execute(
+            "INSERT INTO weekends "
+            "(label, track, weekend_link_id, season_link_id, source, created_at_utc) "
+            "VALUES (?, ?, ?, ?, 'game_ids', ?)",
+            (
+                _weekend_label(track, season_link_id, weekend_link_id),
+                track,
+                weekend_link_id,
+                season_link_id,
+                datetime.now(UTC).isoformat(),
+            ),
+        )
+        if cursor.lastrowid is None:  # pragma: no cover - defensivo
+            raise StoreError("SQLite no devolvió el id del fin de semana creado")
+        return int(cursor.lastrowid)
 
     # ------------------------------------------------------------------
     # Lectura
@@ -597,7 +894,35 @@ def _session_from_row(row: sqlite3.Row) -> SessionInfo:
         config_json=_optional_str(row["config_json"]),
         fingerprint=_optional_str(row["fingerprint"]),
         final_metrics_json=_optional_str(row["final_metrics_json"]),
+        season_link_id=_optional_int(row["season_link_id"]),
+        weekend_link_id=_optional_int(row["weekend_link_id"]),
+        session_link_id=_optional_int(row["session_link_id"]),
+        weekend_structure_json=_optional_str(row["weekend_structure_json"]),
+        weekend_id=_optional_int(row["weekend_id"]),
     )
+
+
+def _weekend_from_row(row: sqlite3.Row) -> WeekendInfo:
+    return WeekendInfo(
+        id=int(row["id"]),
+        source=row["source"],
+        created_at_utc=str(row["created_at_utc"]),
+        label=_optional_str(row["label"]),
+        track=_optional_str(row["track"]),
+        weekend_link_id=_optional_int(row["weekend_link_id"]),
+        season_link_id=_optional_int(row["season_link_id"]),
+    )
+
+
+def _weekend_label(
+    track: str | None, season_link_id: int | None, weekend_link_id: int | None
+) -> str | None:
+    """Etiqueta legible cuando no se indica una explícita."""
+    if track and weekend_link_id is not None and season_link_id is not None:
+        return f"{track} (T{season_link_id} · fin de semana {weekend_link_id})"
+    if track and weekend_link_id is not None:
+        return f"{track} (fin de semana {weekend_link_id})"
+    return track
 
 
 def _lap_from_row(row: sqlite3.Row) -> LapRecord:

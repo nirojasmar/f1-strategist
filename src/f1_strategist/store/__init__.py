@@ -12,12 +12,15 @@ from .schema import (
     apply_migrations,
 )
 from .sqlite_store import (
+    WEEKEND_SOURCES,
     MetricSample,
     Participant,
     SessionInfo,
     SessionStore,
     StoredError,
     StoredEvent,
+    WeekendInfo,
+    WeekendSource,
 )
 
 __all__ = [
@@ -25,6 +28,7 @@ __all__ = [
     "LAP_COLUMN_TYPES",
     "MIGRATIONS",
     "SCHEMA_VERSION",
+    "WEEKEND_SOURCES",
     "MetricSample",
     "Migration",
     "Participant",
@@ -33,5 +37,7 @@ __all__ = [
     "StoreError",
     "StoredError",
     "StoredEvent",
+    "WeekendInfo",
+    "WeekendSource",
     "apply_migrations",
 ]

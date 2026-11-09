@@ -720,11 +720,16 @@ def test_session_packet_publishes_environment_and_forecast() -> None:
     session = replace(
         session,
         forecast_accuracy=EnumValue(1, "approximate"),
+        season_link_identifier=7,
+        weekend_link_identifier=42,
+        session_link_identifier=3,
+        weekend_structure=(EnumValue(15, "race"), EnumValue(10, "practice_1")),
         session_settings=replace(
             session.session_settings,
             safety_car_periods=2,
             virtual_safety_car_periods=3,
             red_flag_periods=4,
+            num_sessions_in_weekend=5,
         ),
         weather_forecast=forecast,
     )
@@ -747,6 +752,11 @@ def test_session_packet_publishes_environment_and_forecast() -> None:
     assert snapshot.session.safety_car_periods == 2
     assert snapshot.session.virtual_safety_car_periods == 3
     assert snapshot.session.red_flag_periods == 4
+    assert snapshot.session.season_link_id == 7
+    assert snapshot.session.weekend_link_id == 42
+    assert snapshot.session.session_link_id == 3
+    assert snapshot.session.weekend_structure == ("race", "practice_1")
+    assert snapshot.session.num_sessions_in_weekend == 5
     assert len(snapshot.session.forecast) == 3
     assert [sample.session_type for sample in snapshot.session.forecast] == [
         "practice_1",
@@ -760,6 +770,29 @@ def test_session_packet_publishes_environment_and_forecast() -> None:
     assert first_sample.track_temperature_c == 35.0
     assert first_sample.air_temperature_c == 25.0
     assert first_sample.rain_percentage == 6
+
+
+def test_session_link_identifiers_at_zero_mean_no_link() -> None:
+    state = RaceState()
+    session = _parsed_fixture("session.bin")
+    assert isinstance(session, SessionPacket)
+    session = replace(
+        session,
+        season_link_identifier=0,
+        weekend_link_identifier=0,
+        session_link_identifier=0,
+        weekend_structure=(),
+        session_settings=replace(session.session_settings, num_sessions_in_weekend=0),
+    )
+
+    state.apply(_with_header(session), observed_at=1.0)
+
+    snapshot = state.snapshot()
+    assert snapshot.session.season_link_id is None
+    assert snapshot.session.weekend_link_id is None
+    assert snapshot.session.session_link_id is None
+    assert snapshot.session.weekend_structure == ()
+    assert snapshot.session.num_sessions_in_weekend is None
 
 
 def test_session_environment_events_are_emitted_only_on_change() -> None:
@@ -874,6 +907,11 @@ def test_session_uid_change_clears_environment_and_forecast() -> None:
     assert snapshot.session.safety_car_periods is None
     assert snapshot.session.virtual_safety_car_periods is None
     assert snapshot.session.red_flag_periods is None
+    assert snapshot.session.season_link_id is None
+    assert snapshot.session.weekend_link_id is None
+    assert snapshot.session.session_link_id is None
+    assert snapshot.session.weekend_structure == ()
+    assert snapshot.session.num_sessions_in_weekend is None
     assert [item.kind for item in snapshot.events] == ["session_changed", "session_started"]
 
 

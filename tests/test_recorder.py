@@ -613,6 +613,44 @@ def test_late_metadata_is_merged_into_the_session(tmp_path: Path) -> None:
         assert session.total_laps == 10
 
 
+def test_session_links_are_stored_and_grouped_by_game_identifiers(tmp_path: Path) -> None:
+    with SessionStore.open(tmp_path / "sessions.db") as store:
+        recorder = SessionRecorder(store, RecordingConfig(batch_size=1, flush_interval_s=0.01))
+        try:
+            initial = _snapshot()
+            linked_session = replace(
+                initial.session,
+                season_link_id=7,
+                weekend_link_id=42,
+                session_link_id=3,
+                weekend_structure=("practice_1", "race"),
+            )
+            recorder.observe(
+                1.0,
+                1.0,
+                replace(initial, session=linked_session),
+                _metrics(),
+                _history(),
+            )
+        finally:
+            recorder.stop()
+
+        session = store.get_session(_session_id(recorder))
+        assert session is not None
+        assert session.season_link_id == 7
+        assert session.weekend_link_id == 42
+        assert session.session_link_id == 3
+        assert session.weekend_structure_json == '["practice_1","race"]'
+        assert session.weekend_id is not None
+
+        weekend = store.get_weekend(session.weekend_id)
+        assert weekend is not None
+        assert weekend.source == "game_ids"
+        assert weekend.track == "Monza"
+        assert weekend.weekend_link_id == 42
+        assert weekend.season_link_id == 7
+
+
 def test_metric_samples_keep_capture_and_session_clocks(tmp_path: Path) -> None:
     with SessionStore.open(tmp_path / "sessions.db") as store:
         recorder = SessionRecorder(store, RecordingConfig(batch_size=1, flush_interval_s=0.01))
