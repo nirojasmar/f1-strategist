@@ -151,6 +151,7 @@ class SessionRecorder:
         config_json: str | None = None,
         block_when_full: bool = False,
         metrics_config: MetricsConfig | None = None,
+        default_profile: tuple[str, str] | None = None,
     ) -> None:
         self._store = store
         self._config = config
@@ -160,6 +161,8 @@ class SessionRecorder:
         self._config_json = config_json
         self._block_when_full = block_when_full
         self._metrics_config = metrics_config or MetricsConfig()
+        self._default_profile = default_profile
+        self._profiles: dict[int, tuple[str, str]] = {}
         self._lock = threading.Lock()
         self._queue: queue.Queue[_Batch | _Stop] = queue.Queue(maxsize=config.queue_size)
 
@@ -330,6 +333,22 @@ class SessionRecorder:
             incomplete_uids=self._incomplete_uids(),
         )
         self._enqueue(batch)
+
+    def set_weekend_profile(
+        self,
+        session_uid: int,
+        profile_json: str,
+        profile_hash: str,
+    ) -> None:
+        """Fija el perfil del fin de semana con el que arranca una sesión.
+
+        Se guarda por identificador de sesión para que los lotes que se escriban
+        después lo registren tal cual. Una reproducción puede reutilizar el
+        perfil de una grabación anterior pasándolo como perfil por defecto al
+        constructor; este método tiene prioridad sobre él.
+        """
+        with self._lock:
+            self._profiles[session_uid] = (profile_json, profile_hash)
 
     def stop(
         self,
@@ -626,7 +645,24 @@ class SessionRecorder:
         ):
             if value is not None:
                 updates[field] = value
+        profile = self._profile_for(uid, state.session.session_type)
+        if profile is not None:
+            updates["profile_json"] = profile[0]
+            updates["profile_hash"] = profile[1]
         return replace(base, **updates)  # type: ignore[arg-type]
+
+    def _profile_for(
+        self,
+        uid: int,
+        session_type: str | None,
+    ) -> tuple[str, str] | None:
+        """Perfil aplicable a la sesión: el propio o el de una reproducción."""
+        profile = self._profiles.get(uid)
+        if profile is not None:
+            return profile
+        if session_type is None or session_type.lower() not in _RACE_SESSION_TYPES:
+            return None
+        return self._default_profile
 
     def _collect_participants(self, state: RaceStateSnapshot) -> tuple[Participant, ...]:
         participants: list[Participant] = []
@@ -1035,6 +1071,7 @@ def ingest_capture(
         config_json=serialize_config(app_config),
         block_when_full=True,
         metrics_config=app_config.metrics,
+        default_profile=_registered_profile(store, run_info),
     )
     collector = _IngestCollector(engine, recorder)
     offline: OfflineResult | None = None
@@ -1106,6 +1143,28 @@ def _find_ingested(store: SessionStore, run_info: RunInfo) -> SessionInfo | None
             and session.final_metrics_json is not None
         ):
             return session
+    return None
+
+
+def _registered_profile(
+    store: SessionStore,
+    run_info: RunInfo,
+) -> tuple[str, str] | None:
+    """Perfil ya registrado de la misma captura, para reutilizarlo al reproducir.
+
+    Busca en todas las sesiones (no solo las ingeridas) la más reciente que
+    comparta la huella del fichero de captura y tenga perfil guardado. Así una
+    reproducción usa el perfil exacto de la grabación en vivo en lugar de
+    recalcularlo con datos que pueden haber cambiado.
+    """
+    if run_info.capture_sha256 is None:
+        return None
+    for session in reversed(store.list_sessions()):
+        if session.capture_sha256 != run_info.capture_sha256:
+            continue
+        if session.profile_json is None or session.profile_hash is None:
+            continue
+        return session.profile_json, session.profile_hash
     return None
 
 

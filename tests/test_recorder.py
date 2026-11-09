@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 import struct
 import time
@@ -994,6 +995,233 @@ def test_block_when_full_avoids_dropped_batches() -> None:
 
     assert recorder.dropped_batches == 0
     assert [entry[2] for entry in store.finished] == [False]
+
+
+def test_the_weekend_profile_is_registered_in_the_session(tmp_path: Path) -> None:
+    with SessionStore.open(tmp_path / "sessions.db") as store:
+        recorder = SessionRecorder(store, RecordingConfig(batch_size=1, flush_interval_s=0.01))
+        try:
+            recorder.set_weekend_profile(1, '{"schema_version":1}', "abc123")
+            recorder.observe(1.0, 1.0, _snapshot(), _metrics(), _history())
+        finally:
+            recorder.stop()
+
+        session = store.get_session(_session_id(recorder))
+        assert session is not None
+        assert session.profile_json == '{"schema_version":1}'
+        assert session.profile_hash == "abc123"
+
+
+def test_the_default_profile_only_applies_to_race_sessions(tmp_path: Path) -> None:
+    with SessionStore.open(tmp_path / "sessions.db") as store:
+        recorder = SessionRecorder(
+            store,
+            RecordingConfig(batch_size=1, flush_interval_s=0.01),
+            default_profile=('{"schema_version":1}', "abc123"),
+        )
+        try:
+            recorder.observe(1.0, 1.0, _snapshot(session_type="Practice"), _metrics(), _history())
+        finally:
+            recorder.stop()
+
+        session = store.get_session(_session_id(recorder))
+        assert session is not None
+        assert session.profile_json is None
+        assert session.profile_hash is None
+
+
+def test_the_default_profile_is_used_by_race_sessions(tmp_path: Path) -> None:
+    with SessionStore.open(tmp_path / "sessions.db") as store:
+        recorder = SessionRecorder(
+            store,
+            RecordingConfig(batch_size=1, flush_interval_s=0.01),
+            default_profile=('{"schema_version":1}', "abc123"),
+        )
+        try:
+            recorder.observe(1.0, 1.0, _snapshot(), _metrics(), _history())
+        finally:
+            recorder.stop()
+
+        session = store.get_session(_session_id(recorder))
+        assert session is not None
+        assert session.profile_json == '{"schema_version":1}'
+        assert session.profile_hash == "abc123"
+
+
+def test_ingest_reuses_the_profile_registered_for_the_same_capture(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = _capture(tmp_path, monkeypatch)
+
+    with SessionStore.open(tmp_path / "sessions.db") as store:
+        first = ingest_capture(path, store, AppConfig())
+        stored = store.get_session(first.session_id)
+        assert stored is not None
+        store.update_session(
+            first.session_id,
+            replace(
+                stored,
+                profile_json='{"schema_version":1}',
+                profile_hash="abc123",
+            ),
+        )
+
+        second = ingest_capture(path, store, AppConfig(), replace=True)
+        ingested = store.get_session(second.session_id)
+
+    assert ingested is not None
+    assert ingested.profile_json == '{"schema_version":1}'
+    assert ingested.profile_hash == "abc123"
+
+
+def _summary() -> StintSummary:
+    """Resumen de tanda representativo para alimentar un perfil del fin de semana."""
+    return StintSummary(
+        car_index=0,
+        stint_index=0,
+        start_lap=1,
+        end_lap=10,
+        laps=10,
+        compound="c3",
+        visual_compound="soft",
+        clean_laps=6,
+        tyre_age_start=0,
+        tyre_age_end=10,
+        fuel_start_kg=40.0,
+        fuel_end_kg=38.0,
+        pace_mean_s=90.0,
+        pace_mean_fuel_corrected_s=None,
+        pace_trend_s_per_lap=None,
+        pace_trend_fuel_corrected_s_per_lap=None,
+        wear_start_pct=0.0,
+        wear_end_pct=1.0,
+        wear_rate_pct_per_lap=0.10,
+        track_temperature_mean_c=30.0,
+        weather=("clear",),
+        representative=True,
+        quality=Quality.OK,
+    )
+
+
+def _prepare_weekend(database: Path) -> int:
+    """Crea un fin de semana manual con una sesión previa del mismo circuito."""
+    with SessionStore.open(database) as store:
+        session_id = store.create_session(
+            SessionInfo(
+                session_uid=99,
+                source="live",
+                started_at_utc="2026-11-05T10:00:00Z",
+                track="monza",
+                session_type="practice_1",
+            )
+        )
+        store.add_stint_summaries(session_id, [_summary()])
+        store.link_sessions([session_id])
+    return session_id
+
+
+def _run_live_session(monkeypatch: pytest.MonkeyPatch, database: Path) -> CaptureSession:
+    """Ejecuta una carrera sintética en vivo contra la base de datos indicada."""
+    packets = list(build_race_timed(_cars(), total_laps=3, samples_per_lap=1))
+    parsed = iter(packet for packet, _ in packets)
+    monkeypatch.setattr("f1_strategist.session.parse_packet", lambda _: next(parsed))
+
+    session = CaptureSession(
+        AppConfig(
+            telemetry=TelemetryConfig(listen_port=0),
+            capture=CaptureConfig(enabled=False),
+            recording=RecordingConfig(
+                enabled=True,
+                database=database,
+                batch_size=1,
+                flush_interval_s=0.01,
+            ),
+        )
+    )
+    session._stop_consumer.set()
+    for packet, observed_at in packets:
+        session._queue.put(
+            CapturedPacket(
+                recv_time_ns=0,
+                source_ip="127.0.0.1",
+                source_port=4000,
+                payload=_payload(packet),
+                recv_monotonic=observed_at,
+            )
+        )
+
+    session._start_recorder()
+    session._consume()
+    session.stop()
+    return session
+
+
+def test_a_live_race_registers_the_weekend_profile(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "live.db"
+    _prepare_weekend(database)
+
+    session = _run_live_session(monkeypatch, database)
+
+    with SessionStore.open(database, readonly=True) as store:
+        sessions = store.list_sessions()
+
+    assert len(sessions) == 2
+    race = sessions[-1]
+    assert race.session_type is not None and race.session_type.lower() == "race"
+    assert race.profile_json is not None
+    assert race.profile_hash is not None
+    assert json.loads(race.profile_json)["schema_version"] == 1
+    assert session.weekend_profile is not None
+    assert session.stats.snapshot().consumer_errors == 0
+
+
+def test_a_live_race_without_a_weekend_keeps_capturing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "live.db"
+    with SessionStore.open(database):
+        pass
+
+    session = _run_live_session(monkeypatch, database)
+
+    with SessionStore.open(database, readonly=True) as store:
+        sessions = store.list_sessions()
+
+    assert len(sessions) == 1
+    assert sessions[0].profile_json is None
+    assert session.weekend_profile is None
+    assert session.stats.snapshot().consumer_errors == 0
+
+
+def test_a_weekend_read_failure_does_not_stop_the_capture(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "live.db"
+    _prepare_weekend(database)
+
+    def broken_list_weekends(self: SessionStore) -> list[object]:
+        raise RuntimeError("base de datos rota")
+
+    monkeypatch.setattr(SessionStore, "list_weekends", broken_list_weekends)
+
+    session = _run_live_session(monkeypatch, database)
+
+    with SessionStore.open(database, readonly=True) as store:
+        sessions = store.list_sessions()
+
+    snapshot = session.stats.snapshot()
+    assert snapshot.consumer_errors == 1
+    assert snapshot.consumer_error is not None
+    assert snapshot.consumer_error.key == "weekend_profile_error"
+    assert "base de datos rota" in str(snapshot.consumer_error.get("error"))
+    assert len(sessions) == 2
+    assert sessions[-1].profile_json is None
 
 
 def test_ingest_waits_for_the_writer_instead_of_dropping_batches(

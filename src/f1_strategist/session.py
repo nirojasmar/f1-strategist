@@ -7,7 +7,7 @@ import platform
 import queue
 import threading
 import time
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 from . import __version__
@@ -20,8 +20,10 @@ from .packets import PacketHeader, parse_header
 from .parser import PacketParseError, is_ignored_by_design, parse_packet
 from .race_state import RaceState, RaceStateSnapshot
 from .receiver import Stats, StatsSnapshot, UdpReceiver
-from .recorder import SessionRecorder, serialize_config
-from .store import SessionStore
+from .recorder import _RACE_SESSION_TYPES, SessionRecorder, serialize_config
+from .store import SessionInfo, SessionStore
+from .weekend_profile import WeekendProfile
+from .weekend_provider import resolve_weekend_profile
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -50,6 +52,13 @@ class CaptureSession:
         self._reported_dropped_batches = 0
         self._last_observed_at: float | None = None
         self._last_header: PacketHeader | None = None
+        self._profiled_uids: set[int] = set()
+        self._weekend_profile: WeekendProfile | None = None
+
+    @property
+    def weekend_profile(self) -> WeekendProfile | None:
+        """Perfil del fin de semana con el que arrancó la carrera, si lo hay."""
+        return self._weekend_profile
 
     @property
     def bound_port(self) -> int:
@@ -180,6 +189,51 @@ class CaptureSession:
             self._reported_dropped_batches = dropped
             self.stats.record_consumer_error(message("recorder_dropped", count=dropped))
 
+    def _prepare_weekend_profile(self, state: RaceStateSnapshot) -> None:
+        """Resuelve una sola vez el perfil del fin de semana al empezar una carrera.
+
+        Sin fin de semana enlazado no hay perfil y la captura continúa. Un fallo
+        de lectura se registra como diagnóstico, nunca detiene el consumidor.
+        """
+        session = state.session
+        uid = session.uid
+        if uid is None or uid in self._profiled_uids:
+            return
+        if session.session_type is None or session.session_type.lower() not in _RACE_SESSION_TYPES:
+            return
+        self._profiled_uids.add(uid)
+        store = self._store
+        recorder = self._recorder
+        if store is None or recorder is None:
+            return
+        try:
+            info = SessionInfo(
+                session_uid=uid,
+                source="live",
+                started_at_utc=datetime.now(UTC).isoformat(),
+                track=session.track,
+                session_type=session.session_type,
+                season_link_id=session.season_link_id,
+                weekend_link_id=session.weekend_link_id,
+                session_link_id=session.session_link_id,
+            )
+            result = resolve_weekend_profile(store, info, self.config.metrics)
+        except Exception as exc:
+            _LOGGER.exception("Unable to prepare the weekend profile")
+            self._record_error(message("weekend_profile_error", error=str(exc)))
+            return
+        if result.error is not None:
+            self._record_error(message("weekend_profile_error", error=result.error))
+        profile = result.profile
+        if profile is None:
+            return
+        self._weekend_profile = profile
+        try:
+            recorder.set_weekend_profile(uid, profile.to_json(), profile.hash)
+        except Exception as exc:
+            _LOGGER.exception("Unable to register the weekend profile")
+            self._record_error(message("weekend_profile_error", error=str(exc)))
+
     def race_snapshot(self) -> RaceStateSnapshot:
         return self._race_state.snapshot()
 
@@ -250,6 +304,7 @@ class CaptureSession:
                     else:
                         recorder = self._recorder
                         if recorder is not None:
+                            self._prepare_weekend_profile(state_snapshot)
                             try:
                                 recorder.observe(
                                     parsed_packet.header.session_time,

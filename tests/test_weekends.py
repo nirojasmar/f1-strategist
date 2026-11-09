@@ -8,6 +8,8 @@ from pathlib import Path
 import pytest
 
 from f1_strategist.cli import main
+from f1_strategist.metrics.stint_summary import StintSummary
+from f1_strategist.metrics.types import Quality
 from f1_strategist.store import (
     MIGRATIONS,
     SCHEMA_VERSION,
@@ -16,6 +18,7 @@ from f1_strategist.store import (
     StoreError,
     apply_migrations,
 )
+from f1_strategist.weekend_profile import WeekendProfile
 
 
 def _session(session_uid: int = 0xF125, **overrides: object) -> SessionInfo:
@@ -332,3 +335,122 @@ def test_weekends_link_cli_rejects_different_tracks(
 
     assert main(["weekends", "link", str(monza), str(spa), "--db", str(db)]) == 2
     assert "circuitos distintos" in capsys.readouterr().err
+
+
+def _registered_profile() -> tuple[str, str]:
+    profile = WeekendProfile()
+    return profile.to_json(), profile.hash
+
+
+def _summary() -> StintSummary:
+    return StintSummary(
+        car_index=0,
+        stint_index=0,
+        start_lap=1,
+        end_lap=10,
+        laps=10,
+        compound="c3",
+        visual_compound="soft",
+        clean_laps=6,
+        tyre_age_start=0,
+        tyre_age_end=10,
+        fuel_start_kg=40.0,
+        fuel_end_kg=38.0,
+        pace_mean_s=90.0,
+        pace_mean_fuel_corrected_s=None,
+        pace_trend_s_per_lap=None,
+        pace_trend_fuel_corrected_s_per_lap=None,
+        wear_start_pct=0.0,
+        wear_end_pct=1.0,
+        wear_rate_pct_per_lap=0.10,
+        track_temperature_mean_c=30.0,
+        weather=("clear",),
+        representative=True,
+        quality=Quality.OK,
+    )
+
+
+def test_weekend_show_renders_the_registered_profile(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db = tmp_path / "sessions.db"
+    profile_json, profile_hash = _registered_profile()
+    with SessionStore.open(db) as store:
+        session_id = store.create_session(
+            _session(profile_json=profile_json, profile_hash=profile_hash)
+        )
+
+    assert main(["weekend", "show", "--session", str(session_id), "--db", str(db)]) == 0
+    output = capsys.readouterr().out
+    assert f"Perfil del fin de semana de la sesión {session_id}" in output
+    assert "registrado al empezar la carrera" in output
+    assert profile_hash[:12] in output
+
+
+def test_weekend_show_calculates_a_profile_when_none_is_registered(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db = tmp_path / "sessions.db"
+    with SessionStore.open(db) as store:
+        practice = store.create_session(_session(session_uid=1, session_type="practice"))
+        store.add_stint_summaries(practice, [_summary()])
+        race = store.create_session(_session(session_uid=2))
+        weekend_id = store.link_sessions([practice, race])
+
+    assert main(["weekend", "show", "--session", str(race), "--db", str(db)]) == 0
+    output = capsys.readouterr().out
+    assert "calculado ahora (no registrado)" in output
+    assert str(weekend_id) in output
+    assert "c3" in output
+
+
+def test_weekend_show_explains_that_a_session_has_no_profile(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db = tmp_path / "sessions.db"
+    with SessionStore.open(db) as store:
+        session_id = store.create_session(_session(session_uid=1))
+
+    assert main(["weekend", "show", "--session", str(session_id), "--db", str(db)]) == 0
+    assert "no tiene perfil registrado ni un fin de semana enlazado" in capsys.readouterr().out
+
+
+def test_weekend_show_without_session_uses_the_last_registered_profile(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db = tmp_path / "sessions.db"
+    profile_json, profile_hash = _registered_profile()
+    with SessionStore.open(db) as store:
+        store.create_session(_session(session_uid=1))
+        latest = store.create_session(
+            _session(session_uid=2, profile_json=profile_json, profile_hash=profile_hash)
+        )
+
+    assert main(["weekend", "show", "--db", str(db)]) == 0
+    output = capsys.readouterr().out
+    assert f"Perfil del fin de semana de la sesión {latest}" in output
+    assert "registrado al empezar la carrera" in output
+
+
+def test_weekend_show_without_any_profile_reports_it(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db = tmp_path / "sessions.db"
+    with SessionStore.open(db) as store:
+        store.create_session(_session(session_uid=1))
+
+    assert main(["weekend", "show", "--db", str(db)]) == 0
+    assert "No hay ninguna sesión con un perfil del fin de semana registrado." in (
+        capsys.readouterr().out
+    )
+
+
+def test_weekend_show_rejects_a_missing_session(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db = tmp_path / "sessions.db"
+    with SessionStore.open(db):
+        pass
+
+    assert main(["weekend", "show", "--session", "99", "--db", str(db)]) == 2
+    assert "No existe la sesión 99" in capsys.readouterr().err

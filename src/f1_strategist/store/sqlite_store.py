@@ -64,6 +64,8 @@ _SESSION_COLUMNS: tuple[str, ...] = (
     "session_link_id",
     "weekend_structure_json",
     "weekend_id",
+    "profile_json",
+    "profile_hash",
 )
 
 _WEEKEND_COLUMNS: tuple[str, ...] = (
@@ -122,6 +124,8 @@ class SessionInfo:
     session_link_id: int | None = None
     weekend_structure_json: str | None = None
     weekend_id: int | None = None
+    profile_json: str | None = None
+    profile_hash: str | None = None
 
     def __post_init__(self) -> None:
         if self.session_uid < 0 or self.session_uid > 2**64 - 1:
@@ -332,11 +336,14 @@ class SessionStore:
             info.session_link_id,
             info.weekend_structure_json,
             info.weekend_id,
+            info.profile_json,
+            info.profile_hash,
         ]
         columns = _SESSION_COLUMNS[1:]
+        weekend_index = _SESSION_COLUMNS.index("weekend_id") - 1
         with self.transaction() as connection:
             if info.weekend_id is None and info.weekend_link_id is not None:
-                values[-1] = self._ensure_game_weekend(
+                values[weekend_index] = self._ensure_game_weekend(
                     connection,
                     weekend_link_id=info.weekend_link_id,
                     season_link_id=info.season_link_id,
@@ -417,7 +424,9 @@ class SessionStore:
                 "weekend_link_id = COALESCE(?, weekend_link_id), "
                 "session_link_id = COALESCE(?, session_link_id), "
                 "weekend_structure_json = COALESCE(?, weekend_structure_json), "
-                "weekend_id = COALESCE(?, weekend_id) "
+                "weekend_id = COALESCE(?, weekend_id), "
+                "profile_json = COALESCE(?, profile_json), "
+                "profile_hash = COALESCE(?, profile_hash) "
                 "WHERE id = ?",
                 (
                     info.game_format,
@@ -437,6 +446,8 @@ class SessionStore:
                     info.session_link_id,
                     info.weekend_structure_json,
                     weekend_id,
+                    info.profile_json,
+                    info.profile_hash,
                     session_id,
                 ),
             )
@@ -1085,6 +1096,8 @@ def _session_from_row(row: sqlite3.Row) -> SessionInfo:
         session_link_id=_optional_int(row["session_link_id"]),
         weekend_structure_json=_optional_str(row["weekend_structure_json"]),
         weekend_id=_optional_int(row["weekend_id"]),
+        profile_json=_optional_str(row["profile_json"]),
+        profile_hash=_optional_str(row["profile_hash"]),
     )
 
 

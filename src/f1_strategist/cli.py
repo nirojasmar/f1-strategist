@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import select
 import signal
 import sys
 import time
 from collections.abc import Sequence
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -31,7 +33,7 @@ from .receiver import ReceiverError
 from .recorder import ingest_capture
 from .replay import replay_capture
 from .session import CaptureSession
-from .store import SessionStore, StoreError
+from .store import SessionInfo, SessionStore, StoreError
 from .store.queries import (
     held_metric_values,
     list_session_summaries,
@@ -42,6 +44,7 @@ from .store.queries import (
 )
 from .summary import summarize
 from .trim import trim_capture
+from .weekend_provider import resolve_weekend_profile
 
 _SPEED_STEPS = (0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0)
 
@@ -338,6 +341,26 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     weekends_unlink.add_argument("session_id", type=_positive_int, metavar="ID")
     weekends_unlink.add_argument(
+        "--db",
+        type=Path,
+        help="base de datos SQLite (por defecto, la de la configuración)",
+    )
+
+    weekend = sub.add_parser(
+        "weekend", help="muestra el perfil del fin de semana usado por una carrera"
+    )
+    weekend_sub = weekend.add_subparsers(dest="weekend_command", required=True)
+
+    weekend_show = weekend_sub.add_parser(
+        "show", help="muestra el perfil del fin de semana de una sesión"
+    )
+    weekend_show.add_argument(
+        "--session",
+        type=_positive_int,
+        metavar="ID",
+        help="sesión cuya carrera usó el perfil (por defecto, la última que lo registró)",
+    )
+    weekend_show.add_argument(
         "--db",
         type=Path,
         help="base de datos SQLite (por defecto, la de la configuración)",
@@ -997,6 +1020,197 @@ def _weekends_unlink(store: SessionStore, session_id: int, console: Console) -> 
     return 0
 
 
+def _quality_text(value: object) -> str:
+    """Traduce la calidad de un valor del perfil a texto en español."""
+    labels = {
+        "ok": "ok",
+        "low": "low (bajo)",
+        "stale": "stale (obsoleto)",
+        "insufficient": "insufficient (insuficiente)",
+        "unavailable": "unavailable (no disponible)",
+    }
+    if not isinstance(value, str):
+        return "-"
+    return labels.get(value, value)
+
+
+def _profile_number(value: object, digits: int = 3) -> str:
+    """Representa un valor numérico opcional del perfil con sus decimales."""
+    if value is None:
+        return "-"
+    if isinstance(value, bool):
+        return "sí" if value else "no"
+    if isinstance(value, (int, float)):
+        return f"{value:.{digits}f}"
+    return str(value)
+
+
+def _profile_value_text(entry: object, digits: int = 3) -> str:
+    """Muestra el número de un valor del perfil y avisa si su calidad es baja."""
+    if not isinstance(entry, dict):
+        return "-"
+    text = _profile_number(entry.get("value"), digits)
+    quality = entry.get("quality")
+    if text != "-" and quality not in (None, "ok"):
+        return f"{text} ({_quality_text(quality)})"
+    return text
+
+
+def _cmd_weekend(args: argparse.Namespace, console: Console, err: Console) -> int:
+    db = _sessions_database(args)
+    with SessionStore.open(db, readonly=True) as store:
+        return _weekend_show(store, args.session, console, err)
+
+
+def _weekend_show(
+    store: SessionStore,
+    session_id: int | None,
+    console: Console,
+    err: Console,
+) -> int:
+    session = None
+    if session_id is None:
+        for candidate in reversed(store.list_sessions()):
+            if candidate.profile_json is not None:
+                session = candidate
+                break
+        if session is None:
+            console.print("No hay ninguna sesión con un perfil del fin de semana registrado.")
+            return 0
+    else:
+        session = require_session(store, session_id)
+
+    if session.profile_json is not None:
+        payload = json.loads(session.profile_json)
+        origin = "registrado al empezar la carrera"
+    else:
+        result = resolve_weekend_profile(
+            store,
+            session,
+            load_config(None).metrics,
+            exclude_session_id=session.id,
+        )
+        if result.error is not None:
+            err.print(
+                f"[red]Error:[/] no se pudo calcular el perfil del fin de semana: {result.error}"
+            )
+            return 2
+        if result.profile is None:
+            console.print(
+                f"La sesión {session.id} no tiene perfil registrado ni un fin de semana "
+                "enlazado del que calcularlo."
+            )
+            return 0
+        payload = result.profile.to_dict()
+        session = replace(session, profile_hash=result.profile.hash)
+        origin = "calculado ahora (no registrado)"
+
+    _render_weekend_profile(session, payload, origin, console)
+    return 0
+
+
+def _render_weekend_profile(
+    session: SessionInfo,
+    payload: object,
+    origin: str,
+    console: Console,
+) -> None:
+    if not isinstance(payload, dict):
+        raise ValueError("El perfil del fin de semana no tiene el formato esperado.")
+    pit_loss = payload.get("pit_loss_s")
+    sessions = payload.get("sessions")
+    table = Table(
+        title=f"Perfil del fin de semana de la sesión {session.id}",
+        show_header=False,
+        expand=False,
+    )
+    table.add_column("Campo", style="bold")
+    table.add_column("Valor", overflow="fold")
+    rows = (
+        ("Sesión", session.id),
+        ("Circuito", session.track),
+        ("Tipo de sesión", session.session_type),
+        ("Fin de semana", session.weekend_id),
+        ("Origen del perfil", origin),
+        ("Esquema", payload.get("schema_version")),
+        ("Calidad", _quality_text(payload.get("quality"))),
+        ("Compuesto de referencia", payload.get("reference_compound")),
+        ("Pérdida en boxes", _profile_value_text(pit_loss, 2)),
+        ("Sesiones usadas", ", ".join(str(item) for item in sessions) if sessions else "-"),
+        ("Huella", session.profile_hash),
+    )
+    for label, value in rows:
+        table.add_row(label, _text(value))
+    console.print(table)
+
+    compounds = payload.get("compounds")
+    if isinstance(compounds, list) and compounds:
+        compound_table = Table(title="Compuestos", expand=False)
+        compound_table.add_column("Compuesto")
+        compound_table.add_column("Tandas", justify="right")
+        compound_table.add_column("Vueltas", justify="right")
+        compound_table.add_column("Limpias", justify="right")
+        compound_table.add_column("Desgaste %/vuelta", justify="right")
+        compound_table.add_column("Ritmo medio (s)", justify="right")
+        compound_table.add_column("Delta (s)", justify="right")
+        compound_table.add_column("Consumo (kg/vuelta)", justify="right")
+        compound_table.add_column("Rango combustible (kg)", justify="right")
+        compound_table.add_column("Temp. (°C)", justify="right")
+        compound_table.add_column("Calidad")
+        for entry in compounds:
+            if not isinstance(entry, dict):
+                continue
+            fuel_range = entry.get("fuel_range_kg")
+            if isinstance(fuel_range, list) and len(fuel_range) == 2:
+                fuel_range_text = (
+                    f"{_profile_number(fuel_range[0], 1)}–{_profile_number(fuel_range[1], 1)}"
+                )
+            else:
+                fuel_range_text = "-"
+            compound_table.add_row(
+                _text(entry.get("compound")),
+                str(entry.get("stints", 0)),
+                str(entry.get("laps", 0)),
+                str(entry.get("clean_laps", 0)),
+                _profile_value_text(entry.get("wear_rate_pct_per_lap")),
+                _profile_value_text(entry.get("pace_mean_s")),
+                _profile_value_text(entry.get("pace_delta_vs_reference_s")),
+                _profile_value_text(entry.get("fuel_consumption_kg_per_lap")),
+                fuel_range_text,
+                _profile_value_text(entry.get("track_temperature_c"), 1),
+                _quality_text(entry.get("quality")),
+            )
+        console.print(compound_table)
+
+    inventory = payload.get("inventory")
+    if isinstance(inventory, list) and inventory:
+        inventory_table = Table(title="Inventario de neumáticos", expand=False)
+        inventory_table.add_column("Tipo")
+        inventory_table.add_column("Juego", justify="right")
+        inventory_table.add_column("Compuesto")
+        inventory_table.add_column("Visual")
+        inventory_table.add_column("Desgaste %", justify="right")
+        inventory_table.add_column("Disponible")
+        inventory_table.add_column("Vida", justify="right")
+        inventory_table.add_column("Recomendada")
+        inventory_table.add_column("Montado")
+        for entry in inventory:
+            if not isinstance(entry, dict):
+                continue
+            inventory_table.add_row(
+                _text(entry.get("kind")),
+                str(entry.get("set_index", 0)),
+                _text(entry.get("actual_tyre_compound")),
+                _text(entry.get("visual_tyre_compound")),
+                _profile_number(entry.get("wear_pct"), 1),
+                _yes_no(entry.get("available")),
+                _profile_number(entry.get("usable_life_laps"), 1),
+                _text(entry.get("recommended_session")),
+                _yes_no(entry.get("fitted")),
+            )
+        console.print(inventory_table)
+
+
 def _cmd_datasets(args: argparse.Namespace, console: Console, err: Console) -> int:
     manifest = load_manifest(args.manifest)
     if args.datasets_command == "list":
@@ -1149,6 +1363,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "datasets": _cmd_datasets,
         "sessions": _cmd_sessions,
         "weekends": _cmd_weekends,
+        "weekend": _cmd_weekend,
     }
     try:
         return handlers[args.command](args, console, err)

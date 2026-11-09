@@ -11,7 +11,7 @@ import sqlite3
 from dataclasses import dataclass
 
 #: Versión que entiende este código.
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 class StoreError(Exception):
@@ -260,12 +260,22 @@ _V4_STATEMENTS: tuple[str, ...] = (
     """,
 )
 
+#: Perfil del fin de semana exacto con el que arrancó la carrera.
+#:
+#: Se guarda el JSON canónico y su huella para que una reproducción use el mismo
+#: perfil aunque los datos del fin de semana hayan cambiado después.
+_V5_STATEMENTS: tuple[str, ...] = (
+    "ALTER TABLE sessions ADD COLUMN profile_json TEXT",
+    "ALTER TABLE sessions ADD COLUMN profile_hash TEXT",
+)
+
 #: Migraciones ordenadas; el índice 0 lleva el esquema a la versión 1.
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(version=1, statements=_V1_STATEMENTS),
     Migration(version=2, statements=_V2_STATEMENTS),
     Migration(version=3, statements=_V3_STATEMENTS),
     Migration(version=4, statements=_V4_STATEMENTS),
+    Migration(version=5, statements=_V5_STATEMENTS),
 )
 
 
