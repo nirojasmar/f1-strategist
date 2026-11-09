@@ -7,7 +7,7 @@ import struct
 import time
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
-from dataclasses import fields
+from dataclasses import fields, replace
 from pathlib import Path
 from typing import Any
 
@@ -339,6 +339,113 @@ def test_live_capture_matches_ingest_for_laps_and_events(
     assert live_events == ingested_events
 
 
+def _two_session_scenario() -> tuple[list[tuple[ParsedPacket, float]], int]:
+    first = _scenario()
+    second = [
+        (
+            replace(
+                packet, header=replace(packet.header, session_uid=packet.header.session_uid + 1)
+            ),
+            at,
+        )
+        for packet, at in _scenario()
+    ]
+    return [*first, *second], len(first)
+
+
+def _expected_segment(
+    packets: list[tuple[ParsedPacket, float]],
+    *,
+    start_index: int,
+) -> _EventCollector:
+    collector = _EventCollector()
+    for offset, (packet, _) in enumerate(packets):
+        recv_time_ns = (start_index + offset) * 100_000
+        collector.apply(packet, recv_time_ns / 1_000_000_000)
+    collector.finish()
+    return collector
+
+
+def test_multisession_ingest_persists_each_final_snapshot_and_replaces_as_a_group(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    packets, split = _two_session_scenario()
+    path = tmp_path / "multisession.f1cap"
+    _write_capture(path, packets)
+    _patch_parser(monkeypatch, packets)
+    expected = (
+        _expected_segment(packets[:split], start_index=0),
+        _expected_segment(packets[split:], start_index=split),
+    )
+    config = AppConfig()
+
+    with SessionStore.open(tmp_path / "sessions.db") as store:
+        first_ingest = ingest_capture(path, store, config)
+        sessions = [
+            item
+            for item in store.list_sessions()
+            if item.source == "ingest" and item.capture_sha256 == file_sha256(path)
+        ]
+        assert len(sessions) == 2
+        assert all(item.ended_at_utc is not None for item in sessions)
+        assert all(item.final_metrics_json is not None for item in sessions)
+
+        for session, segment in zip(sessions, expected, strict=True):
+            assert session.id is not None
+            for export_format in _EXPORT_FORMATS:
+                assert render_session_export(
+                    store, session.id, export_format
+                ) == render_metrics_export(
+                    segment.engine.snapshot(),
+                    segment.engine.history,
+                    export_format,
+                )
+
+        replaced = ingest_capture(path, store, config, replace=True)
+        replacement_sessions = [
+            item
+            for item in store.list_sessions()
+            if item.source == "ingest" and item.capture_sha256 == file_sha256(path)
+        ]
+
+    assert first_ingest.session_id != replaced.session_id
+    assert len(replacement_sessions) == 2
+    assert all(item.id is not None for item in replacement_sessions)
+    assert all(item.final_metrics_json is not None for item in replacement_sessions)
+
+
+def test_live_multisession_capture_hashes_every_session_after_writer_close(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    packets, _ = _two_session_scenario()
+    source = tmp_path / "multisession-source.f1cap"
+    _write_capture(source, packets)
+    _patch_parser(monkeypatch, packets)
+    config = _live_config(tmp_path)
+    session = CaptureSession(config)
+    session.start()
+    try:
+        sent = replay_capture(source, "127.0.0.1", session.bound_port, speed=0)
+        assert _wait_until(lambda: session.snapshot().capture_packets >= sent)
+    finally:
+        session.stop()
+
+    assert session.capture_path is not None
+    expected_hash = file_sha256(Path(session.capture_path))
+    with SessionStore.open(config.recording.database) as store:
+        live_sessions = [item for item in store.list_sessions() if item.source == "live"]
+
+    assert len(live_sessions) == 2
+    assert all(item.capture_path == str(session.capture_path) for item in live_sessions)
+    assert all(item.capture_sha256 == expected_hash for item in live_sessions)
+    assert all(item.tool_version is not None for item in live_sessions)
+    assert all(item.parser_version is not None for item in live_sessions)
+    assert all(item.config_hash is not None for item in live_sessions)
+    assert all(item.final_metrics_json is not None for item in live_sessions)
+
+
 class _MemoryStore:
     """Almacén en memoria compatible con el protocolo del grabador."""
 
@@ -362,6 +469,9 @@ class _MemoryStore:
         return session_id
 
     def update_session(self, session_id: int, info: SessionInfo) -> None:
+        return None
+
+    def update_capture_sha256(self, session_id: int, sha256: str) -> None:
         return None
 
     def finish_session(
@@ -470,8 +580,98 @@ def test_a_slow_store_does_not_block_live_observations() -> None:
     assert elapsed < 0.5
 
 
+@pytest.mark.benchmark
+def test_slow_store_does_not_delay_or_drop_udp_consumer_packets(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    packets = _scenario()
+    source = tmp_path / "consumer-load.f1cap"
+    _write_capture(source, packets)
+    _patch_parser(monkeypatch, packets)
+
+    def run_case(label: str, delay: float) -> tuple[str, float, float, int, int, int, int]:
+        config = _live_config(tmp_path / label)
+        with monkeypatch.context() as patch:
+            store = SessionStore.open(config.recording.database)
+            store_proxy = _SlowSQLiteStore(store, delay)
+            session = CaptureSession(config, queue_size=10_000)
+            queue_peak = 0
+            consumer_latencies: list[float] = []
+            original_put = session._queue.put_nowait
+            original_write = session._write_packet
+
+            def track_queue(item: CapturedPacket) -> None:
+                nonlocal queue_peak
+                original_put(item)
+                queue_peak = max(queue_peak, session._queue.qsize())
+
+            def track_consumer(packet: CapturedPacket) -> None:
+                if packet.recv_monotonic is not None:
+                    consumer_latencies.append(time.monotonic() - packet.recv_monotonic)
+                original_write(packet)
+
+            patch.setattr(session._queue, "put_nowait", track_queue)
+            patch.setattr(session, "_write_packet", track_consumer)
+            patch.setattr(
+                SessionStore,
+                "open",
+                classmethod(lambda cls, path: store_proxy),
+            )
+            session.start()
+            recorder = session._recorder
+            assert recorder is not None
+            started = time.perf_counter()
+            try:
+                sent = replay_capture(source, "127.0.0.1", session.bound_port, speed=0)
+                assert _wait_until(lambda: session.snapshot().received >= sent)
+            finally:
+                session.stop()
+            elapsed = time.perf_counter() - started
+            stats = session.snapshot()
+            return (
+                label,
+                elapsed,
+                max(consumer_latencies, default=0.0),
+                queue_peak,
+                stats.received,
+                stats.dropped_queue_full,
+                recorder.dropped_batches,
+            )
+
+    results = [run_case(label, delay) for label, delay in (("normal", 0.0), ("slow", 0.02))]
+    for result in results:
+        label, _, _, _, received, dropped_udp, dropped_batches = result
+        assert received == len(packets), label
+        assert dropped_udp == 0, label
+        assert dropped_batches == 0, label
+    print(
+        "UDP consumer benchmark (mode, completion_s, max_receive_to_consumer_s, "
+        "queue_peak, received, dropped_udp, dropped_store_batches): "
+        f"{results}"
+    )
+
+
 def _empty_history() -> LapHistorySnapshot:
     return LapHistorySnapshot(records={}, session_uid=1)
+
+
+class _SlowSQLiteStore:
+    """Envuelve SQLite para medir el consumidor UDP con escrituras lentas."""
+
+    def __init__(self, inner: SessionStore, delay: float) -> None:
+        self._inner = inner
+        self._delay = delay
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+    @contextmanager
+    def transaction(self) -> Iterator[object]:
+        if self._delay:
+            time.sleep(self._delay)
+        with self._inner.transaction() as connection:
+            yield connection
 
 
 def _real_capture_path() -> Path:

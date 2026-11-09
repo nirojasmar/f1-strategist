@@ -459,6 +459,18 @@ Documentos de diseño:
 -   El manifiesto registra hashes, tamaños, expectativas y etiquetas de escenario. `datasets verify`
     validó los tres escenarios (incluido Monza), las 15 pruebas de `test_datasets.py` pasan y Ruff,
     formato y `git diff --check` pasan.
+-   Cerrada la persistencia multisesión: al cambiar el UID se finaliza la instantánea de métricas de la
+    sesión anterior; tras cerrar el archivo, el SHA-256 final se asigna a todas las sesiones creadas por
+    esa captura. Las pruebas E2E confirman que cada export coincide con el segmento aislado y que
+    `ingest --replace` reemplaza el grupo completo.
+-   Se midió el consumidor UDP con un almacén SQLite normal y otro que retrasa 20 ms cada transacción,
+    sobre el mismo escenario sintético de 27 paquetes. En esta ejecución se recibieron los 27 paquetes
+    en ambos casos, sin pérdidas UDP ni lotes descartados; el máximo observado entre recepción y entrada
+    al consumidor fue 0,42 ms (normal) y 5,71 ms (lento), con picos de cola de 2 y 20 paquetes. Son
+    resultados de este escenario, no un umbral general de rendimiento.
+-   Validación tras estos cambios: `uv run pytest -q` (571 aprobadas, 4 benchmarks excluidos),
+    `uv run pytest -q -m benchmark` (4 aprobadas), Ruff (96 archivos), Pyright (0 errores) y
+    `git diff --check` pasan. La fixture de Monza permanece local y sin seguimiento.
 
 ## 7. Hallazgos de la primera captura real
 

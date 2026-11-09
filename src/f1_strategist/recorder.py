@@ -59,6 +59,8 @@ class RecorderStore(Protocol):
 
     def update_session(self, session_id: int, info: SessionInfo) -> None: ...
 
+    def update_capture_sha256(self, session_id: int, sha256: str) -> None: ...
+
     def add_participants(self, session_id: int, participants: Iterable[Participant]) -> None: ...
 
     def upsert_laps(self, session_id: int, laps: Iterable[LapRecord]) -> None: ...
@@ -83,6 +85,8 @@ class _Batch:
     errors: tuple[StoredError, ...]
     incomplete: bool
     incomplete_uids: frozenset[int] = frozenset()
+    previous_session_uid: int | None = None
+    previous_final_metrics_json: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,6 +98,8 @@ class _Stop:
     incomplete_uids: frozenset[int] = frozenset()
     final_metrics_json: str | None = None
     capture_sha256: str | None = None
+    session_uid: int | None = None
+    pending_closures: tuple[tuple[int, str], ...] = ()
 
 
 def serialize_config(config: AppConfig) -> str:
@@ -162,6 +168,9 @@ class SessionRecorder:
         self._last_metrics_at: float | None = None
         self._last_metrics_computed_at: float | None = None
         self._last_metrics_lap: int | None = None
+        self._pending_final_metrics: dict[int, str] = {}
+        self._pending_previous_closures: dict[int, tuple[int, str]] = {}
+        self._session_ids: set[int] = set()
 
         self._thread = threading.Thread(target=self._run, name="session-recorder", daemon=True)
         self._thread.start()
@@ -234,6 +243,35 @@ class SessionRecorder:
         except Exception as exc:  # noqa: BLE001 - el grabador nunca detiene la captura
             self._remember_error(exc)
 
+    def end_session(
+        self,
+        header_session_time: float | None,
+        observed_at: float,
+        state: RaceStateSnapshot,
+        metrics: MetricsSnapshot,
+        history: LapHistory | LapHistorySnapshot,
+        *,
+        header: PacketHeader | None = None,
+    ) -> None:
+        """Publica una instantánea final y la asocia al cierre de esta sesión."""
+        try:
+            self._observe(
+                header_session_time,
+                observed_at,
+                state,
+                metrics,
+                history,
+                header,
+                force=True,
+            )
+            uid = state.session.uid
+            if uid is not None:
+                final_metrics_json = _final_metrics_json(metrics)
+                if final_metrics_json is not None:
+                    self._pending_final_metrics[uid] = final_metrics_json
+        except Exception as exc:  # noqa: BLE001 - el grabador nunca detiene la captura
+            self._remember_error(exc)
+
     def record_error(
         self,
         issue: DiagnosticMessage,
@@ -290,8 +328,8 @@ class SessionRecorder:
                 or (uid is not None and uid in self._dropped_by_uid)
             )
             incomplete_uids = frozenset(self._dropped_by_uid)
-        if final_batch is not None:
-            self._queue.put(final_batch)
+        if final_batch is not None and self._enqueue(final_batch):
+            self._pending_previous_closures.pop(final_batch.session_uid, None)
         self._queue.put(
             _Stop(
                 fingerprint=fingerprint,
@@ -299,11 +337,12 @@ class SessionRecorder:
                 incomplete_uids=incomplete_uids,
                 final_metrics_json=_final_metrics_json(final_metrics),
                 capture_sha256=capture_sha256,
+                session_uid=self._session_uid,
+                pending_closures=tuple(self._pending_previous_closures.values()),
             )
         )
-        timeout = 5.0 + self._config.flush_interval_s
         if self._thread is not threading.current_thread():
-            self._thread.join(timeout=timeout)
+            self._thread.join()
 
     # ------------------------------------------------------------------
     # Lógica del consumidor
@@ -317,6 +356,8 @@ class SessionRecorder:
         metrics: MetricsSnapshot,
         history: LapHistory | LapHistorySnapshot,
         header: PacketHeader | None,
+        *,
+        force: bool = False,
     ) -> None:
         uid = state.session.uid
         if uid is None:
@@ -337,17 +378,25 @@ class SessionRecorder:
             header.game_major_version if header is not None else None,
             header.game_minor_version if header is not None else None,
         )
+        if signature == self._last_signature and not force:
+            return
+
+        session_changed = uid != self._session_uid
+        previous_session_uid = self._session_uid if session_changed else None
+        if session_changed:
+            if previous_session_uid is not None:
+                final_metrics_json = self._pending_final_metrics.pop(previous_session_uid, None)
+                if final_metrics_json is not None:
+                    self._pending_previous_closures[uid] = (
+                        previous_session_uid,
+                        final_metrics_json,
+                    )
+            self._reset_session(uid)
+        self._last_signature = signature
         self._last_state = state
         self._last_metrics = metrics
         self._last_header_time = header_session_time
-        if signature == self._last_signature:
-            return
-        self._last_signature = signature
         self._last_observed_at = observed_at
-
-        session_changed = uid != self._session_uid
-        if session_changed:
-            self._reset_session(uid)
         info = self._build_session_info(uid, state, header)
         metadata_changed = info != self._producer_info
         self._producer_info = info
@@ -363,7 +412,8 @@ class SessionRecorder:
             incomplete = self._writer_incomplete or uid in self._dropped_by_uid
 
         if not (
-            session_changed
+            force
+            or session_changed
             or metadata_changed
             or participants
             or laps
@@ -372,7 +422,8 @@ class SessionRecorder:
             or errors
         ):
             return
-        self._enqueue(
+        pending_close = self._pending_previous_closures.get(uid)
+        enqueued = self._enqueue(
             _Batch(
                 session_uid=uid,
                 session_info=info,
@@ -383,8 +434,18 @@ class SessionRecorder:
                 errors=errors,
                 incomplete=incomplete,
                 incomplete_uids=self._incomplete_uids(),
+                previous_session_uid=pending_close[0] if pending_close is not None else None,
+                previous_final_metrics_json=(
+                    pending_close[1] if pending_close is not None else None
+                ),
             )
         )
+        if enqueued and pending_close is not None:
+            self._pending_previous_closures.pop(uid, None)
+        elif not enqueued and pending_close is not None:
+            with self._lock:
+                previous_uid = pending_close[0]
+                self._dropped_by_uid[previous_uid] = self._dropped_by_uid.get(previous_uid, 0) + 1
 
     def _reset_session(self, uid: int) -> None:
         self._session_uid = uid
@@ -574,24 +635,36 @@ class SessionRecorder:
             errors=(),
             incomplete=incomplete,
             incomplete_uids=self._incomplete_uids(),
+            previous_session_uid=(
+                self._pending_previous_closures[uid][0]
+                if uid in self._pending_previous_closures
+                else None
+            ),
+            previous_final_metrics_json=(
+                self._pending_previous_closures[uid][1]
+                if uid in self._pending_previous_closures
+                else None
+            ),
         )
 
     def _incomplete_uids(self) -> frozenset[int]:
         with self._lock:
             return frozenset(self._dropped_by_uid)
 
-    def _enqueue(self, batch: _Batch) -> None:
+    def _enqueue(self, batch: _Batch) -> bool:
         if self._block_when_full:
             # La ingesta offline no debe perder datos: espera al hilo escritor.
             self._queue.put(batch)
-            return
+            return True
         try:
             self._queue.put_nowait(batch)
+            return True
         except queue.Full:
             with self._lock:
                 self._dropped_by_uid[batch.session_uid] = (
                     self._dropped_by_uid.get(batch.session_uid, 0) + 1
                 )
+            return False
 
     def _remember_error(self, exc: Exception) -> None:
         with self._lock:
@@ -630,10 +703,14 @@ class SessionRecorder:
     def _flush(self, batches: list[_Batch]) -> None:
         if not batches:
             return
+        created_session_ids: set[int] = set()
         try:
             with self._store.transaction():
                 for batch in batches:
-                    self._apply_batch(batch)
+                    session_id = self._apply_batch(batch)
+                    if session_id is not None:
+                        created_session_ids.add(session_id)
+            self._session_ids.update(created_session_ids)
         except Exception as exc:  # noqa: BLE001 - se aísla del hilo consumidor
             self._remember_error(exc)
             with self._lock:
@@ -641,23 +718,30 @@ class SessionRecorder:
                 self._stored_uid = None
                 self._writer_info = None
 
-    def _apply_batch(self, batch: _Batch) -> None:
+    def _apply_batch(self, batch: _Batch) -> int | None:
+        created_session_id: int | None = None
         if self._stored_uid != batch.session_uid:
             previous_uid = self._stored_uid
             self._close_current(
+                final_metrics_json=(
+                    batch.previous_final_metrics_json
+                    if previous_uid == batch.previous_session_uid
+                    else None
+                ),
                 incomplete=(
                     self._writer_incomplete
                     or (previous_uid is not None and previous_uid in batch.incomplete_uids)
-                )
+                ),
             )
             session_id = self._store.create_session(batch.session_info)
+            created_session_id = session_id
             with self._lock:
                 self._session_id = session_id
                 self._stored_uid = batch.session_uid
                 self._writer_info = batch.session_info
         session_id = self._session_id
         if session_id is None:
-            return
+            return created_session_id
         if self._writer_info != batch.session_info:
             self._store.update_session(session_id, batch.session_info)
             with self._lock:
@@ -675,6 +759,7 @@ class SessionRecorder:
             self._store.add_metric_samples(session_id, batch.metrics)
         if batch.errors:
             self._store.add_errors(session_id, batch.errors)
+        return created_session_id
 
     def _close_current(
         self,
@@ -712,9 +797,23 @@ class SessionRecorder:
                 )
                 self._close_current(
                     fingerprint=stop.fingerprint,
-                    final_metrics_json=stop.final_metrics_json,
+                    final_metrics_json=(
+                        stop.final_metrics_json
+                        if uid == stop.session_uid
+                        else next(
+                            (
+                                metrics_json
+                                for previous_uid, metrics_json in stop.pending_closures
+                                if previous_uid == uid
+                            ),
+                            None,
+                        )
+                    ),
                     capture_sha256=stop.capture_sha256,
                 )
+                if stop.capture_sha256 is not None:
+                    for session_id in sorted(self._session_ids):
+                        self._store.update_capture_sha256(session_id, stop.capture_sha256)
         except Exception as exc:  # noqa: BLE001 - se conserva para diagnóstico
             self._remember_error(exc)
         finally:
@@ -753,8 +852,25 @@ class _IngestCollector:
         self.last_header: PacketHeader | None = None
 
     def apply(self, packet: ParsedPacket, observed_at: float) -> None:
+        previous_state = self.state.snapshot()
         self.state.apply(packet, observed_at)
         snapshot = self.state.snapshot()
+        if (
+            previous_state.session.uid is not None
+            and snapshot.session.uid != previous_state.session.uid
+            and self.last_observed_at is not None
+            and self.last_state is not None
+            and self.last_header is not None
+        ):
+            self.engine.finalize(self.last_state, self.last_observed_at)
+            self.recorder.end_session(
+                self.last_header_time,
+                self.last_observed_at,
+                self.last_state,
+                self.engine.snapshot(),
+                self.engine.history,
+                header=self.last_header,
+            )
         self.last_state = snapshot
         self.last_observed_at = observed_at
         self.last_header_time = packet.header.session_time
