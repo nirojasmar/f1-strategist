@@ -5,11 +5,16 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from types import MappingProxyType
-from typing import Literal, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
 
 from ..config import MetricsConfig
 from ..race_state import CarSnapshot, RaceStateSnapshot
 from .types import Metric
+
+if TYPE_CHECKING:
+    # Importación diferida: ``weekend_profile`` pasa por ``store``, que a su vez
+    # importa los resúmenes de tanda, y así se cerraría un ciclo con este módulo.
+    from ..weekend_profile import WeekendProfile
 
 LapTimeSource = Literal["session_history", "lap_data"]
 
@@ -264,6 +269,7 @@ class MetricInputs:
     config: MetricsConfig
     now: float
     car_index: int
+    profile: WeekendProfile | None = None
 
     @property
     def car(self) -> CarSnapshot | None:

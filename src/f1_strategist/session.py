@@ -229,6 +229,11 @@ class CaptureSession:
             return
         self._weekend_profile = profile
         try:
+            self._metrics_engine.set_profile(profile)
+        except Exception as exc:
+            _LOGGER.exception("Unable to hand the weekend profile to the metrics engine")
+            self._record_error(message("weekend_profile_error", error=str(exc)))
+        try:
             recorder.set_weekend_profile(uid, profile.to_json(), profile.hash)
         except Exception as exc:
             _LOGGER.exception("Unable to register the weekend profile")

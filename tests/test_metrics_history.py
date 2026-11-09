@@ -214,6 +214,7 @@ def test_metric_module_is_a_runtime_checkable_protocol() -> None:
         "ers",
         "damage",
         "environment",
+        "profile",
     )
 
 

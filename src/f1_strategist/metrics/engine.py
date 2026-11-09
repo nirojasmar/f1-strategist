@@ -11,6 +11,7 @@ from types import MappingProxyType
 from ..config import MetricsConfig
 from ..parser import ParsedPacket, SessionHistoryPacket
 from ..race_state import RaceStateSnapshot
+from ..weekend_profile import WeekendProfile
 from .history import LapHistory, MetricInputs, MetricModule
 from .history_ingest import ingest_session_history
 from .lap_tracker import LapTracker
@@ -69,6 +70,8 @@ class MetricsEngine:
         config: MetricsConfig | None = None,
         modules: Iterable[MetricModule] | None = None,
         tracker: LapTracker | None = None,
+        *,
+        profile: WeekendProfile | None = None,
     ) -> None:
         if config is not None and not isinstance(config, MetricsConfig):
             if modules is not None:
@@ -78,6 +81,7 @@ class MetricsEngine:
         self._tracker = tracker or LapTracker(config=config)
         self._config = config or self._tracker.config
         self._modules = create_metric_modules() if modules is None else tuple(modules)
+        self._profile = profile
         self._snapshot = MetricsSnapshot()
         self._last_publish_at: float | None = None
         self._last_signature: tuple[object, ...] | None = None
@@ -98,6 +102,20 @@ class MetricsEngine:
     @property
     def history(self) -> LapHistory:
         return self._tracker.history
+
+    @property
+    def profile(self) -> WeekendProfile | None:
+        """Perfil del fin de semana que reciben los módulos de métricas."""
+        return self._profile
+
+    def set_profile(self, profile: WeekendProfile | None) -> None:
+        """Fija el perfil del fin de semana usado como prior.
+
+        Se aplica en la siguiente publicación; no fuerza una publicación por sí
+        mismo, porque el perfil se fija al arrancar la carrera y la primera
+        publicación llega con el primer paquete.
+        """
+        self._profile = profile
 
     def apply(
         self,
@@ -150,6 +168,7 @@ class MetricsEngine:
             config=self._config,
             now=observed_at,
             car_index=_player_car_index(state),
+            profile=self._profile,
         )
         metrics: dict[str, Metric] = {}
         for module in self._modules:
