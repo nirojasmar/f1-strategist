@@ -129,7 +129,9 @@ def _record_without_clocks(record: LapRecord) -> dict[str, Any]:
     }
 
 
-def _records_by_key(records: Mapping[int, tuple[LapRecord, ...]]) -> dict[tuple[int, int], LapRecord]:
+def _records_by_key(
+    records: Mapping[int, tuple[LapRecord, ...]],
+) -> dict[tuple[int, int], LapRecord]:
     return {
         (record.car_index, record.lap_number): record
         for items in records.values()

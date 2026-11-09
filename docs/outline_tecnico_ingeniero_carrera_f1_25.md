@@ -428,26 +428,49 @@ determina la configuración (3.13).
 
 ### 3.11 Session Recorder y Replay
 
-Guardar: - Paquetes o datos normalizados, según el volumen elegido. -
-Estado y métricas derivadas. - Eventos detectados y decisiones del Event
-Gate. - Entradas del piloto. - Contexto enviado al modelo. - Respuestas
-y latencias. - Versiones de configuración, reglas y modelo.
+La grabación se apoya en dos capas. La captura cruda `.f1cap` conserva
+los datagramas y su tiempo de recepción, y es la fuente para el replay y
+para regenerar derivados. SQLite guarda los datos normalizados y
+consultables: metadatos de la sesión, participantes, vueltas, muestras
+de métricas, eventos y errores de la aplicación. El esquema, su
+semántica y las consultas de ejemplo están en
+[`almacenamiento_sqlite.md`](almacenamiento_sqlite.md).
+
+En vivo, el receptor entrega los paquetes a un consumidor único que
+actualiza el estado de carrera y el motor de métricas. El `SessionRecorder`
+recibe esos snapshots y los escribe desde un hilo propio con una cola
+acotada, de modo que un almacén lento no bloquea al consumidor. Cada
+sesión guarda la versión de la herramienta, la versión del parser, el
+hash de la configuración y el hash de la captura. La instantánea final de
+métricas se conserva para que `sessions export --format json` reproduzca
+exactamente la salida de `metrics`.
+
+La ingesta offline (`ingest`) reproduce una captura con el mismo motor y
+el mismo grabador. Es idempotente por captura y configuración, marca la
+sesión como incompleta si la captura está truncada y usa la misma huella
+determinista que `verify`, que incluye todos los eventos, las vueltas, la
+instantánea final, la configuración, el parser y el SHA-256 de la
+captura.
 
 El replay permite probar cambios de reglas y modelos con la misma
-carrera sin tener que conducir nuevamente.
+carrera sin tener que conducir nuevamente. Ofrece dos modos:
 
-El replay debe ofrecer dos modos:
-
-1.  **Interno:** alimenta el pipeline directamente desde la grabación.
-2.  **Reemisión UDP:** reenvía los paquetes grabados por UDP a una
-    dirección y puerto configurables. Permite probar el receptor real y
-    ambas topologías de despliegue (incluida la red local) sin abrir el
+1.  **Interno:** `play` alimenta el pipeline directamente desde la
+    grabación, sin red. Permite pausar, reanudar, cambiar de velocidad,
+    repetir y saltar a una vuelta. La velocidad solo escala la espera
+    real; el tiempo simulado de los paquetes no cambia.
+2.  **Reemisión UDP:** `replay` reenvía los paquetes grabados por UDP a
+    una dirección y puerto configurables. Permite probar el receptor real
+    y ambas topologías de despliegue (incluida la red local) sin abrir el
     juego.
 
 Los registros usan códigos e identificadores neutros al idioma (tipos de
 evento, claves de mensaje, enums). El texto localizado se guarda como
 dato adicional, no como la única representación, para poder reproducir
-una sesión en cualquier idioma.
+una sesión en cualquier idioma. La validación de extremo a extremo
+comprueba que `ingest` coincide con `metrics`, que el replay a varias
+velocidades y con pausas conserva la misma huella y que un almacén lento
+no retrasa al consumidor.
 
 ### 3.12 Interfaces de usuario (Presentation Adapters)
 

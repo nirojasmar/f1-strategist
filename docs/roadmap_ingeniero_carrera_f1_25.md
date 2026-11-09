@@ -214,8 +214,36 @@ condiciones de carrera (por ejemplo, lluvia o safety car).
 
 ### Criterio de salida
 
-Es posible reproducir la misma sesión de forma determinista para probar
-cambios sin volver a conducir.
+La sesión se puede reproducir de forma determinista para probar cambios
+sin volver a conducir. El criterio medido es:
+
+1.  `verify` sobre el escenario real de Monza da la misma huella en tres
+    ejecuciones seguidas; el escenario sintético se ejecuta en Windows,
+    Linux y macOS mediante CI.
+2.  `play` a 0x, 1x y 4x, con y sin pausas, produce la misma huella que
+    el runner offline.
+3.  `ingest` genera vueltas y eventos que coinciden con `metrics` sobre
+    la misma captura, y `sessions export` reproduce la salida de
+    `metrics` en JSON, JSON Lines y CSV.
+4.  Cada sesión grabada guarda la versión de la herramienta, la versión
+    del parser, el hash de la configuración y el hash de la captura.
+5.  En vivo, el grabador añade menos de 1 ms de media por paquete y un
+    almacén lento no retrasa al consumidor.
+
+### Estado de implementación
+
+G1--G8 están implementados: almacén SQLite versionado, replay interno y
+por reemisión UDP, catálogo de escenarios, huella determinista y `verify`,
+grabador en vivo e `ingest`, consultas con `sessions`, pruebas de extremo
+a extremo y benchmarks. La documentación del almacén está en
+[`almacenamiento_sqlite.md`](almacenamiento_sqlite.md).
+
+La validación local en Windows pasa: 567 pruebas funcionales y 3
+deseleccionadas por los marcadores `benchmark` y `real_capture`; los
+benchmarks pasan por separado y las pruebas de captura real con el
+fixture de Monza también. La huella de `verify` sobre Monza es estable y
+coincide con la de `ingest`. Queda volver a ejecutar CI en Linux y macOS
+después de la Ola 2.
 
 Esta fase es importante: permitirá comparar reglas y modelos usando
 exactamente las mismas condiciones.
