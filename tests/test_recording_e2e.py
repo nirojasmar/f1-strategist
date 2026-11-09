@@ -273,13 +273,18 @@ def test_live_capture_matches_ingest_for_laps_and_events(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    source, _ = _capture(tmp_path, monkeypatch)
+    source, _ = _capture(tmp_path, monkeypatch, interval_s=0.01)
     config = _live_config(tmp_path)
     session = CaptureSession(config)
     session.start()
     try:
-        sent = replay_capture(source, "127.0.0.1", session.bound_port, speed=0)
-        assert _wait_until(lambda: session.snapshot().capture_packets >= sent)
+        sent = replay_capture(source, "127.0.0.1", session.bound_port, speed=1)
+        assert _wait_until(
+            lambda: (
+                session.snapshot().capture_packets >= sent
+                and session.race_snapshot().session.ended is True
+            )
+        )
     finally:
         session.stop()
 
