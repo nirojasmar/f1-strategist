@@ -1,0 +1,512 @@
+"""Validación de extremo a extremo de la grabación, la reproducción y el rendimiento."""
+
+from __future__ import annotations
+
+import os
+import struct
+import time
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
+from dataclasses import fields
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from f1_strategist.capture import CapturedPacket, CaptureWriter
+from f1_strategist.config import AppConfig, CaptureConfig, RecordingConfig, TelemetryConfig
+from f1_strategist.fingerprint import compute_fingerprint, file_sha256, fingerprint_capture
+from f1_strategist.metrics.engine import MetricsEngine, MetricsSnapshot
+from f1_strategist.metrics.export import render_metrics_export, run_metrics_capture
+from f1_strategist.metrics.history import LapHistorySnapshot, LapRecord
+from f1_strategist.metrics.types import Metric, Quality, Window
+from f1_strategist.offline import run_capture_offline
+from f1_strategist.packets import HEADER_SIZE
+from f1_strategist.parser import ParsedPacket
+from f1_strategist.playback import PlaybackSession
+from f1_strategist.race_state import (
+    RaceEvent,
+    RaceSessionSnapshot,
+    RaceState,
+    RaceStateSnapshot,
+)
+from f1_strategist.recorder import SessionRecorder, ingest_capture
+from f1_strategist.replay import replay_capture
+from f1_strategist.session import CaptureSession
+from f1_strategist.store import MetricSample, SessionInfo, SessionStore
+from f1_strategist.store.queries import render_session_export
+from tests.conftest import make_packet
+from tests.scenarios import ScenarioCar, build_race_timed
+
+_REAL_FIXTURE = Path(__file__).parent / "fixtures" / "real" / "monza-13-laps.f1cap.gz"
+_EXPORT_FORMATS = ("json", "jsonl", "csv")
+_CLOCK_FIELDS = frozenset({"started_at_monotonic", "ended_at_monotonic"})
+
+
+class _EventCollector:
+    """Acumula todos los eventos y aplica el mismo pipeline que ``metrics``."""
+
+    def __init__(self) -> None:
+        self.events: list[RaceEvent] = []
+        self.state = RaceState(self.events.append)
+        self.engine = MetricsEngine()
+        self.last_state: RaceStateSnapshot | None = None
+        self.last_observed_at = 0.0
+
+    def apply(self, packet: ParsedPacket, observed_at: float) -> None:
+        self.state.apply(packet, observed_at)
+        self.last_state = self.state.snapshot()
+        self.last_observed_at = observed_at
+        self.engine.apply(packet, observed_at, self.last_state)
+
+    def finish(self) -> None:
+        if self.last_state is not None:
+            self.engine.finalize(self.last_state, self.last_observed_at)
+
+
+def _cars() -> tuple[ScenarioCar, ScenarioCar]:
+    return (
+        ScenarioCar(0, "Driver A", 1, 90.0, 40.0, 2.0, 2.5),
+        ScenarioCar(1, "Driver B", 2, 90.5, 40.0, 2.0, 2.3, compounds=("medium",)),
+    )
+
+
+def _scenario() -> list[tuple[ParsedPacket, float]]:
+    return list(build_race_timed(_cars(), total_laps=3, samples_per_lap=1))
+
+
+def _write_capture(
+    path: Path,
+    packets: list[tuple[ParsedPacket, float]],
+    *,
+    interval_s: float = 0.0001,
+) -> None:
+    with CaptureWriter(path) as writer:
+        for index, _ in enumerate(packets):
+            writer.write(
+                CapturedPacket(
+                    recv_time_ns=int(index * interval_s * 1e9),
+                    source_ip="127.0.0.1",
+                    source_port=4000,
+                    payload=make_packet(1, extra=struct.pack("<I", index)),
+                )
+            )
+
+
+def _patch_parser(
+    monkeypatch: pytest.MonkeyPatch,
+    packets: list[tuple[ParsedPacket, float]],
+) -> None:
+    parsed = [packet for packet, _ in packets]
+
+    def fake_parse(payload: bytes) -> ParsedPacket:
+        index = struct.unpack_from("<I", payload, HEADER_SIZE)[0]
+        return parsed[index]
+
+    monkeypatch.setattr("f1_strategist.offline.parse_packet", fake_parse)
+    monkeypatch.setattr("f1_strategist.playback.parse_packet", fake_parse)
+    monkeypatch.setattr("f1_strategist.session.parse_packet", fake_parse)
+
+
+def _capture(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    interval_s: float = 0.0001,
+) -> tuple[Path, list[tuple[ParsedPacket, float]]]:
+    packets = _scenario()
+    path = tmp_path / "race.f1cap"
+    _write_capture(path, packets, interval_s=interval_s)
+    _patch_parser(monkeypatch, packets)
+    return path, packets
+
+
+def _record_without_clocks(record: LapRecord) -> dict[str, Any]:
+    return {
+        field.name: getattr(record, field.name)
+        for field in fields(LapRecord)
+        if field.name not in _CLOCK_FIELDS
+    }
+
+
+def _records_by_key(records: Mapping[int, tuple[LapRecord, ...]]) -> dict[tuple[int, int], LapRecord]:
+    return {
+        (record.car_index, record.lap_number): record
+        for items in records.values()
+        for record in items
+    }
+
+
+def _wait_until(predicate: Any, timeout: float = 10.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.005)
+    return False
+
+
+def test_ingest_matches_metrics_export(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path, _ = _capture(tmp_path, monkeypatch)
+    expected = run_metrics_capture(path)
+
+    collector = _EventCollector()
+    run_capture_offline(path, [collector])
+    collector.finish()
+
+    with SessionStore.open(tmp_path / "sessions.db") as store:
+        result = ingest_capture(path, store, AppConfig())
+        session = store.get_session(result.session_id)
+        assert session is not None
+        stored_laps = _records_by_key(
+            {
+                car: tuple(store.iter_laps(result.session_id, car_index=car))
+                for car in expected.history.records
+            }
+        )
+        stored_events = [
+            (
+                event.kind,
+                event.t_sim_s,
+                event.car_index,
+                event.lap_number,
+                event.value,
+                event.previous_value,
+            )
+            for event in store.iter_events(result.session_id)
+        ]
+        expected_events = [
+            (
+                event.kind,
+                event.occurred_at_monotonic,
+                event.car_index,
+                event.lap_number,
+                event.value,
+                event.previous_value,
+            )
+            for event in collector.events
+        ]
+        expected_laps = _records_by_key(expected.history.records)
+
+        for export_format in _EXPORT_FORMATS:
+            assert render_session_export(
+                store, result.session_id, export_format
+            ) == render_metrics_export(expected.snapshot, expected.history, export_format)
+
+    assert stored_laps.keys() == expected_laps.keys()
+    for key, record in stored_laps.items():
+        assert _record_without_clocks(record) == _record_without_clocks(expected_laps[key])
+    assert stored_events == expected_events
+
+
+def _offline_fingerprint(path: Path) -> str:
+    collector = _EventCollector()
+    run_capture_offline(path, [collector])
+    collector.finish()
+    assert collector.last_state is not None
+    return compute_fingerprint(
+        collector.last_state,
+        collector.engine.history,
+        collector.engine.snapshot(),
+    )
+
+
+def _playback_fingerprint(path: Path, *, speed: float, pause: bool = False) -> str:
+    with PlaybackSession(path, speed=speed) as session:
+        if pause:
+            assert _wait_until(lambda: session.snapshot().received >= 2)
+            session.pause()
+            assert session.paused
+            time.sleep(0.02)
+            session.resume()
+        assert session.wait(20.0)
+        assert session.error is None
+        assert session.finished
+        return compute_fingerprint(
+            session.race_snapshot(),
+            session.history_snapshot(),
+            session.metrics_snapshot(),
+        )
+
+
+def test_playback_fingerprint_matches_offline_at_every_speed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path, _ = _capture(tmp_path, monkeypatch)
+    expected = _offline_fingerprint(path)
+
+    assert _playback_fingerprint(path, speed=0.0) == expected
+    assert _playback_fingerprint(path, speed=1.0) == expected
+    assert _playback_fingerprint(path, speed=4.0) == expected
+
+
+def test_pausing_and_resuming_does_not_change_the_fingerprint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path, _ = _capture(tmp_path, monkeypatch, interval_s=0.01)
+    expected = _offline_fingerprint(path)
+
+    assert _playback_fingerprint(path, speed=1.0, pause=True) == expected
+
+
+def _live_config(tmp_path: Path) -> AppConfig:
+    return AppConfig(
+        telemetry=TelemetryConfig(listen_port=0),
+        capture=CaptureConfig(enabled=True, directory=tmp_path / "captures"),
+        recording=RecordingConfig(
+            enabled=True,
+            database=tmp_path / "sessions.db",
+            batch_size=1,
+            flush_interval_s=0.01,
+        ),
+    )
+
+
+def test_live_capture_matches_ingest_for_laps_and_events(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source, _ = _capture(tmp_path, monkeypatch)
+    config = _live_config(tmp_path)
+    session = CaptureSession(config)
+    session.start()
+    try:
+        sent = replay_capture(source, "127.0.0.1", session.bound_port, speed=0)
+        assert _wait_until(lambda: session.snapshot().capture_packets >= sent)
+    finally:
+        session.stop()
+
+    assert session.capture_path is not None
+    capture_path = Path(session.capture_path)
+    assert capture_path.exists()
+
+    database = config.recording.database
+    with SessionStore.open(database) as store:
+        live_sessions = [item for item in store.list_sessions() if item.source == "live"]
+        assert len(live_sessions) == 1
+        live = live_sessions[0]
+        assert live.id is not None
+        assert live.tool_version is not None
+        assert live.parser_version is not None
+        assert live.config_hash is not None
+        assert live.capture_sha256 == file_sha256(capture_path)
+        live_laps = _records_by_key(
+            {
+                car: tuple(store.iter_laps(live.id, car_index=car))
+                for car in (item.index for item in _cars())
+            }
+        )
+        live_events = [event.kind for event in store.iter_events(live.id)]
+
+        ingested = ingest_capture(source, store, config)
+        ingested_laps = _records_by_key(
+            {
+                car: tuple(store.iter_laps(ingested.session_id, car_index=car))
+                for car in (item.index for item in _cars())
+            }
+        )
+        ingested_events = [event.kind for event in store.iter_events(ingested.session_id)]
+
+    assert live_laps.keys() == ingested_laps.keys()
+    for key, record in live_laps.items():
+        other = ingested_laps[key]
+        assert (
+            record.lap_time_s,
+            record.sector1_s,
+            record.sector2_s,
+            record.sector3_s,
+            record.valid,
+            record.compound,
+            record.pit_entry,
+            record.pit_exit,
+        ) == (
+            other.lap_time_s,
+            other.sector1_s,
+            other.sector2_s,
+            other.sector3_s,
+            other.valid,
+            other.compound,
+            other.pit_entry,
+            other.pit_exit,
+        )
+    assert live_events == ingested_events
+
+
+class _MemoryStore:
+    """Almacén en memoria compatible con el protocolo del grabador."""
+
+    def __init__(self, *, delay: float = 0.0) -> None:
+        self.delay = delay
+        self.sessions: list[SessionInfo] = []
+        self.finished: list[tuple[int, str, bool]] = []
+        self.samples: list[MetricSample] = []
+        self._next_id = 1
+
+    @contextmanager
+    def transaction(self) -> Iterator[object]:
+        if self.delay:
+            time.sleep(self.delay)
+        yield object()
+
+    def create_session(self, info: SessionInfo) -> int:
+        session_id = self._next_id
+        self._next_id += 1
+        self.sessions.append(info)
+        return session_id
+
+    def update_session(self, session_id: int, info: SessionInfo) -> None:
+        return None
+
+    def finish_session(
+        self,
+        session_id: int,
+        *,
+        ended_at_utc: str,
+        incomplete: bool = False,
+        fingerprint: str | None = None,
+        final_metrics_json: str | None = None,
+        capture_sha256: str | None = None,
+    ) -> None:
+        self.finished.append((session_id, ended_at_utc, incomplete))
+
+    def add_participants(self, session_id: int, participants: Any) -> None:
+        return None
+
+    def upsert_laps(self, session_id: int, laps: Any) -> None:
+        return None
+
+    def add_events(self, session_id: int, events: Any) -> None:
+        return None
+
+    def add_metric_samples(self, session_id: int, samples: Any) -> None:
+        self.samples.extend(samples)
+
+    def add_errors(self, session_id: int, errors: Any) -> None:
+        return None
+
+
+def _benchmark_inputs(count: int) -> list[tuple[RaceStateSnapshot, MetricsSnapshot]]:
+    session = RaceSessionSnapshot(
+        uid=1,
+        session_type="Race",
+        track="Monza",
+        total_laps=count,
+        started=True,
+        ended=False,
+    )
+    inputs: list[tuple[RaceStateSnapshot, MetricsSnapshot]] = []
+    for lap in range(1, count + 1):
+        state = RaceStateSnapshot(
+            session=session,
+            current_lap=lap,
+            player_car_index=0,
+            cars=(),
+            freshness=(),
+            events=(),
+        )
+        metric = Metric(
+            key="fuel.in_tank_kg",
+            value=40.0 - lap * 0.1,
+            unit="kg",
+            window=Window("instant"),
+            quality=Quality.OK,
+            sample_count=lap,
+            computed_at_monotonic=float(lap),
+        )
+        metrics = MetricsSnapshot(
+            metrics={"fuel.in_tank_kg": metric},
+            computed_at_monotonic=float(lap),
+            session_uid=1,
+        )
+        inputs.append((state, metrics))
+    return inputs
+
+
+@pytest.mark.benchmark
+def test_observe_costs_less_than_a_millisecond_on_average() -> None:
+    inputs = _benchmark_inputs(200)
+    store = _MemoryStore()
+    recorder = SessionRecorder(
+        store,
+        RecordingConfig(queue_size=10_000, batch_size=1_000, flush_interval_s=10.0),
+    )
+    try:
+        started = time.perf_counter()
+        for index, (state, metrics) in enumerate(inputs):
+            recorder.observe(float(index), float(index), state, metrics, _empty_history())
+        elapsed = time.perf_counter() - started
+    finally:
+        recorder.stop()
+
+    assert recorder.dropped_batches == 0
+    assert elapsed / len(inputs) < 0.001
+
+
+@pytest.mark.benchmark
+def test_a_slow_store_does_not_block_live_observations() -> None:
+    store = _MemoryStore(delay=0.02)
+    recorder = SessionRecorder(
+        store,
+        RecordingConfig(queue_size=1_000, batch_size=1, flush_interval_s=0.01),
+    )
+    snapshots = _benchmark_inputs(10)
+    try:
+        started = time.perf_counter()
+        for index, (state, metrics) in enumerate(snapshots):
+            recorder.observe(float(index), float(index), state, metrics, _empty_history())
+        elapsed = time.perf_counter() - started
+    finally:
+        recorder.stop()
+
+    assert recorder.dropped_batches == 0
+    assert elapsed < 0.5
+
+
+def _empty_history() -> LapHistorySnapshot:
+    return LapHistorySnapshot(records={}, session_uid=1)
+
+
+def _real_capture_path() -> Path:
+    override = os.environ.get("F1_CAPTURE_FIXTURE")
+    if override is not None:
+        path = Path(override)
+        if not path.is_file():
+            pytest.fail(f"F1_CAPTURE_FIXTURE no apunta a un archivo: {path}")
+        return path
+    if not _REAL_FIXTURE.is_file():
+        pytest.skip(f"No existe la captura real: {_REAL_FIXTURE}")
+    return _REAL_FIXTURE
+
+
+@pytest.mark.real_capture
+def test_real_capture_round_trip(tmp_path: Path) -> None:
+    path = _real_capture_path()
+    expected = run_metrics_capture(path)
+    verify = fingerprint_capture(path, AppConfig())
+
+    with SessionStore.open(tmp_path / "sessions.db") as store:
+        result = ingest_capture(path, store, AppConfig())
+        session = store.get_session(result.session_id)
+        assert session is not None
+        assert not session.incomplete
+        assert session.ended_at_utc is not None
+        assert result.fingerprint == verify.fingerprint
+        stored_laps = _records_by_key(
+            {
+                car: tuple(store.iter_laps(result.session_id, car_index=car))
+                for car in expected.history.records
+            }
+        )
+        expected_laps = _records_by_key(expected.history.records)
+        assert stored_laps.keys() == expected_laps.keys()
+        for key, record in stored_laps.items():
+            assert _record_without_clocks(record) == _record_without_clocks(expected_laps[key])
+        for export_format in _EXPORT_FORMATS:
+            assert render_session_export(
+                store, result.session_id, export_format
+            ) == render_metrics_export(expected.snapshot, expected.history, export_format)
