@@ -44,6 +44,7 @@ from f1_strategist.store import (
     StoredEvent,
     TyreInventorySnapshot,
 )
+from f1_strategist.weekend_profile import WeekendProfile
 from tests.conftest import make_packet
 from tests.scenarios import ScenarioCar, build_race_timed
 
@@ -1053,6 +1054,7 @@ def test_ingest_reuses_the_profile_registered_for_the_same_capture(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     path = _capture(tmp_path, monkeypatch)
+    profile = WeekendProfile()
 
     with SessionStore.open(tmp_path / "sessions.db") as store:
         first = ingest_capture(path, store, AppConfig())
@@ -1062,8 +1064,8 @@ def test_ingest_reuses_the_profile_registered_for_the_same_capture(
             first.session_id,
             replace(
                 stored,
-                profile_json='{"schema_version":1}',
-                profile_hash="abc123",
+                profile_json=profile.to_json(),
+                profile_hash=profile.hash,
             ),
         )
 
@@ -1071,8 +1073,8 @@ def test_ingest_reuses_the_profile_registered_for_the_same_capture(
         ingested = store.get_session(second.session_id)
 
     assert ingested is not None
-    assert ingested.profile_json == '{"schema_version":1}'
-    assert ingested.profile_hash == "abc123"
+    assert ingested.profile_json == profile.to_json()
+    assert ingested.profile_hash == profile.hash
 
 
 def _summary() -> StintSummary:

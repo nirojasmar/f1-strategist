@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import struct
 import time
@@ -15,7 +16,12 @@ import pytest
 
 from f1_strategist.capture import CapturedPacket, CaptureWriter
 from f1_strategist.config import AppConfig, CaptureConfig, RecordingConfig, TelemetryConfig
-from f1_strategist.fingerprint import compute_fingerprint, file_sha256, fingerprint_capture
+from f1_strategist.fingerprint import (
+    compute_capture_fingerprint,
+    compute_fingerprint,
+    file_sha256,
+    fingerprint_capture,
+)
 from f1_strategist.metrics.engine import MetricsEngine, MetricsSnapshot
 from f1_strategist.metrics.export import render_metrics_export, run_metrics_capture
 from f1_strategist.metrics.history import LapHistorySnapshot, LapRecord
@@ -35,8 +41,9 @@ from f1_strategist.replay import replay_capture
 from f1_strategist.session import CaptureSession
 from f1_strategist.store import MetricSample, SessionInfo, SessionStore
 from f1_strategist.store.queries import render_session_export
+from f1_strategist.weekend_profile import WeekendProfile, profile_from_json
 from tests.conftest import make_packet
-from tests.scenarios import ScenarioCar, build_race_timed
+from tests.scenarios import ScenarioCar, build_race_timed, build_weekend_timed
 
 _REAL_FIXTURE = Path(__file__).parent / "fixtures" / "real" / "monza-13-laps.f1cap.gz"
 _EXPORT_FORMATS = ("json", "jsonl", "csv")
@@ -46,10 +53,10 @@ _CLOCK_FIELDS = frozenset({"started_at_monotonic", "ended_at_monotonic"})
 class _EventCollector:
     """Acumula todos los eventos y aplica el mismo pipeline que ``metrics``."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, profile: WeekendProfile | None = None) -> None:
         self.events: list[RaceEvent] = []
         self.state = RaceState(self.events.append)
-        self.engine = MetricsEngine()
+        self.engine = MetricsEngine(profile=profile)
         self.last_state: RaceStateSnapshot | None = None
         self.last_observed_at = 0.0
 
@@ -80,6 +87,7 @@ def _write_capture(
     packets: list[tuple[ParsedPacket, float]],
     *,
     interval_s: float = 0.0001,
+    index_offset: int = 0,
 ) -> None:
     with CaptureWriter(path) as writer:
         for index, _ in enumerate(packets):
@@ -88,7 +96,10 @@ def _write_capture(
                     recv_time_ns=int(index * interval_s * 1e9),
                     source_ip="127.0.0.1",
                     source_port=4000,
-                    payload=make_packet(1, extra=struct.pack("<I", index)),
+                    payload=make_packet(
+                        1,
+                        extra=struct.pack("<I", index_offset + index),
+                    ),
                 )
             )
 
@@ -449,6 +460,153 @@ def test_live_multisession_capture_hashes_every_session_after_writer_close(
     assert all(item.parser_version is not None for item in live_sessions)
     assert all(item.config_hash is not None for item in live_sessions)
     assert all(item.final_metrics_json is not None for item in live_sessions)
+
+
+def test_synthetic_weekend_profile_replays_with_the_registered_fingerprint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    weekend_cars = (
+        replace(_cars()[0], compounds=("c5",)),
+        replace(_cars()[1], compounds=("c4",)),
+    )
+    packets = list(build_weekend_timed(weekend_cars, total_laps=5, samples_per_lap=1))
+    _patch_parser(monkeypatch, packets)
+    session_uids = tuple(dict.fromkeys(packet.header.session_uid for packet, _ in packets))
+    assert len(session_uids) == 3, "weekend: expected practice, qualifying, and race"
+    prior_packets = [item for item in packets if item[0].header.session_uid != session_uids[-1]]
+    race_packets = [item for item in packets if item[0].header.session_uid == session_uids[-1]]
+    prior_capture = tmp_path / "practice-qualifying.f1cap"
+    race_source = tmp_path / "race-source.f1cap"
+    _write_capture(prior_capture, prior_packets, interval_s=0.01)
+    _write_capture(
+        race_source,
+        race_packets,
+        interval_s=0.01,
+        index_offset=len(prior_packets),
+    )
+
+    base_config = _live_config(tmp_path)
+    prior_config = base_config.model_copy(
+        update={
+            "capture": CaptureConfig(
+                enabled=True,
+                directory=tmp_path / "prior-captures",
+            )
+        }
+    )
+    race_config = base_config.model_copy(
+        update={
+            "capture": CaptureConfig(
+                enabled=True,
+                directory=tmp_path / "race-captures",
+            )
+        }
+    )
+    prior_session = CaptureSession(prior_config)
+    prior_session.start()
+    try:
+        sent = replay_capture(prior_capture, "127.0.0.1", prior_session.bound_port, speed=0)
+        assert _wait_until(lambda: prior_session.snapshot().capture_packets >= sent)
+    finally:
+        prior_session.stop()
+
+    with SessionStore.open(base_config.recording.database, readonly=True) as store:
+        prior_rows = [
+            item
+            for item in store.list_sessions()
+            if item.source == "live" and item.session_uid in session_uids[:2]
+        ]
+        assert len(prior_rows) == 2, "practice/qualifying: expected 2 closed sessions"
+        assert all(item.ended_at_utc is not None for item in prior_rows), (
+            "practice/qualifying: expected both sessions to be closed"
+        )
+        assert len({item.weekend_id for item in prior_rows}) == 1, (
+            "practice/qualifying: expected shared game weekend identifier"
+        )
+        assert all(item.track == prior_rows[0].track for item in prior_rows), (
+            "practice/qualifying: expected the same track"
+        )
+        for item in prior_rows:
+            assert item.id is not None
+            summaries = tuple(store.iter_stint_summaries(item.id))
+            assert summaries, f"{item.session_type} / c5: expected persisted stint summaries"
+            player_summary = next(
+                (summary for summary in summaries if summary.car_index == 0),
+                None,
+            )
+            assert player_summary is not None and player_summary.compound == "c5", (
+                f"{item.session_type} / c5: expected player stint summary, got {player_summary}"
+            )
+            assert player_summary.wear_rate_pct_per_lap is not None, (
+                f"{item.session_type} / c5: expected a measured wear rate"
+            )
+
+    race_session = CaptureSession(race_config)
+    race_session.start()
+    try:
+        sent = replay_capture(race_source, "127.0.0.1", race_session.bound_port, speed=0)
+        assert _wait_until(lambda: race_session.snapshot().capture_packets >= sent)
+    finally:
+        race_session.stop()
+
+    assert race_session.capture_path is not None
+    race_capture = Path(race_session.capture_path)
+    with SessionStore.open(base_config.recording.database) as store:
+        race_rows = [
+            item
+            for item in store.list_sessions()
+            if item.source == "live" and item.session_uid == session_uids[-1]
+        ]
+        assert len(race_rows) == 1, "race: expected exactly one recorded session"
+        race_row = race_rows[0]
+        assert race_row.id is not None
+        assert race_row.profile_json is not None, "race: expected registered profile JSON"
+        assert race_row.profile_hash is not None, "race: expected registered profile hash"
+        registered_profile = profile_from_json(race_row.profile_json)
+        assert registered_profile.hash == race_row.profile_hash, (
+            "race profile: expected stored hash to match its serialized value"
+        )
+        profile_sessions = set(registered_profile.sessions)
+        expected_profile_sessions = {item.id for item in prior_rows if item.id is not None}
+        assert profile_sessions == expected_profile_sessions, (
+            f"race profile: expected practice/qualifying sessions "
+            f"{sorted(expected_profile_sessions)}, got {sorted(profile_sessions)}"
+        )
+        c5 = registered_profile.compound("c5")
+        assert c5 is not None and c5.wear_rate_pct_per_lap.value is not None, (
+            "race / c5: expected prior wear rate from practice and qualifying"
+        )
+        recorded_profile_hash = race_row.profile_hash
+        live_final_metrics = race_row.final_metrics_json
+
+        ingested = ingest_capture(race_capture, store, race_config)
+        replayed_row = store.get_session(ingested.session_id)
+
+    assert replayed_row is not None
+    assert replayed_row.profile_hash == recorded_profile_hash, (
+        "race replay: expected the exact profile recorded by the live session"
+    )
+    assert live_final_metrics is not None
+    assert replayed_row.final_metrics_json is not None
+    replay_metrics = json.loads(replayed_row.final_metrics_json)["metrics"]
+    assert replay_metrics["profile.wear_rate_pct_per_lap"]["value"] == (
+        c5.wear_rate_pct_per_lap.value
+    ), "race / c5 wear rate: expected replay to use the registered profile"
+
+    collector = _EventCollector(profile=registered_profile)
+    run_capture_offline(race_capture, [collector])
+    collector.finish()
+    expected_fingerprint = compute_capture_fingerprint(
+        collector.events,
+        collector.engine.history,
+        collector.engine.snapshot(),
+        race_config,
+        race_capture,
+    )
+    assert ingested.fingerprint == expected_fingerprint, (
+        "race replay: expected identical fingerprint with the registered profile"
+    )
 
 
 class _MemoryStore:

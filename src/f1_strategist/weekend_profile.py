@@ -18,7 +18,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Any
 
@@ -329,6 +329,85 @@ def profile_to_json(profile: WeekendProfile) -> str:
     )
 
 
+def profile_from_json(payload: str) -> WeekendProfile:
+    """Reconstruye un perfil serializado y rechaza versiones no compatibles."""
+    data = json.loads(payload)
+    if not isinstance(data, dict):
+        raise ValueError("El perfil debe ser un objeto JSON")
+    schema_version = data.get("schema_version")
+    if schema_version != PROFILE_SCHEMA_VERSION:
+        raise ValueError(
+            f"Versión de perfil no compatible: {schema_version!r}; "
+            f"se esperaba {PROFILE_SCHEMA_VERSION}"
+        )
+    compounds = data.get("compounds")
+    inventory = data.get("inventory")
+    if not isinstance(compounds, list) or not isinstance(inventory, list):
+        raise ValueError("El perfil debe incluir listas de compuestos e inventario")
+    return WeekendProfile(
+        schema_version=schema_version,
+        compounds=tuple(_compound_from_dict(entry) for entry in compounds),
+        reference_compound=data["reference_compound"],
+        pit_loss_s=_profile_value_from_dict(data["pit_loss_s"]),
+        inventory=tuple(_inventory_from_dict(entry) for entry in inventory),
+        sessions=tuple(data["sessions"]),
+        quality=Quality(data["quality"]),
+    )
+
+
+def _profile_value_from_dict(data: object) -> ProfileValue:
+    if not isinstance(data, Mapping):
+        raise ValueError("Un valor del perfil debe ser un objeto JSON")
+    return ProfileValue(
+        value=data["value"],
+        samples=data["samples"],
+        quality=Quality(data["quality"]),
+        sessions=tuple(data["sessions"]),
+    )
+
+
+def _compound_from_dict(data: object) -> CompoundProfile:
+    if not isinstance(data, Mapping):
+        raise ValueError("Un compuesto del perfil debe ser un objeto JSON")
+    fuel_range = data["fuel_range_kg"]
+    return CompoundProfile(
+        compound=data["compound"],
+        visual_compounds=tuple(data["visual_compounds"]),
+        stints=data["stints"],
+        representative_stints=data["representative_stints"],
+        laps=data["laps"],
+        clean_laps=data["clean_laps"],
+        wear_rate_pct_per_lap=_profile_value_from_dict(data["wear_rate_pct_per_lap"]),
+        pace_mean_s=_profile_value_from_dict(data["pace_mean_s"]),
+        pace_delta_vs_reference_s=_profile_value_from_dict(data["pace_delta_vs_reference_s"]),
+        fuel_consumption_kg_per_lap=_profile_value_from_dict(data["fuel_consumption_kg_per_lap"]),
+        pit_loss_s=_profile_value_from_dict(data["pit_loss_s"]),
+        track_temperature_c=_profile_value_from_dict(data["track_temperature_c"]),
+        fuel_range_kg=tuple(fuel_range) if fuel_range is not None else None,
+        weather=tuple(data["weather"]),
+        sessions=tuple(data["sessions"]),
+        quality=Quality(data["quality"]),
+    )
+
+
+def _inventory_from_dict(data: object) -> TyreInventorySnapshot:
+    if not isinstance(data, Mapping):
+        raise ValueError("Un juego del inventario debe ser un objeto JSON")
+    return TyreInventorySnapshot(
+        kind=data["kind"],
+        set_index=data["set_index"],
+        actual_tyre_compound=data["actual_tyre_compound"],
+        visual_tyre_compound=data["visual_tyre_compound"],
+        wear_pct=data["wear_pct"],
+        available=data["available"],
+        lifespan_laps=data["lifespan_laps"],
+        usable_life_laps=data["usable_life_laps"],
+        lap_delta_time_ms=data["lap_delta_time_ms"],
+        recommended_session=data["recommended_session"],
+        fitted=data["fitted"],
+    )
+
+
 def profile_hash(profile: WeekendProfile) -> str:
     """Huella SHA-256 del perfil serializado; estable e independiente del orden."""
     return hashlib.sha256(profile_to_json(profile).encode("utf-8")).hexdigest()
@@ -623,6 +702,7 @@ __all__ = [
     "WeekendSession",
     "blend_with_prior",
     "build_weekend_profile",
+    "profile_from_json",
     "profile_hash",
     "profile_to_dict",
     "profile_to_json",

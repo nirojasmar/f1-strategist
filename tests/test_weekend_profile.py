@@ -19,6 +19,7 @@ from f1_strategist.weekend_profile import (
     WeekendSession,
     blend_with_prior,
     build_weekend_profile,
+    profile_from_json,
     profile_hash,
     profile_to_dict,
     profile_to_json,
@@ -273,6 +274,20 @@ def test_hash_is_stable_and_independent_of_input_order() -> None:
     assert first.hash == profile_hash(first)
     assert first.hash == hashlib.sha256(first.to_json().encode("utf-8")).hexdigest()
     assert len(first.hash) == 64
+
+
+def test_profile_json_round_trips_without_changing_its_hash() -> None:
+    profile = build_weekend_profile(_weekend(), MetricsConfig())
+
+    restored = profile_from_json(profile.to_json())
+
+    assert restored == profile
+    assert restored.hash == profile.hash
+
+
+def test_profile_json_rejects_an_unsupported_schema_version() -> None:
+    with pytest.raises(ValueError, match="Versión de perfil no compatible"):
+        profile_from_json('{"schema_version":999}')
 
 
 def test_reference_compound_follows_the_softest_dry_compound_and_can_be_forced() -> None:

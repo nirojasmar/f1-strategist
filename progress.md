@@ -1,6 +1,6 @@
 # Progreso del proyecto --- F1 Strategist
 
-**Última actualización:** 2026-11-08
+**Última actualización:** 2026-11-09
 **Propósito de este archivo:** llevar trazabilidad del avance importante y dejar el contexto
 necesario para que cualquier persona o agente que llegue al proyecto entienda dónde estamos, qué
 está decidido, qué está verificado y qué falta.
@@ -45,7 +45,7 @@ Documentos de diseño:
 | Lenguaje y entorno | Python 3.12+, `uv`, `ruff`, `pyright`, `pytest` | Acordado (2026-10-31) |
 | Modelos y configuración | `pydantic` v2 y TOML | Acordado |
 | LLM | Cliente HTTP a API compatible con OpenAI, adaptador intercambiable | Acordado; modelo concreto pendiente |
-| Almacenamiento | Captura binaria cruda (`.f1cap`) + SQLite para derivados | Implementado; esquema v2 documentado en `docs/almacenamiento_sqlite.md` |
+| Almacenamiento | Captura binaria cruda (`.f1cap`) + SQLite para derivados | Implementado; esquema actual v5 documentado en `docs/almacenamiento_sqlite.md` |
 | Grabación e ingesta | Grabador en vivo con hilo y cola acotada; `ingest` offline idempotente | Implementado (G5); la cola del vivo no bloquea y la ingesta espera al escritor para no perder lotes |
 | Replay y huella | Replay interno (`play`) y reemisión UDP (`replay`); huella canónica compartida por `verify` e `ingest` | Implementado (G2, G4, G5); la velocidad no cambia el tiempo simulado y la captura truncada se marca incompleta |
 | Interfaz | Consola primero; GUI web local (FastAPI + WebSocket) después | Acordado |
@@ -63,7 +63,8 @@ Documentos de diseño:
 | 0. Definición y entorno | Parcial | Repo, CI definido, config, receptor y guía de firewall listos. Falta validar la recepción desde otro PC de la red local y en Linux real. |
 | 1. Receptor, parser y estado | Implementada; CI verde | Snapshots inmutables de sesión y coches, daños, frescura por grupo, eventos y resumen de consola. |
 | 2. Métricas e histórico | Implementada; validación parcial | A1--A4, B1--B3, C1--C4/C2b, D1--D9, E1--E4 y F2--F4 implementados. F3 y la documentación se actualizaron según O5; la semántica/tolerancia del MFD sigue abierta aunque la validación local actual pasa. |
-| 3. Grabación y replay | Implementada; validación local completa | G1--G8 implementados: SQLite v2, `play`/`replay`, datasets, huella y `verify`, grabador en vivo e `ingest`, inspección con `sessions`, pruebas E2E y benchmarks. Documentación en `docs/almacenamiento_sqlite.md`. Queda repetir CI en Linux y macOS. |
+| 3. Grabación y replay | Implementada; validación local completa | G1--G8 implementados sobre SQLite versionado (actualmente v5 tras las migraciones de Fase 3.5), `play`/`replay`, datasets, huella y `verify`, grabador en vivo e `ingest`, inspección con `sessions`, pruebas E2E y benchmarks. Documentación en `docs/almacenamiento_sqlite.md`. Queda repetir CI en Linux y macOS. |
+| 3.5. Perfil del fin de semana | Implementada; validación local Windows | P1--P8 implementadas. Esquema SQLite v5, enlace de sesiones, resúmenes de tandas, inventario, perfil versionado y métricas `profile.*`; la prueba integrada cubre práctica, clasificación, carrera y reingesta con huella estable. Validación Linux por CI pendiente. |
 | 4--10 | No iniciadas | |
 
 ## 5. Qué está verificado y qué no
@@ -471,6 +472,26 @@ Documentos de diseño:
 -   Validación tras estos cambios: `uv run pytest -q` (571 aprobadas, 4 benchmarks excluidos),
     `uv run pytest -q -m benchmark` (4 aprobadas), Ruff (96 archivos), Pyright (0 errores) y
     `git diff --check` pasan. La fixture de Monza permanece local y sin seguimiento.
+
+### 2026-11-09
+
+-   Cerrada P8 de la Fase 3.5: `tests/scenarios.py` genera un fin de semana sintético con práctica,
+    clasificación y carrera, con circuito y enlaces de juego compartidos, UID distinto por sesión y reloj
+    observado monótono. La prueba E2E graba y cierra las sesiones previas, comprueba los resúmenes por
+    compuesto, registra el perfil al empezar la carrera y reingiere la captura de carrera con el mismo
+    perfil y la misma huella.
+-   La prueba integrada detectó que el grabador retenía una referencia mutable a `LapHistory`; el motor
+    reiniciaba ese objeto al cambiar de UID antes de persistir el resumen anterior. El grabador ahora
+    retiene el snapshot inmutable, y la prueba confirma que práctica y clasificación guardan sus tandas.
+-   Añadido `profile_from_json()` con verificación de versión y round-trip estable. `ingest` valida el hash
+    del perfil registrado y lo aplica al motor solo en sesiones de carrera, de modo que la reproducción de
+    esa captura conserva las métricas `profile.*`; los perfiles JSON incompletos o con hash inválido fallan
+    explícitamente.
+-   Documentado el esquema SQLite v5 y las tablas de fines de semana, resúmenes e inventario; actualizados
+    el outline, el roadmap de Fase 3.5 y el estado de P8 en el Anexo B.
+-   Validación Windows: `uv run pytest -q` (662 aprobadas, 4 benchmarks excluidos), Ruff (lint y formato,
+    105 archivos), Pyright (0 errores) y `git diff --check` pasan. Linux queda pendiente: Docker no tiene
+    daemon disponible y WSL solo muestra la distribución interna `docker-desktop`.
 
 ## 7. Hallazgos de la primera captura real
 

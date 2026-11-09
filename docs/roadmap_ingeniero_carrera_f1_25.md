@@ -252,6 +252,42 @@ exactamente las mismas condiciones.
 
 ------------------------------------------------------------------------
 
+## Fase 3.5 --- Perfil del fin de semana
+
+### Objetivo
+
+Dar a la estrategia de carrera un prior con procedencia explícita, derivado de las
+tandas de práctica/clasificación y del inventario de neumáticos del mismo fin de
+semana. La Fase 4 sigue funcionando sin sesiones enlazadas: las métricas de perfil
+quedan no disponibles y no se inventan valores.
+
+### Entregables
+
+-   Enlace de sesiones por identificadores del juego o por agrupación manual confirmada.
+-   Resúmenes e inventario del piloto persistidos al cerrar cada sesión.
+-   Perfil inmutable, versionado y con hash estable, disponible como entrada de
+    `MetricsEngine`; el perfil exacto usado queda registrado en la sesión de carrera.
+-   Métricas `profile.*` marcadas como priors y reutilización del perfil registrado al
+    ingerir/reproducir esa captura.
+-   Pruebas de fin de semana sintético y documentación del esquema v5.
+
+### Criterio de salida
+
+Un fin de semana sintético de práctica, clasificación y carrera conserva el mismo
+circuito y los identificadores de enlace, registra cada sesión y sus resúmenes,
+construye el perfil de carrera, y una reingesta de la captura de carrera reutiliza el
+perfil registrado y produce la misma huella. Los errores de validación deben indicar
+la sesión, el compuesto y el valor esperado cuando corresponda.
+
+### Estado
+
+P1--P8 implementadas y verificadas localmente en Windows. El escenario E2E confirma
+dos sesiones previas enlazadas y cerradas, persistencia de sus tandas, registro del
+perfil en carrera y equivalencia de huella al reingerir la captura con el JSON de
+perfil registrado. La verificación en Linux mediante CI queda pendiente.
+
+------------------------------------------------------------------------
+
 ## Fase 4 --- Motor de estrategia mínimo
 
 ### Alcance recomendado para la primera versión

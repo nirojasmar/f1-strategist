@@ -36,6 +36,7 @@ from .store import (
     TyreInventorySnapshot,
 )
 from .store.sqlite_store import InventoryKind, SessionSource
+from .weekend_profile import WeekendProfile, profile_from_json
 
 _EVENT_MEMORY_LIMIT = 8192
 _PENDING_ERROR_LIMIT = 100
@@ -454,7 +455,7 @@ class SessionRecorder:
             self._reset_session(uid)
         self._last_signature = signature
         self._last_state = state
-        self._last_history = history
+        self._last_history = history.snapshot() if isinstance(history, LapHistory) else history
         self._last_metrics = metrics
         self._last_header_time = header_session_time
         self._last_observed_at = observed_at
@@ -1001,9 +1002,16 @@ class IngestResult:
 class _IngestCollector:
     """Consumidor offline que alimenta estado, métricas y grabador a la vez."""
 
-    def __init__(self, engine: MetricsEngine, recorder: SessionRecorder) -> None:
+    def __init__(
+        self,
+        engine: MetricsEngine,
+        recorder: SessionRecorder,
+        *,
+        default_profile: WeekendProfile | None = None,
+    ) -> None:
         self.engine = engine
         self.recorder = recorder
+        self.default_profile = default_profile
         self.events: list[RaceEvent] = []
         self.state = RaceState(self.events.append)
         self.last_state: RaceStateSnapshot | None = None
@@ -1035,6 +1043,12 @@ class _IngestCollector:
         self.last_observed_at = observed_at
         self.last_header_time = packet.header.session_time
         self.last_header = packet.header
+        session_type = snapshot.session.session_type
+        self.engine.set_profile(
+            self.default_profile
+            if session_type is not None and session_type.lower() in _RACE_SESSION_TYPES
+            else None
+        )
         self.engine.apply(packet, observed_at, snapshot)
         self.recorder.observe(
             packet.header.session_time,
@@ -1061,6 +1075,16 @@ def ingest_capture(
         return _result_from_session(store, existing, skipped=True)
     old_sessions = _find_same_capture(store, run_info) if replace else ()
 
+    registered_profile = _registered_profile(store, run_info)
+    default_profile: WeekendProfile | None = None
+    if registered_profile is not None:
+        try:
+            default_profile = profile_from_json(registered_profile[0])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise StoreError(f"El perfil registrado no es válido: {exc}") from exc
+        if default_profile.hash != registered_profile[1]:
+            raise StoreError("La huella del perfil registrado no coincide con su contenido")
+
     engine = MetricsEngine(app_config.metrics)
     recorder = SessionRecorder(
         store,
@@ -1071,9 +1095,9 @@ def ingest_capture(
         config_json=serialize_config(app_config),
         block_when_full=True,
         metrics_config=app_config.metrics,
-        default_profile=_registered_profile(store, run_info),
+        default_profile=registered_profile,
     )
-    collector = _IngestCollector(engine, recorder)
+    collector = _IngestCollector(engine, recorder, default_profile=default_profile)
     offline: OfflineResult | None = None
     metrics: MetricsSnapshot | None = None
     fingerprint: str | None = None
