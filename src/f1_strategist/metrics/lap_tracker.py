@@ -293,7 +293,7 @@ class LapTracker:
             ),
             start_compound=_compound(car),
         )
-        if open_lap.lap_number == 1:
+        if state.session.session_type == "race" and open_lap.lap_number == 1:
             open_lap.flags.add("first_lap")
         if self._pending_flashback_laps.pop(car_index, None) == open_lap.lap_number:
             open_lap.flags.add("flashback")
@@ -349,11 +349,14 @@ class LapTracker:
         if open_lap.start_compound is None:
             open_lap.start_compound = _compound(car)
 
-        if self._is_in_lap_flashback(car, previous):
+        crossing = self._is_start_line_crossing(car, previous, state)
+        if crossing:
+            self._reset_timed_lap_after_crossing(open_lap, car, now)
+        elif self._is_in_lap_flashback(car, previous):
             self._reset_lap_accumulators(open_lap, car)
 
         self._add_session_context(open_lap, state, now)
-        self._update_pit(open_lap, car, previous)
+        self._update_pit(open_lap, car, None if crossing else previous)
         self._update_traffic(open_lap, car, state)
         self._update_damage(open_lap, car)
         self._update_ers(open_lap, car)
@@ -381,8 +384,79 @@ class LapTracker:
         )
         return time_rewound or distance_rewound
 
-    def _reset_lap_accumulators(self, open_lap: _OpenLap, car: CarSnapshot) -> None:
-        open_lap.flags.add("flashback")
+    def _is_start_line_crossing(
+        self,
+        car: CarSnapshot,
+        previous: CarSnapshot | None,
+        state: RaceStateSnapshot,
+    ) -> bool:
+        """Detecta el cruce de meta durante una vuelta de salida de boxes.
+
+        El juego puede conservar el número de vuelta al cruzar la línea: la
+        distancia cae desde cerca del final del circuito hasta cerca de cero y
+        se reinician el tiempo de vuelta o el primer sector. No es un flashback.
+        """
+        track_length = state.session.track_length_m
+        if (
+            previous is None
+            or track_length is None
+            or track_length <= 0
+            or car.current_lap != previous.current_lap
+            or car.result_status == "finished"
+        ):
+            return False
+        previous_distance = previous.lap_distance_m
+        distance = car.lap_distance_m
+        if previous_distance is None or distance is None:
+            return False
+        if previous_distance < track_length * 0.90:
+            return False
+        if distance > max(PARTIAL_LAP_MIN_DISTANCE_M, track_length * 0.01):
+            return False
+        time_restarted = previous.current_lap_time_ms is not None and (
+            car.current_lap_time_ms is None
+            or car.current_lap_time_ms <= PARTIAL_LAP_MIN_TIME_S * 1000
+        )
+        sector_restarted = previous.sector1_time_ms is not None and (
+            car.sector1_time_ms is None or car.sector1_time_ms <= PARTIAL_LAP_MIN_TIME_S * 1000
+        )
+        return time_restarted or sector_restarted
+
+    def _reset_timed_lap_after_crossing(
+        self,
+        open_lap: _OpenLap,
+        car: CarSnapshot,
+        now: float,
+    ) -> None:
+        """Separa el tramo cronometrado del tramo de salida de boxes."""
+        open_lap.flags.discard("flashback")
+        open_lap.flags.discard("partial_lap")
+        open_lap.flags.discard("out_lap")
+        open_lap.pit_exit = False
+        open_lap.pit_lane_time_s = None
+        open_lap.pit_stop_time_s = None
+        open_lap.started_at_monotonic = now
+        open_lap.start_fuel_kg = car.fuel_kg
+        open_lap.start_wear = _wear(car)
+        open_lap.start_position = car.position
+        open_lap.start_gap_ahead_s = _gap_ahead_s(car)
+        open_lap.start_compound = _compound(car)
+        if car.tyre_age_laps is not None:
+            open_lap.start_tyre_age = car.tyre_age_laps
+        open_lap.track_statuses.clear()
+        open_lap.weathers.clear()
+        open_lap.saw_progress = True
+        self._reset_lap_accumulators(open_lap, car, flashback=False)
+
+    def _reset_lap_accumulators(
+        self,
+        open_lap: _OpenLap,
+        car: CarSnapshot,
+        *,
+        flashback: bool = True,
+    ) -> None:
+        if flashback:
+            open_lap.flags.add("flashback")
         open_lap.damage_baseline = _damage_values(car.damage)
         open_lap.damage_max_delta_pct = None
         open_lap.track_temperature_sum_c = 0.0

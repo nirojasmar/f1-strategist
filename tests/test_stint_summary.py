@@ -41,7 +41,7 @@ def _lap(
         tyre_wear_end_pct=None if wear_end is None else (wear_end,) * 4,
         track_temperature_c=track_temperature_c,
         weather_seen=weather,
-        flags=flags,
+        flags=flags | ({"first_lap"} if lap == 1 else set()),
         pit_entry=pit_entry,
         pit_exit=pit_exit,
         closed=closed,

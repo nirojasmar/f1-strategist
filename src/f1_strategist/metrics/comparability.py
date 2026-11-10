@@ -13,7 +13,7 @@ def classify_lap(record: LapRecord, config: MetricsConfig) -> frozenset[str]:
     """Clasifica los factores que hacen una vuelta menos comparable."""
     flags = set(record.flags)
 
-    if record.lap_number == 1 or "first_lap" in record.flags:
+    if "first_lap" in record.flags:
         flags.add("first_lap")
     if record.pit_entry:
         flags.add("in_lap")
