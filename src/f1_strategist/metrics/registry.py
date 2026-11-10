@@ -10,6 +10,7 @@ from .gap import GapMetrics
 from .history import MetricModule
 from .pace import PaceMetrics
 from .pit import PitMetrics
+from .profile import ProfileMetrics
 from .progress import ProgressMetrics
 from .tyres import TyreMetrics
 
@@ -26,6 +27,7 @@ def create_metric_modules() -> tuple[MetricModule, ...]:
         ERSMetrics(),
         DamageMetrics(),
         EnvironmentMetrics(),
+        ProfileMetrics(),
     )
 
 

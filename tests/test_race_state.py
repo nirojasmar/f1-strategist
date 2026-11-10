@@ -597,6 +597,105 @@ def test_tyre_sets_fitted_freshness_is_tracked_per_car() -> None:
     assert state.snapshot().freshness_for("tyre_sets").updated_at_monotonic == 100.0
 
 
+def test_tyre_sets_packet_populates_the_full_player_inventory() -> None:
+    packet = _parsed_fixture("tyre_sets.bin")
+    assert isinstance(packet, TyreSetsPacket)
+
+    state = RaceState()
+    state.apply(_with_header(replace(packet, car_index=0)), observed_at=2.5)
+
+    snapshot = state.snapshot()
+    inventory = snapshot.tyre_inventory
+    assert len(inventory) == len(packet.tyre_sets) == 20
+    assert [tyre_set.index for tyre_set in inventory] == list(range(20))
+    assert snapshot.tyre_inventory_updated_at_monotonic == 2.5
+
+    dry_medium = inventory[0]
+    assert dry_medium.actual_tyre_compound == "c4"
+    assert dry_medium.visual_tyre_compound == "medium"
+    assert dry_medium.wear_pct == 0.0
+    assert dry_medium.available is True
+    assert dry_medium.recommended_session == "race"
+    assert dry_medium.lifespan_laps == 25
+    assert dry_medium.usable_life_laps == 25
+    assert dry_medium.lap_delta_time_ms == 455
+    assert dry_medium.fitted is False
+
+    wet = inventory[3]
+    assert wet.actual_tyre_compound == "wet"
+    assert wet.visual_tyre_compound == "wet"
+    assert wet.lifespan_laps == 38
+
+    unused_soft = inventory[4]
+    assert unused_soft.actual_tyre_compound == "c5"
+    assert unused_soft.visual_tyre_compound == "soft"
+    assert unused_soft.available is False
+    assert unused_soft.recommended_session == "practice_1"
+
+    fitted = inventory[packet.fitted_index]
+    assert fitted.actual_tyre_compound == "c5"
+    assert fitted.visual_tyre_compound == "soft"
+    assert fitted.available is True
+    assert fitted.fitted is True
+    assert sum(tyre_set.fitted is True for tyre_set in inventory) == 1
+
+
+def test_tyre_inventory_only_tracks_the_player_car() -> None:
+    packet = _parsed_fixture("tyre_sets.bin")
+    assert isinstance(packet, TyreSetsPacket)
+
+    state = RaceState()
+    state.apply(_with_header(replace(packet, car_index=1)), observed_at=2.5)
+
+    snapshot = state.snapshot()
+    assert snapshot.tyre_inventory == ()
+    assert snapshot.tyre_inventory_updated_at_monotonic is None
+    assert snapshot.cars[1].fitted_tyre is not None
+
+
+def test_tyre_inventory_is_replaced_by_the_latest_player_packet() -> None:
+    packet = _parsed_fixture("tyre_sets.bin")
+    assert isinstance(packet, TyreSetsPacket)
+    worn_set = replace(packet.tyre_sets[0], wear=42, available=BooleanValue(0, False))
+    later = replace(
+        packet,
+        car_index=0,
+        tyre_sets=(worn_set, *packet.tyre_sets[1:]),
+    )
+
+    state = RaceState()
+    state.apply(_with_header(replace(packet, car_index=0)), observed_at=1.0)
+    state.apply(_with_header(later), observed_at=9.0)
+
+    snapshot = state.snapshot()
+    assert len(snapshot.tyre_inventory) == 20
+    assert snapshot.tyre_inventory[0].wear_pct == 42.0
+    assert snapshot.tyre_inventory[0].available is False
+    assert snapshot.tyre_inventory_updated_at_monotonic == 9.0
+
+
+def test_tyre_inventory_publishes_unknown_recommended_session_and_flags() -> None:
+    packet = _parsed_fixture("tyre_sets.bin")
+    assert isinstance(packet, TyreSetsPacket)
+    unknown_set = replace(
+        packet.tyre_sets[0],
+        recommended_session=EnumValue(200, "unknown"),
+        available=BooleanValue(2, None),
+        fitted=BooleanValue(2, None),
+    )
+
+    state = RaceState()
+    state.apply(
+        _with_header(replace(packet, car_index=0, tyre_sets=(unknown_set, *packet.tyre_sets[1:]))),
+        observed_at=3.0,
+    )
+
+    first = state.snapshot().tyre_inventory[0]
+    assert first.recommended_session is None
+    assert first.available is None
+    assert first.fitted is None
+
+
 def test_tyre_sets_maps_each_fitted_field() -> None:
     packet = _parsed_fixture("tyre_sets.bin")
     assert isinstance(packet, TyreSetsPacket)
@@ -720,11 +819,16 @@ def test_session_packet_publishes_environment_and_forecast() -> None:
     session = replace(
         session,
         forecast_accuracy=EnumValue(1, "approximate"),
+        season_link_identifier=7,
+        weekend_link_identifier=42,
+        session_link_identifier=3,
+        weekend_structure=(EnumValue(15, "race"), EnumValue(10, "practice_1")),
         session_settings=replace(
             session.session_settings,
             safety_car_periods=2,
             virtual_safety_car_periods=3,
             red_flag_periods=4,
+            num_sessions_in_weekend=5,
         ),
         weather_forecast=forecast,
     )
@@ -747,6 +851,11 @@ def test_session_packet_publishes_environment_and_forecast() -> None:
     assert snapshot.session.safety_car_periods == 2
     assert snapshot.session.virtual_safety_car_periods == 3
     assert snapshot.session.red_flag_periods == 4
+    assert snapshot.session.season_link_id == 7
+    assert snapshot.session.weekend_link_id == 42
+    assert snapshot.session.session_link_id == 3
+    assert snapshot.session.weekend_structure == ("race", "practice_1")
+    assert snapshot.session.num_sessions_in_weekend == 5
     assert len(snapshot.session.forecast) == 3
     assert [sample.session_type for sample in snapshot.session.forecast] == [
         "practice_1",
@@ -760,6 +869,29 @@ def test_session_packet_publishes_environment_and_forecast() -> None:
     assert first_sample.track_temperature_c == 35.0
     assert first_sample.air_temperature_c == 25.0
     assert first_sample.rain_percentage == 6
+
+
+def test_session_link_identifiers_at_zero_mean_no_link() -> None:
+    state = RaceState()
+    session = _parsed_fixture("session.bin")
+    assert isinstance(session, SessionPacket)
+    session = replace(
+        session,
+        season_link_identifier=0,
+        weekend_link_identifier=0,
+        session_link_identifier=0,
+        weekend_structure=(),
+        session_settings=replace(session.session_settings, num_sessions_in_weekend=0),
+    )
+
+    state.apply(_with_header(session), observed_at=1.0)
+
+    snapshot = state.snapshot()
+    assert snapshot.session.season_link_id is None
+    assert snapshot.session.weekend_link_id is None
+    assert snapshot.session.session_link_id is None
+    assert snapshot.session.weekend_structure == ()
+    assert snapshot.session.num_sessions_in_weekend is None
 
 
 def test_session_environment_events_are_emitted_only_on_change() -> None:
@@ -874,6 +1006,11 @@ def test_session_uid_change_clears_environment_and_forecast() -> None:
     assert snapshot.session.safety_car_periods is None
     assert snapshot.session.virtual_safety_car_periods is None
     assert snapshot.session.red_flag_periods is None
+    assert snapshot.session.season_link_id is None
+    assert snapshot.session.weekend_link_id is None
+    assert snapshot.session.session_link_id is None
+    assert snapshot.session.weekend_structure == ()
+    assert snapshot.session.num_sessions_in_weekend is None
     assert [item.kind for item in snapshot.events] == ["session_changed", "session_started"]
 
 
@@ -922,6 +1059,7 @@ def test_session_uid_change_resets_old_state_and_records_transition() -> None:
     assert isinstance(tyre_sets, TyreSetsPacket)
     state.apply(_with_header(replace(tyre_sets, car_index=0)), observed_at=1.5)
     assert state.snapshot().cars[0].fitted_tyre is not None
+    assert state.snapshot().tyre_inventory != ()
 
     session = _parsed_fixture("session.bin")
     assert isinstance(session, SessionPacket)
@@ -932,6 +1070,8 @@ def test_session_uid_change_resets_old_state_and_records_transition() -> None:
     assert snapshot.cars[0].name is None
     assert snapshot.cars[1].telemetry_restricted is None
     assert snapshot.cars[0].fitted_tyre is None
+    assert snapshot.tyre_inventory == ()
+    assert snapshot.tyre_inventory_updated_at_monotonic is None
     assert snapshot.freshness_for("participants").updated_at_monotonic is None
     assert [event.kind for event in snapshot.events] == ["session_changed"]
     assert snapshot.events[0].session_uid == 2

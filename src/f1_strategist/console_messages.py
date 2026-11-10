@@ -274,6 +274,7 @@ def render_diagnostic(item: DiagnosticMessage) -> str:
         "capture_write_error",
         "capture_flush_error",
         "capture_close_error",
+        "weekend_profile_error",
     }:
         labels = {
             "consumer_header_error": "Error al registrar una cabecera UDP",
@@ -284,6 +285,7 @@ def render_diagnostic(item: DiagnosticMessage) -> str:
             "capture_write_error": "Error al escribir la captura",
             "capture_flush_error": "Error al vaciar la captura",
             "capture_close_error": "Error al cerrar la captura",
+            "weekend_profile_error": "Error al preparar el perfil del fin de semana",
         }
         return f"{labels[key]}: {item.get('error')}"
     if key == "parser_rejection":

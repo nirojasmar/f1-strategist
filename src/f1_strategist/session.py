@@ -7,7 +7,7 @@ import platform
 import queue
 import threading
 import time
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 from . import __version__
@@ -20,10 +20,13 @@ from .packets import PacketHeader, parse_header
 from .parser import PacketParseError, is_ignored_by_design, parse_packet
 from .race_state import RaceState, RaceStateSnapshot
 from .receiver import Stats, StatsSnapshot, UdpReceiver
-from .recorder import SessionRecorder, serialize_config
-from .store import SessionStore
+from .recorder import _RACE_SESSION_TYPES, SessionRecorder, serialize_config
+from .store import SessionInfo, SessionStore
+from .weekend_profile import WeekendProfile
+from .weekend_provider import resolve_weekend_profile
 
 _LOGGER = logging.getLogger(__name__)
+_PROFILE_WRITER_BARRIER_TIMEOUT_S = 5.0
 
 
 class CaptureSession:
@@ -50,6 +53,14 @@ class CaptureSession:
         self._reported_dropped_batches = 0
         self._last_observed_at: float | None = None
         self._last_header: PacketHeader | None = None
+        self._profiled_uids: set[int] = set()
+        self._profile_inventory_pending_uids: set[int] = set()
+        self._weekend_profile: WeekendProfile | None = None
+
+    @property
+    def weekend_profile(self) -> WeekendProfile | None:
+        """Perfil del fin de semana con el que arrancó la carrera, si lo hay."""
+        return self._weekend_profile
 
     @property
     def bound_port(self) -> int:
@@ -144,6 +155,7 @@ class CaptureSession:
                     run_info=build_run_info(self.config),
                     capture_path=self.capture_path,
                     config_json=serialize_config(self.config),
+                    metrics_config=self.config.metrics,
                 )
             except BaseException:
                 store.close()
@@ -178,6 +190,86 @@ class CaptureSession:
         if dropped > self._reported_dropped_batches:
             self._reported_dropped_batches = dropped
             self.stats.record_consumer_error(message("recorder_dropped", count=dropped))
+
+    def _prepare_weekend_profile(self, state: RaceStateSnapshot) -> None:
+        """Resuelve una sola vez el perfil del fin de semana al empezar una carrera.
+
+        Sin fin de semana enlazado no hay perfil y la captura continúa. Un fallo
+        de lectura se registra como diagnóstico, nunca detiene el consumidor.
+        """
+        session = state.session
+        uid = session.uid
+        if uid is None:
+            return
+        if session.session_type is None or session.session_type.lower() not in _RACE_SESSION_TYPES:
+            return
+        inventory_received = state.tyre_inventory_updated_at_monotonic is not None
+        if uid in self._profiled_uids:
+            if not inventory_received or uid not in self._profile_inventory_pending_uids:
+                return
+            self._profile_inventory_pending_uids.discard(uid)
+        else:
+            self._profiled_uids.add(uid)
+            if not inventory_received:
+                self._profile_inventory_pending_uids.add(uid)
+        store = self._store
+        recorder = self._recorder
+        if store is None or recorder is None:
+            return
+        if not recorder.flush(_PROFILE_WRITER_BARRIER_TIMEOUT_S):
+            self._profile_inventory_pending_uids.discard(uid)
+            self._record_error(
+                message(
+                    "weekend_profile_error",
+                    error="No se pudieron confirmar las sesiones previas antes de crear el perfil",
+                )
+            )
+            return
+        try:
+            info = SessionInfo(
+                session_uid=uid,
+                source="live",
+                started_at_utc=datetime.now(UTC).isoformat(),
+                track=session.track,
+                session_type=session.session_type,
+                season_link_id=session.season_link_id,
+                weekend_link_id=session.weekend_link_id,
+                session_link_id=session.session_link_id,
+            )
+            inventory = (
+                SessionRecorder.inventory_for_state(state, "race_start")
+                if inventory_received
+                else ()
+            )
+            result = resolve_weekend_profile(
+                store,
+                info,
+                self.config.metrics,
+                exclude_session_uid=uid,
+                inventory_override=inventory,
+            )
+        except Exception as exc:
+            _LOGGER.exception("Unable to prepare the weekend profile")
+            self._record_error(message("weekend_profile_error", error=str(exc)))
+            return
+        if result.error is not None:
+            self._profile_inventory_pending_uids.discard(uid)
+            self._record_error(message("weekend_profile_error", error=result.error))
+        profile = result.profile
+        if profile is None:
+            self._profile_inventory_pending_uids.discard(uid)
+            return
+        self._weekend_profile = profile
+        try:
+            self._metrics_engine.set_profile(profile)
+        except Exception as exc:
+            _LOGGER.exception("Unable to hand the weekend profile to the metrics engine")
+            self._record_error(message("weekend_profile_error", error=str(exc)))
+        try:
+            recorder.set_weekend_profile(uid, profile.to_json(), profile.hash)
+        except Exception as exc:
+            _LOGGER.exception("Unable to register the weekend profile")
+            self._record_error(message("weekend_profile_error", error=str(exc)))
 
     def race_snapshot(self) -> RaceStateSnapshot:
         return self._race_state.snapshot()
@@ -242,6 +334,12 @@ class CaptureSession:
                                     self._metrics_engine.history,
                                     header=self._last_header,
                                 )
+                        if state_snapshot.session.uid != previous_state.session.uid:
+                            self._weekend_profile = None
+                            self._metrics_engine.set_profile(None)
+                        recorder = self._recorder
+                        if recorder is not None:
+                            self._prepare_weekend_profile(state_snapshot)
                         self._metrics_engine.apply(parsed_packet, observed_at, state_snapshot)
                     except Exception as exc:
                         _LOGGER.exception("Unexpected error while updating metrics")

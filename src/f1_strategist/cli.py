@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import select
 import signal
 import sys
 import time
 from collections.abc import Sequence
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -22,7 +24,7 @@ from .capture import CaptureError
 from .config import AppConfig, ConfigError, apply_overrides, load_config
 from .console import format_bytes, render, run_console
 from .datasets import DEFAULT_MANIFEST, Manifest, Scenario, load_manifest, verify_scenario
-from .fingerprint import fingerprint_capture
+from .fingerprint import build_run_info, fingerprint_capture
 from .metrics.export import EXPORT_FORMATS, render_metrics_export, run_metrics_capture
 from .offline import OfflineResult
 from .packets import packet_name
@@ -31,7 +33,7 @@ from .receiver import ReceiverError
 from .recorder import ingest_capture
 from .replay import replay_capture
 from .session import CaptureSession
-from .store import SessionStore, StoreError
+from .store import SessionInfo, SessionStore, StoreError
 from .store.queries import (
     held_metric_values,
     list_session_summaries,
@@ -42,6 +44,8 @@ from .store.queries import (
 )
 from .summary import summarize
 from .trim import trim_capture
+from .weekend_profile import WeekendProfile
+from .weekend_provider import profiles_for_capture, resolve_weekend_profile
 
 _SPEED_STEPS = (0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0)
 
@@ -295,6 +299,73 @@ def _build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="base de datos SQLite (por defecto, la de la configuración)",
     )
+
+    weekends = sub.add_parser(
+        "weekends", help="agrupa y consulta los fines de semana de la base de datos"
+    )
+    weekends_sub = weekends.add_subparsers(dest="weekends_command", required=True)
+
+    weekends_list = weekends_sub.add_parser("list", help="lista los fines de semana")
+    weekends_list.add_argument(
+        "--db",
+        type=Path,
+        help="base de datos SQLite (por defecto, la de la configuración)",
+    )
+
+    weekends_show = weekends_sub.add_parser("show", help="muestra un fin de semana y sus sesiones")
+    weekends_show.add_argument("weekend_id", type=_positive_int, metavar="ID")
+    weekends_show.add_argument(
+        "--db",
+        type=Path,
+        help="base de datos SQLite (por defecto, la de la configuración)",
+    )
+
+    weekends_link = weekends_sub.add_parser(
+        "link", help="enlaza manualmente sesiones del mismo circuito en un fin de semana"
+    )
+    weekends_link.add_argument(
+        "session_ids",
+        type=_positive_int,
+        nargs="+",
+        metavar="ID",
+        help="sesiones a enlazar (deben ser del mismo circuito)",
+    )
+    weekends_link.add_argument("--label", metavar="TEXTO", help="nombre del fin de semana")
+    weekends_link.add_argument(
+        "--db",
+        type=Path,
+        help="base de datos SQLite (por defecto, la de la configuración)",
+    )
+
+    weekends_unlink = weekends_sub.add_parser(
+        "unlink", help="separa una sesión de su fin de semana"
+    )
+    weekends_unlink.add_argument("session_id", type=_positive_int, metavar="ID")
+    weekends_unlink.add_argument(
+        "--db",
+        type=Path,
+        help="base de datos SQLite (por defecto, la de la configuración)",
+    )
+
+    weekend = sub.add_parser(
+        "weekend", help="muestra el perfil del fin de semana usado por una carrera"
+    )
+    weekend_sub = weekend.add_subparsers(dest="weekend_command", required=True)
+
+    weekend_show = weekend_sub.add_parser(
+        "show", help="muestra el perfil del fin de semana de una sesión"
+    )
+    weekend_show.add_argument(
+        "--session",
+        type=_positive_int,
+        metavar="ID",
+        help="sesión cuya carrera usó el perfil (por defecto, la última que lo registró)",
+    )
+    weekend_show.add_argument(
+        "--db",
+        type=Path,
+        help="base de datos SQLite (por defecto, la de la configuración)",
+    )
     return parser
 
 
@@ -460,12 +531,14 @@ def _run_playback_console(
 
 def _cmd_play(args: argparse.Namespace, console: Console, err: Console) -> int:
     cfg = load_config(args.config)
+    profiles = _profiles_for_capture(cfg, args.file, err)
     session = PlaybackSession(
         args.file,
         cfg.metrics,
         loop=args.loop,
         speed=args.speed,
         start_lap=args.start_lap,
+        profiles_by_uid=profiles,
     )
     _install_signal_handlers()
     try:
@@ -486,9 +559,10 @@ def _cmd_verify(args: argparse.Namespace, console: Console, err: Console) -> int
     if args.runs < 1:
         raise ValueError("--runs debe ser mayor o igual que 1")
     cfg = load_config(args.config)
+    profiles = _profiles_for_capture(cfg, args.file, err)
     first = None
     for index in range(args.runs):
-        result = fingerprint_capture(args.file, cfg)
+        result = fingerprint_capture(args.file, cfg, profiles_by_uid=profiles)
         integrity_problems = result.offline.integrity_problems()
         if integrity_problems:
             err.print("[red]Error:[/] No se puede verificar una captura incompleta:")
@@ -520,6 +594,27 @@ def _cmd_verify(args: argparse.Namespace, console: Console, err: Console) -> int
         f"Python {info.python_version}"
     )
     return 0
+
+
+def _profiles_for_capture(
+    cfg: AppConfig,
+    path: Path,
+    err: Console,
+) -> dict[int, WeekendProfile]:
+    """Carga perfiles registrados para la captura, si existe la base configurada."""
+    database = cfg.recording.database
+    if not path.is_file() or not database.is_file():
+        return {}
+    run_info = build_run_info(cfg, path)
+    try:
+        with SessionStore.open(database, readonly=True) as store:
+            return profiles_for_capture(store, run_info.capture_sha256)
+    except StoreError as exc:
+        err.print(
+            "[yellow]Aviso:[/] No se pudieron cargar perfiles registrados; "
+            f"la reproducción continuará sin ellos ({exc})."
+        )
+        return {}
 
 
 def _cmd_inspect(args: argparse.Namespace, console: Console, err: Console) -> int:
@@ -712,6 +807,11 @@ def _sessions_show(store: SessionStore, session_id: int, console: Console) -> in
         ("Hash de configuración", session.config_hash),
         ("Configuración", session.config_json),
         ("Huella", session.fingerprint),
+        ("Fin de semana", session.weekend_id),
+        ("Enlace del juego", session.weekend_link_id),
+        ("Enlace de sesión", session.session_link_id),
+        ("Enlace de temporada", session.season_link_id),
+        ("Estructura del fin de semana", session.weekend_structure_json),
         ("Vueltas guardadas", sum(1 for _ in store.iter_laps(session.id))),
         ("Eventos", sum(1 for _ in store.iter_events(session.id))),
         ("Muestras de métricas", sum(1 for _ in store.iter_metric_samples(session.id))),
@@ -836,6 +936,304 @@ def _sessions_export(
             handle.write(output)
         console.print(f"Exportación de la sesión {args.session_id} escrita en {args.out}")
     return 0
+
+
+def _cmd_weekends(args: argparse.Namespace, console: Console, err: Console) -> int:
+    db = _sessions_database(args)
+    command = args.weekends_command
+    if command in ("link", "unlink"):
+        with SessionStore.open(db) as store:
+            if command == "link":
+                return _weekends_link(store, args, console)
+            return _weekends_unlink(store, args.session_id, console)
+    with SessionStore.open(db, readonly=True) as store:
+        if command == "list":
+            return _weekends_list(store, console)
+        return _weekends_show(store, args.weekend_id, console)
+
+
+def _weekends_list(store: SessionStore, console: Console) -> int:
+    weekends = store.list_weekends()
+    if not weekends:
+        console.print("No hay fines de semana enlazados.")
+    else:
+        table = Table(title="Fines de semana", expand=False)
+        table.add_column("ID", justify="right")
+        table.add_column("Etiqueta", overflow="fold")
+        table.add_column("Circuito")
+        table.add_column("Origen")
+        table.add_column("Sesiones", justify="right")
+        table.add_column("Enlace del juego")
+        for weekend in weekends:
+            sessions = store.list_weekend_sessions(weekend.id)
+            table.add_row(
+                str(weekend.id),
+                _text(weekend.label),
+                _text(weekend.track),
+                weekend.source,
+                str(len(sessions)),
+                _text(weekend.weekend_link_id),
+            )
+        console.print(table)
+    unlinked = store.unlinked_sessions()
+    if unlinked:
+        console.print(
+            f"Sesiones sin fin de semana: {len(unlinked)} "
+            f"({', '.join(str(session.id) for session in unlinked)})."
+        )
+    return 0
+
+
+def _weekends_show(store: SessionStore, weekend_id: int, console: Console) -> int:
+    weekend = store.get_weekend(weekend_id)
+    if weekend is None:
+        raise StoreError(f"No existe el fin de semana {weekend_id}")
+    table = Table(title=f"Fin de semana {weekend.id}", show_header=False, expand=False)
+    table.add_column("Campo", style="bold")
+    table.add_column("Valor", overflow="fold")
+    rows = (
+        ("ID", weekend.id),
+        ("Etiqueta", weekend.label),
+        ("Circuito", weekend.track),
+        ("Origen", weekend.source),
+        ("Enlace del juego", weekend.weekend_link_id),
+        ("Enlace de temporada", weekend.season_link_id),
+        ("Creado (UTC)", weekend.created_at_utc),
+        ("Sesiones", len(store.list_weekend_sessions(weekend.id))),
+    )
+    for label, value in rows:
+        table.add_row(label, _text(value))
+    console.print(table)
+
+    sessions = store.list_weekend_sessions(weekend.id)
+    if not sessions:
+        return 0
+    session_table = Table(title="Sesiones del fin de semana", expand=False)
+    session_table.add_column("ID", justify="right")
+    session_table.add_column("Tipo")
+    session_table.add_column("Enlace del juego")
+    session_table.add_column("Origen")
+    session_table.add_column("Huella")
+    for session in sessions:
+        fingerprint = session.fingerprint or "-"
+        if len(fingerprint) > 12:
+            fingerprint = fingerprint[:12] + "…"
+        session_table.add_row(
+            str(session.id),
+            _text(session.session_type),
+            _text(session.session_link_id),
+            session.source,
+            fingerprint,
+        )
+    console.print(session_table)
+    return 0
+
+
+def _weekends_link(store: SessionStore, args: argparse.Namespace, console: Console) -> int:
+    weekend_id = store.link_sessions(args.session_ids, label=args.label)
+    joined = ", ".join(str(session_id) for session_id in dict.fromkeys(args.session_ids))
+    console.print(f"Sesiones {joined} enlazadas en el fin de semana {weekend_id}.")
+    return 0
+
+
+def _weekends_unlink(store: SessionStore, session_id: int, console: Console) -> int:
+    weekend_id = store.unlink_session(session_id)
+    if weekend_id is None:
+        console.print(f"La sesión {session_id} no estaba enlazada a ningún fin de semana.")
+        return 0
+    console.print(f"Sesión {session_id} separada del fin de semana {weekend_id}.")
+    return 0
+
+
+def _quality_text(value: object) -> str:
+    """Traduce la calidad de un valor del perfil a texto en español."""
+    labels = {
+        "ok": "ok",
+        "low": "low (bajo)",
+        "stale": "stale (obsoleto)",
+        "insufficient": "insufficient (insuficiente)",
+        "unavailable": "unavailable (no disponible)",
+    }
+    if not isinstance(value, str):
+        return "-"
+    return labels.get(value, value)
+
+
+def _profile_number(value: object, digits: int = 3) -> str:
+    """Representa un valor numérico opcional del perfil con sus decimales."""
+    if value is None:
+        return "-"
+    if isinstance(value, bool):
+        return "sí" if value else "no"
+    if isinstance(value, (int, float)):
+        return f"{value:.{digits}f}"
+    return str(value)
+
+
+def _profile_value_text(entry: object, digits: int = 3) -> str:
+    """Muestra el número de un valor del perfil y avisa si su calidad es baja."""
+    if not isinstance(entry, dict):
+        return "-"
+    text = _profile_number(entry.get("value"), digits)
+    quality = entry.get("quality")
+    if text != "-" and quality not in (None, "ok"):
+        return f"{text} ({_quality_text(quality)})"
+    return text
+
+
+def _cmd_weekend(args: argparse.Namespace, console: Console, err: Console) -> int:
+    db = _sessions_database(args)
+    with SessionStore.open(db, readonly=True) as store:
+        return _weekend_show(store, args.session, console, err)
+
+
+def _weekend_show(
+    store: SessionStore,
+    session_id: int | None,
+    console: Console,
+    err: Console,
+) -> int:
+    session = None
+    if session_id is None:
+        for candidate in reversed(store.list_sessions()):
+            if candidate.profile_json is not None:
+                session = candidate
+                break
+        if session is None:
+            console.print("No hay ninguna sesión con un perfil del fin de semana registrado.")
+            return 0
+    else:
+        session = require_session(store, session_id)
+
+    if session.profile_json is not None:
+        payload = json.loads(session.profile_json)
+        origin = "registrado al empezar la carrera"
+    else:
+        result = resolve_weekend_profile(
+            store,
+            session,
+            load_config(None).metrics,
+            exclude_session_id=session.id,
+        )
+        if result.error is not None:
+            err.print(
+                f"[red]Error:[/] no se pudo calcular el perfil del fin de semana: {result.error}"
+            )
+            return 2
+        if result.profile is None:
+            console.print(
+                f"La sesión {session.id} no tiene perfil registrado ni un fin de semana "
+                "enlazado del que calcularlo."
+            )
+            return 0
+        payload = result.profile.to_dict()
+        session = replace(session, profile_hash=result.profile.hash)
+        origin = "calculado ahora (no registrado)"
+
+    _render_weekend_profile(session, payload, origin, console)
+    return 0
+
+
+def _render_weekend_profile(
+    session: SessionInfo,
+    payload: object,
+    origin: str,
+    console: Console,
+) -> None:
+    if not isinstance(payload, dict):
+        raise ValueError("El perfil del fin de semana no tiene el formato esperado.")
+    pit_loss = payload.get("pit_loss_s")
+    sessions = payload.get("sessions")
+    table = Table(
+        title=f"Perfil del fin de semana de la sesión {session.id}",
+        show_header=False,
+        expand=False,
+    )
+    table.add_column("Campo", style="bold")
+    table.add_column("Valor", overflow="fold")
+    rows = (
+        ("Sesión", session.id),
+        ("Circuito", session.track),
+        ("Tipo de sesión", session.session_type),
+        ("Fin de semana", session.weekend_id),
+        ("Origen del perfil", origin),
+        ("Esquema", payload.get("schema_version")),
+        ("Calidad", _quality_text(payload.get("quality"))),
+        ("Compuesto de referencia", payload.get("reference_compound")),
+        ("Pérdida en boxes", _profile_value_text(pit_loss, 2)),
+        ("Sesiones usadas", ", ".join(str(item) for item in sessions) if sessions else "-"),
+        ("Huella", session.profile_hash),
+    )
+    for label, value in rows:
+        table.add_row(label, _text(value))
+    console.print(table)
+
+    compounds = payload.get("compounds")
+    if isinstance(compounds, list) and compounds:
+        compound_table = Table(title="Compuestos", expand=False)
+        compound_table.add_column("Compuesto")
+        compound_table.add_column("Tandas", justify="right")
+        compound_table.add_column("Vueltas", justify="right")
+        compound_table.add_column("Limpias", justify="right")
+        compound_table.add_column("Desgaste %/vuelta", justify="right")
+        compound_table.add_column("Ritmo medio (s)", justify="right")
+        compound_table.add_column("Delta (s)", justify="right")
+        compound_table.add_column("Consumo (kg/vuelta)", justify="right")
+        compound_table.add_column("Rango combustible (kg)", justify="right")
+        compound_table.add_column("Temp. (°C)", justify="right")
+        compound_table.add_column("Calidad")
+        for entry in compounds:
+            if not isinstance(entry, dict):
+                continue
+            fuel_range = entry.get("fuel_range_kg")
+            if isinstance(fuel_range, list) and len(fuel_range) == 2:
+                fuel_range_text = (
+                    f"{_profile_number(fuel_range[0], 1)}–{_profile_number(fuel_range[1], 1)}"
+                )
+            else:
+                fuel_range_text = "-"
+            compound_table.add_row(
+                _text(entry.get("compound")),
+                str(entry.get("stints", 0)),
+                str(entry.get("laps", 0)),
+                str(entry.get("clean_laps", 0)),
+                _profile_value_text(entry.get("wear_rate_pct_per_lap")),
+                _profile_value_text(entry.get("pace_mean_s")),
+                _profile_value_text(entry.get("pace_delta_vs_reference_s")),
+                _profile_value_text(entry.get("fuel_consumption_kg_per_lap")),
+                fuel_range_text,
+                _profile_value_text(entry.get("track_temperature_c"), 1),
+                _quality_text(entry.get("quality")),
+            )
+        console.print(compound_table)
+
+    inventory = payload.get("inventory")
+    if isinstance(inventory, list) and inventory:
+        inventory_table = Table(title="Inventario de neumáticos", expand=False)
+        inventory_table.add_column("Tipo")
+        inventory_table.add_column("Juego", justify="right")
+        inventory_table.add_column("Compuesto")
+        inventory_table.add_column("Visual")
+        inventory_table.add_column("Desgaste %", justify="right")
+        inventory_table.add_column("Disponible")
+        inventory_table.add_column("Vida", justify="right")
+        inventory_table.add_column("Recomendada")
+        inventory_table.add_column("Montado")
+        for entry in inventory:
+            if not isinstance(entry, dict):
+                continue
+            inventory_table.add_row(
+                _text(entry.get("kind")),
+                str(entry.get("set_index", 0)),
+                _text(entry.get("actual_tyre_compound")),
+                _text(entry.get("visual_tyre_compound")),
+                _profile_number(entry.get("wear_pct"), 1),
+                _yes_no(entry.get("available")),
+                _profile_number(entry.get("usable_life_laps"), 1),
+                _text(entry.get("recommended_session")),
+                _yes_no(entry.get("fitted")),
+            )
+        console.print(inventory_table)
 
 
 def _cmd_datasets(args: argparse.Namespace, console: Console, err: Console) -> int:
@@ -989,6 +1387,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         "ingest": _cmd_ingest,
         "datasets": _cmd_datasets,
         "sessions": _cmd_sessions,
+        "weekends": _cmd_weekends,
+        "weekend": _cmd_weekend,
     }
     try:
         return handlers[args.command](args, console, err)

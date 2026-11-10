@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 import struct
 import time
@@ -16,11 +17,12 @@ import pytest
 from f1_strategist.capture import CapturedPacket, CaptureWriter
 from f1_strategist.cli import main
 from f1_strategist.config import AppConfig, CaptureConfig, RecordingConfig, TelemetryConfig
-from f1_strategist.fingerprint import fingerprint_capture
+from f1_strategist.fingerprint import file_sha256, fingerprint_capture
 from f1_strategist.messages import message
 from f1_strategist.metrics.engine import MetricsSnapshot
 from f1_strategist.metrics.export import run_metrics_capture
-from f1_strategist.metrics.history import LapHistorySnapshot, LapRecord
+from f1_strategist.metrics.history import LapHistorySnapshot, LapRecord, TyreStint
+from f1_strategist.metrics.stint_summary import StintSummary
 from f1_strategist.metrics.types import Metric, Quality, Window
 from f1_strategist.packets import HEADER_SIZE, HEADER_STRUCT
 from f1_strategist.parser import ParsedPacket
@@ -29,6 +31,7 @@ from f1_strategist.race_state import (
     RaceEvent,
     RaceSessionSnapshot,
     RaceStateSnapshot,
+    TyreSetSnapshot,
 )
 from f1_strategist.recorder import SessionRecorder, ingest_capture
 from f1_strategist.session import CaptureSession
@@ -39,9 +42,11 @@ from f1_strategist.store import (
     SessionStore,
     StoredError,
     StoredEvent,
+    TyreInventorySnapshot,
 )
+from f1_strategist.weekend_profile import WeekendProfile
 from tests.conftest import make_packet
-from tests.scenarios import ScenarioCar, build_race_timed
+from tests.scenarios import ScenarioCar, build_race_timed, build_weekend_timed
 
 
 class _FakeStore:
@@ -59,6 +64,8 @@ class _FakeStore:
         self.samples: list[MetricSample] = []
         self.errors: list[StoredError] = []
         self.capture_hash_updates: list[tuple[int, str]] = []
+        self.stint_summaries: list[tuple[int, StintSummary]] = []
+        self.tyre_inventory: list[tuple[int, TyreInventorySnapshot]] = []
         self._next_id = 1
 
     @contextmanager
@@ -116,6 +123,14 @@ class _FakeStore:
 
     def add_errors(self, session_id: int, errors: Iterable[StoredError]) -> None:
         self.errors.extend(errors)
+
+    def add_stint_summaries(self, session_id: int, summaries: Iterable[StintSummary]) -> None:
+        self.stint_summaries.extend((session_id, summary) for summary in summaries)
+
+    def add_tyre_inventory(
+        self, session_id: int, snapshots: Iterable[TyreInventorySnapshot]
+    ) -> None:
+        self.tyre_inventory.extend((session_id, snapshot) for snapshot in snapshots)
 
 
 def _cars() -> tuple[ScenarioCar, ScenarioCar]:
@@ -183,10 +198,12 @@ def _snapshot(
     lap: int = 1,
     events: tuple[RaceEvent, ...] = (),
     cars: tuple[CarSnapshot, ...] = (),
+    session_type: str = "Race",
+    tyre_inventory: tuple[TyreSetSnapshot, ...] = (),
 ) -> RaceStateSnapshot:
     session = RaceSessionSnapshot(
         uid=uid,
-        session_type="Race",
+        session_type=session_type,
         track="Monza",
         total_laps=10,
         started=True,
@@ -199,6 +216,8 @@ def _snapshot(
         cars=cars,
         freshness=(),
         events=events,
+        tyre_inventory=tyre_inventory,
+        tyre_inventory_updated_at_monotonic=1.0 if tyre_inventory else None,
     )
 
 
@@ -613,6 +632,221 @@ def test_late_metadata_is_merged_into_the_session(tmp_path: Path) -> None:
         assert session.total_laps == 10
 
 
+def test_session_links_are_stored_and_grouped_by_game_identifiers(tmp_path: Path) -> None:
+    with SessionStore.open(tmp_path / "sessions.db") as store:
+        recorder = SessionRecorder(store, RecordingConfig(batch_size=1, flush_interval_s=0.01))
+        try:
+            initial = _snapshot()
+            linked_session = replace(
+                initial.session,
+                season_link_id=7,
+                weekend_link_id=42,
+                session_link_id=3,
+                weekend_structure=("practice_1", "race"),
+            )
+            recorder.observe(
+                1.0,
+                1.0,
+                replace(initial, session=linked_session),
+                _metrics(),
+                _history(),
+            )
+        finally:
+            recorder.stop()
+
+        session = store.get_session(_session_id(recorder))
+        assert session is not None
+        assert session.season_link_id == 7
+        assert session.weekend_link_id == 42
+        assert session.session_link_id == 3
+        assert session.weekend_structure_json == '["practice_1","race"]'
+        assert session.weekend_id is not None
+
+        weekend = store.get_weekend(session.weekend_id)
+        assert weekend is not None
+        assert weekend.source == "game_ids"
+        assert weekend.track == "Monza"
+        assert weekend.weekend_link_id == 42
+        assert weekend.season_link_id == 7
+
+
+def test_ingest_stores_stint_summaries_and_inventory_snapshots(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = _capture(tmp_path, monkeypatch)
+
+    with SessionStore.open(tmp_path / "sessions.db") as store:
+        result = ingest_capture(path, store, AppConfig())
+        summaries = list(store.iter_stint_summaries(result.session_id))
+        inventory = list(store.iter_tyre_inventory(result.session_id))
+
+    assert len(summaries) == 1
+    summary = summaries[0]
+    assert summary.car_index == 0
+    assert summary.stint_index == 0
+    assert summary.compound == "soft"
+    assert summary.laps == 3
+    assert summary.tyre_age_start == 0
+    assert summary.tyre_age_end == 3
+    assert summary.fuel_start_kg == 38.0
+    assert summary.fuel_end_kg == 34.0
+    assert summary.weather == ("clear",)
+    assert summary.quality is Quality.LOW
+    assert not summary.representative
+
+    kinds = {snapshot.kind for snapshot in inventory}
+    assert kinds == {"race_start", "session_end"}
+    assert len(inventory) == 40
+    assert [snapshot.set_index for snapshot in inventory if snapshot.kind == "race_start"] == list(
+        range(20)
+    )
+    fitted = [snapshot for snapshot in inventory if snapshot.fitted]
+    assert len(fitted) == 2
+    assert {snapshot.kind for snapshot in fitted} == {"race_start", "session_end"}
+
+
+def test_reingesting_replaces_summaries_and_inventory_without_duplicates(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = _capture(tmp_path, monkeypatch)
+
+    with SessionStore.open(tmp_path / "sessions.db") as store:
+        first = ingest_capture(path, store, AppConfig())
+        ingest_capture(path, store, AppConfig(), replace=True)
+        assert len(store.list_sessions()) == 1
+
+        summaries = list(store.iter_stint_summaries(first.session_id))
+        inventory = list(store.iter_tyre_inventory(first.session_id))
+
+    assert summaries == []
+    assert inventory == []
+
+
+def test_an_interrupted_session_keeps_its_summaries_and_is_marked_incomplete(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = _capture(tmp_path, monkeypatch)
+    path.write_bytes(path.read_bytes()[:-3])
+
+    with SessionStore.open(tmp_path / "sessions.db") as store:
+        result = ingest_capture(path, store, AppConfig())
+        session = store.get_session(result.session_id)
+        summaries = list(store.iter_stint_summaries(result.session_id))
+        inventory = list(store.iter_tyre_inventory(result.session_id))
+
+    assert session is not None and session.incomplete
+    assert summaries
+    assert {snapshot.kind for snapshot in inventory} == {"race_start", "session_end"}
+
+
+def test_stint_summaries_are_stored_when_a_live_session_is_closed(tmp_path: Path) -> None:
+    lap = LapRecord(
+        car_index=0,
+        lap_number=1,
+        lap_time_s=90.0,
+        tyre_age_start=0,
+        tyre_age_end=1,
+        fuel_start_kg=40.0,
+        fuel_end_kg=38.0,
+        closed=True,
+        track_temperature_c=30.0,
+    )
+    with SessionStore.open(tmp_path / "sessions.db") as store:
+        recorder = SessionRecorder(store, RecordingConfig(batch_size=1, flush_interval_s=0.01))
+        try:
+            recorder.observe(
+                1.0,
+                1.0,
+                _snapshot(),
+                _metrics(),
+                LapHistorySnapshot(
+                    records={0: (lap,)}, tyre_stints={0: (TyreStint(),)}, session_uid=1
+                ),
+            )
+        finally:
+            recorder.stop()
+
+        summaries = list(store.iter_stint_summaries(_session_id(recorder)))
+        inventory = list(store.iter_tyre_inventory(_session_id(recorder)))
+
+    assert len(summaries) == 1
+    assert summaries[0].laps == 1
+    assert summaries[0].compound is None
+    assert inventory == []
+
+
+def test_race_start_inventory_is_stored_once_per_session(tmp_path: Path) -> None:
+    inventory = (
+        TyreSetSnapshot(
+            index=0,
+            actual_tyre_compound="c5",
+            visual_tyre_compound="soft",
+            wear_pct=0.0,
+            available=True,
+            recommended_session="qualifying_1",
+            lifespan_laps=18,
+            usable_life_laps=18,
+            lap_delta_time_ms=0,
+            fitted=True,
+        ),
+    )
+    with SessionStore.open(tmp_path / "sessions.db") as store:
+        recorder = SessionRecorder(store, RecordingConfig(batch_size=1, flush_interval_s=0.01))
+        try:
+            recorder.observe(1.0, 1.0, _snapshot(tyre_inventory=inventory), _metrics(), _history())
+            recorder.observe(
+                2.0,
+                2.0,
+                _snapshot(lap=2, tyre_inventory=inventory),
+                _metrics(computed_at=2.0),
+                _history(),
+            )
+        finally:
+            recorder.stop()
+
+        snapshots = list(store.iter_tyre_inventory(_session_id(recorder)))
+
+    assert [snapshot.kind for snapshot in snapshots] == ["race_start", "session_end"]
+    assert all(snapshot.set_index == 0 for snapshot in snapshots)
+    assert all(snapshot.fitted for snapshot in snapshots)
+
+
+def test_practice_sessions_get_no_race_start_inventory(tmp_path: Path) -> None:
+    inventory = (
+        TyreSetSnapshot(
+            index=0,
+            actual_tyre_compound="c5",
+            visual_tyre_compound="soft",
+            wear_pct=0.0,
+            available=True,
+            recommended_session="practice_1",
+            lifespan_laps=18,
+            usable_life_laps=18,
+            lap_delta_time_ms=0,
+            fitted=True,
+        ),
+    )
+    with SessionStore.open(tmp_path / "sessions.db") as store:
+        recorder = SessionRecorder(store, RecordingConfig(batch_size=1, flush_interval_s=0.01))
+        try:
+            recorder.observe(
+                1.0,
+                1.0,
+                _snapshot(session_type="Practice", tyre_inventory=inventory),
+                _metrics(),
+                _history(),
+            )
+        finally:
+            recorder.stop()
+
+        snapshots = list(store.iter_tyre_inventory(_session_id(recorder)))
+
+    assert [snapshot.kind for snapshot in snapshots] == ["session_end"]
+
+
 def test_metric_samples_keep_capture_and_session_clocks(tmp_path: Path) -> None:
     with SessionStore.open(tmp_path / "sessions.db") as store:
         recorder = SessionRecorder(store, RecordingConfig(batch_size=1, flush_interval_s=0.01))
@@ -762,6 +996,337 @@ def test_block_when_full_avoids_dropped_batches() -> None:
 
     assert recorder.dropped_batches == 0
     assert [entry[2] for entry in store.finished] == [False]
+
+
+def test_the_weekend_profile_is_registered_in_the_session(tmp_path: Path) -> None:
+    with SessionStore.open(tmp_path / "sessions.db") as store:
+        recorder = SessionRecorder(store, RecordingConfig(batch_size=1, flush_interval_s=0.01))
+        try:
+            recorder.set_weekend_profile(1, '{"schema_version":1}', "abc123")
+            recorder.observe(1.0, 1.0, _snapshot(), _metrics(), _history())
+        finally:
+            recorder.stop()
+
+        session = store.get_session(_session_id(recorder))
+        assert session is not None
+        assert session.profile_json == '{"schema_version":1}'
+        assert session.profile_hash == "abc123"
+
+
+def test_the_default_profile_only_applies_to_race_sessions(tmp_path: Path) -> None:
+    with SessionStore.open(tmp_path / "sessions.db") as store:
+        recorder = SessionRecorder(
+            store,
+            RecordingConfig(batch_size=1, flush_interval_s=0.01),
+            default_profile=('{"schema_version":1}', "abc123"),
+        )
+        try:
+            recorder.observe(1.0, 1.0, _snapshot(session_type="Practice"), _metrics(), _history())
+        finally:
+            recorder.stop()
+
+        session = store.get_session(_session_id(recorder))
+        assert session is not None
+        assert session.profile_json is None
+        assert session.profile_hash is None
+
+
+def test_the_default_profile_is_used_by_race_sessions(tmp_path: Path) -> None:
+    with SessionStore.open(tmp_path / "sessions.db") as store:
+        recorder = SessionRecorder(
+            store,
+            RecordingConfig(batch_size=1, flush_interval_s=0.01),
+            default_profile=('{"schema_version":1}', "abc123"),
+        )
+        try:
+            recorder.observe(1.0, 1.0, _snapshot(), _metrics(), _history())
+        finally:
+            recorder.stop()
+
+        session = store.get_session(_session_id(recorder))
+        assert session is not None
+        assert session.profile_json == '{"schema_version":1}'
+        assert session.profile_hash == "abc123"
+
+
+def test_ingest_reuses_the_profile_registered_for_the_same_capture(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = _capture(tmp_path, monkeypatch)
+    profile = WeekendProfile()
+
+    with SessionStore.open(tmp_path / "sessions.db") as store:
+        first = ingest_capture(path, store, AppConfig())
+        stored = store.get_session(first.session_id)
+        assert stored is not None
+        store.update_session(
+            first.session_id,
+            replace(
+                stored,
+                profile_json=profile.to_json(),
+                profile_hash=profile.hash,
+            ),
+        )
+
+        second = ingest_capture(path, store, AppConfig(), replace=True)
+        ingested = store.get_session(second.session_id)
+
+    assert ingested is not None
+    assert ingested.profile_json == profile.to_json()
+    assert ingested.profile_hash == profile.hash
+
+
+def test_ingest_selects_profiles_per_race_uid_in_a_multisession_capture(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    race = list(build_race_timed(_cars(), total_laps=3, samples_per_lap=1))
+    first_uid = race[0][0].header.session_uid
+    second_uid = first_uid + 1
+    packets = race + [
+        (
+            replace(
+                packet,
+                header=replace(packet.header, session_uid=second_uid),
+            ),
+            observed_at + max(timestamp for _, timestamp in race) + 1.0,
+        )
+        for packet, observed_at in race
+    ]
+    path = tmp_path / "two-races.f1cap"
+    with CaptureWriter(path) as writer:
+        for index in range(len(packets)):
+            writer.write(
+                CapturedPacket(
+                    recv_time_ns=index * 1_000_000,
+                    source_ip="127.0.0.1",
+                    source_port=4000,
+                    payload=make_packet(1, extra=struct.pack("<I", index)),
+                )
+            )
+    parsed = [packet for packet, _ in packets]
+
+    def fake_parse(payload: bytes) -> ParsedPacket:
+        index = struct.unpack_from("<I", payload, HEADER_SIZE)[0]
+        return parsed[index]
+
+    monkeypatch.setattr("f1_strategist.offline.parse_packet", fake_parse)
+    capture_hash = file_sha256(path)
+    first_profile = WeekendProfile()
+    second_profile = replace(first_profile, sessions=(99,))
+    database = tmp_path / "sessions.db"
+    with SessionStore.open(database) as store:
+        for uid, profile in ((first_uid, first_profile), (second_uid, second_profile)):
+            store.create_session(
+                SessionInfo(
+                    session_uid=uid,
+                    source="live",
+                    started_at_utc="2026-11-05T10:00:00Z",
+                    capture_sha256=capture_hash,
+                    session_type="race",
+                    profile_json=profile.to_json(),
+                    profile_hash=profile.hash,
+                )
+            )
+
+        ingest_capture(path, store, AppConfig())
+        ingested = {
+            session.session_uid: session
+            for session in store.list_sessions()
+            if session.source == "ingest"
+        }
+
+    assert ingested[first_uid].profile_hash == first_profile.hash
+    assert ingested[second_uid].profile_hash == second_profile.hash
+
+
+def _summary() -> StintSummary:
+    """Resumen de tanda representativo para alimentar un perfil del fin de semana."""
+    return StintSummary(
+        car_index=0,
+        stint_index=0,
+        start_lap=1,
+        end_lap=10,
+        laps=10,
+        compound="c3",
+        visual_compound="soft",
+        clean_laps=6,
+        tyre_age_start=0,
+        tyre_age_end=10,
+        fuel_start_kg=40.0,
+        fuel_end_kg=38.0,
+        pace_mean_s=90.0,
+        pace_mean_fuel_corrected_s=None,
+        pace_trend_s_per_lap=None,
+        pace_trend_fuel_corrected_s_per_lap=None,
+        wear_start_pct=0.0,
+        wear_end_pct=1.0,
+        wear_rate_pct_per_lap=0.10,
+        track_temperature_mean_c=30.0,
+        weather=("clear",),
+        representative=True,
+        quality=Quality.OK,
+    )
+
+
+def _prepare_weekend(database: Path) -> int:
+    """Crea un fin de semana manual con una sesión previa del mismo circuito."""
+    with SessionStore.open(database) as store:
+        session_id = store.create_session(
+            SessionInfo(
+                session_uid=99,
+                source="live",
+                started_at_utc="2026-11-05T10:00:00Z",
+                track="monza",
+                session_type="practice_1",
+                season_link_id=1269315945,
+                weekend_link_id=1269315945,
+            )
+        )
+        store.add_stint_summaries(session_id, [_summary()])
+        store.link_sessions([session_id])
+    return session_id
+
+
+def _run_live_session(
+    monkeypatch: pytest.MonkeyPatch,
+    database: Path,
+    *,
+    packets: list[tuple[ParsedPacket, float]] | None = None,
+) -> CaptureSession:
+    """Ejecuta una carrera sintética en vivo contra la base de datos indicada."""
+    if packets is None:
+        packets = list(build_race_timed(_cars(), total_laps=3, samples_per_lap=1))
+    parsed = iter(packet for packet, _ in packets)
+    monkeypatch.setattr("f1_strategist.session.parse_packet", lambda _: next(parsed))
+
+    session = CaptureSession(
+        AppConfig(
+            telemetry=TelemetryConfig(listen_port=0),
+            capture=CaptureConfig(enabled=False),
+            recording=RecordingConfig(
+                enabled=True,
+                database=database,
+                batch_size=1,
+                flush_interval_s=0.01,
+            ),
+        )
+    )
+    session._stop_consumer.set()
+    for packet, observed_at in packets:
+        session._queue.put(
+            CapturedPacket(
+                recv_time_ns=0,
+                source_ip="127.0.0.1",
+                source_port=4000,
+                payload=_payload(packet),
+                recv_monotonic=observed_at,
+            )
+        )
+
+    session._start_recorder()
+    session._consume()
+    session.stop()
+    return session
+
+
+def test_a_live_race_registers_the_weekend_profile(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "live.db"
+    _prepare_weekend(database)
+
+    session = _run_live_session(monkeypatch, database)
+
+    with SessionStore.open(database, readonly=True) as store:
+        sessions = store.list_sessions()
+
+    assert len(sessions) == 2
+    race = sessions[-1]
+    assert race.session_type is not None and race.session_type.lower() == "race"
+    assert race.profile_json is not None
+    assert race.profile_hash is not None
+    assert json.loads(race.profile_json)["schema_version"] == 1
+    assert session.weekend_profile is not None
+    assert session.stats.snapshot().consumer_errors == 0
+
+
+def test_a_live_race_without_a_weekend_keeps_capturing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "live.db"
+    with SessionStore.open(database):
+        pass
+
+    session = _run_live_session(monkeypatch, database)
+
+    with SessionStore.open(database, readonly=True) as store:
+        sessions = store.list_sessions()
+
+    assert len(sessions) == 1
+    assert sessions[0].profile_json is None
+    assert session.weekend_profile is None
+    assert session.stats.snapshot().consumer_errors == 0
+
+
+def test_a_weekend_read_failure_does_not_stop_the_capture(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "live.db"
+    _prepare_weekend(database)
+
+    def broken_find_weekend(
+        self: SessionStore,
+        *,
+        weekend_link_id: int,
+        season_link_id: int | None = None,
+    ) -> object:
+        raise RuntimeError("base de datos rota")
+
+    monkeypatch.setattr(SessionStore, "find_weekend", broken_find_weekend)
+
+    session = _run_live_session(monkeypatch, database)
+
+    with SessionStore.open(database, readonly=True) as store:
+        sessions = store.list_sessions()
+
+    snapshot = session.stats.snapshot()
+    assert snapshot.consumer_errors == 1
+    assert snapshot.consumer_error is not None
+    assert snapshot.consumer_error.key == "weekend_profile_error"
+    assert "base de datos rota" in str(snapshot.consumer_error.get("error"))
+    assert len(sessions) == 2
+    assert sessions[-1].profile_json is None
+
+
+def test_live_profile_is_cleared_when_the_session_changes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "live.db"
+    _prepare_weekend(database)
+    weekend = list(build_weekend_timed(_cars(), total_laps=3, samples_per_lap=1))
+    session_uids = tuple(dict.fromkeys(packet.header.session_uid for packet, _ in weekend))
+    race_packets = [item for item in weekend if item[0].header.session_uid == session_uids[-1]]
+    practice_source = [item for item in weekend if item[0].header.session_uid == session_uids[0]]
+    practice_origin = practice_source[0][1]
+    next_session_origin = max(observed_at for _, observed_at in weekend) + 1.0
+    practice_packets = [
+        (packet, next_session_origin + observed_at - practice_origin)
+        for packet, observed_at in practice_source
+    ]
+
+    session = _run_live_session(monkeypatch, database, packets=race_packets + practice_packets)
+
+    metric = session.metrics_snapshot().metrics["profile.wear_rate_pct_per_lap"]
+    assert session.race_snapshot().session.session_type == "practice_1"
+    assert session.weekend_profile is None
+    assert metric.value is None
+    assert metric.quality is Quality.UNAVAILABLE
 
 
 def test_ingest_waits_for_the_writer_instead_of_dropping_batches(

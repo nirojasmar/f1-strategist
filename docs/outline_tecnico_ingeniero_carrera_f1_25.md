@@ -263,6 +263,25 @@ tráfico, compuesto, edad del neumático, daños, safety car o condiciones
 cambiantes. El motor exporta el snapshot a JSON y el histórico a JSON
 Lines o CSV mediante el comando `f1-strategist metrics`.
 
+### 3.4.1 Perfil del fin de semana (Fase 3.5)
+
+El perfil reutiliza los resúmenes por tanda y el inventario de neumáticos del piloto
+para dar a la carrera un prior de confianza explícita. Las sesiones se enlazan por
+identificadores del juego distintos de cero o por agrupación manual confirmada; no se
+infieren enlaces ambiguos por circuito. `WeekendProfile` es inmutable y serializable
+con `schema_version` y SHA-256 estable. Cada valor conserva compuesto, procedencia,
+número de muestras y calidad.
+
+Al empezar una carrera, el proveedor lee el fin de semana desde SQLite, construye el
+perfil sin incluir la sesión en curso y lo entrega a `MetricsEngine` como
+`MetricInputs.profile`. Las métricas `profile.*` identifican sus datos como priors y
+quedan `unavailable` cuando no hay perfil. La sesión de carrera registra el JSON y el
+hash exactos usados; `ingest` de esa misma captura valida y reutiliza el perfil
+registrado para conservar la huella reproducible, en vez de recalcularlo con datos
+posteriores del fin de semana. El esquema v5 y sus tablas (`weekends`,
+`stint_summaries` y `tyre_inventory_snapshots`) se documentan en
+[`almacenamiento_sqlite.md`](almacenamiento_sqlite.md).
+
 ### 3.5 Strategy Engine
 
 Responsabilidad: comparar planes posibles y devolver resultados

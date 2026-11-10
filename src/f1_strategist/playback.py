@@ -11,6 +11,7 @@ from __future__ import annotations
 import math
 import threading
 import time
+from collections.abc import Mapping
 from pathlib import Path
 
 from .capture import CaptureReader
@@ -21,6 +22,7 @@ from .packets import parse_header
 from .parser import PacketParseError, is_ignored_by_design, parse_packet
 from .race_state import RaceState, RaceStateSnapshot
 from .receiver import Stats, StatsSnapshot
+from .weekend_profile import WeekendProfile
 
 _STOP = "stop"
 _RESTART = "restart"
@@ -39,6 +41,7 @@ class PlaybackSession:
         loop: bool = False,
         speed: float = 1.0,
         start_lap: int | None = None,
+        profiles_by_uid: Mapping[int, WeekendProfile] | None = None,
     ) -> None:
         if start_lap is not None and start_lap < 1:
             raise ValueError("start_lap debe ser positivo")
@@ -47,6 +50,7 @@ class PlaybackSession:
         self._loop = loop
         self._speed = _validate_speed(speed)
         self._seek_lap = start_lap
+        self._profiles_by_uid = dict(profiles_by_uid or {})
         self._pending_seek: int | None = None
         self._condition = threading.Condition()
         self._paused = False
@@ -288,6 +292,14 @@ class PlaybackSession:
             self._packets_parsed += 1
             self._race_state.apply(packet, observed_at)
             state = self._race_state.snapshot()
+            session = state.session
+            self._metrics_engine.set_profile(
+                self._profiles_by_uid.get(session.uid)
+                if session.uid is not None
+                and session.session_type is not None
+                and session.session_type.lower() in {"race", "race_2", "race_3"}
+                else None
+            )
             self._metrics_engine.apply(packet, observed_at, state)
             last_state = state
             last_observed_at = observed_at

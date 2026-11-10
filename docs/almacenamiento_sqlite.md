@@ -1,6 +1,6 @@
 # Almacenamiento SQLite de sesiones
 
-La Fase 3 guarda cada sesión en dos capas complementarias:
+Las fases 3 y 3.5 guardan cada sesión en dos capas complementarias:
 
 1. La **captura cruda** (`.f1cap` o `.f1cap.gz`) conserva los datagramas tal como llegaron,
    con su tiempo de recepción, la IP y el puerto de origen. Es la fuente para el replay y
@@ -15,7 +15,7 @@ registros de forma permanente; conviene conservar copias de `sessions.db` junto 
 capturas.
 
 El esquema vive en [`src/f1_strategist/store/schema.py`](../src/f1_strategist/store/schema.py)
-y la versión actual es `SCHEMA_VERSION = 2`. La versión se guarda en `PRAGMA user_version`.
+y la versión actual es `SCHEMA_VERSION = 5`. La versión se guarda en `PRAGMA user_version`.
 Al abrir la base en modo escritura se aplican las migraciones pendientes. Los comandos
 `sessions` la abren en solo lectura: ante una base con un esquema anterior la rechazan sin
 migrarla y piden abrirla antes en modo escritura; una base creada por una versión más nueva
@@ -42,6 +42,17 @@ reconstruida desde una captura (`ingest`).
 | `config_hash`, `config_json` | Configuración efectiva y su hash canónico. |
 | `fingerprint` | Huella determinista de los datos derivados. |
 | `final_metrics_json` | Instantánea final de métricas serializada (esquema v2). |
+| `season_link_id`, `weekend_link_id`, `session_link_id` | Identificadores de enlace del juego; los ceros se normalizan a `NULL`. |
+| `weekend_structure_json` | Orden de tipos de sesión anunciado por el juego. |
+| `weekend_id` | Fin de semana al que pertenece la sesión, automático o manual. |
+| `profile_json`, `profile_hash` | Perfil canónico usado al iniciar una carrera y su SHA-256. |
+
+### `weekends`
+
+Una fila por fin de semana enlazado. `source` distingue el enlace confirmado por
+identificadores del juego (`game_ids`) de la agrupación manual (`manual`). No se crea
+un fin de semana por guardar una sesión cuyos identificadores sean cero. Las sesiones
+pueden agruparse manualmente solo si pertenecen al mismo circuito.
 
 ### `participants`
 
@@ -92,6 +103,35 @@ ordenada de la ventana de eventos, no por un conjunto de campos.
 Errores y avisos de la aplicación asociados a la sesión. `code` es una clave neutra al
 idioma y `params_json` guarda los parámetros del diagnóstico.
 
+### `stint_summaries`
+
+Resumen por sesión, coche y tanda. Guarda compuesto real y visual, rango de vueltas,
+vueltas limpias, edades y combustible al inicio/final, ritmo bruto y corregido,
+tendencias, desgaste, temperatura, clima, representatividad y calidad. La clave
+`(session_id, car_index, stint_index)` hace idempotente la persistencia. Los resúmenes
+se generan al cerrar la sesión a partir del histórico de vueltas; si una sesión se
+interrumpe, se guardan los datos disponibles y la sesión queda marcada como incompleta.
+
+### `tyre_inventory_snapshots`
+
+Instantáneas de cada juego de neumáticos del piloto. `kind` es `session_end` o
+`race_start`; la clave `(session_id, kind, set_index)` evita duplicados. El perfil
+prefiere el inventario de inicio de carrera y, si falta, usa la última instantánea de
+cierre de sesión.
+
+### Perfil del fin de semana
+
+`profile_json` conserva el documento versionado (`schema_version`) exacto que alimentó
+las métricas `profile.*` de la carrera; `profile_hash` es SHA-256 de ese JSON canónico.
+El perfil agrupa los resúmenes de tandas por compuesto real y conserva procedencia,
+muestras, calidad e inventario. La lectura del perfil no bloquea la captura: si no hay
+un fin de semana enlazado no se registra uno, y los errores de lectura se notifican.
+
+Al ingerir de nuevo una captura cuyo SHA-256 ya tiene un perfil registrado, `ingest`
+valida la versión y el hash del JSON y aplica ese mismo perfil a las métricas de las
+sesiones de carrera; no lo recalcula desde datos que pudieron cambiar. Las sesiones
+de práctica y clasificación no reciben esas métricas.
+
 ### Índices
 
 - `idx_sessions_started_at`: ordenar sesiones por fecha.
@@ -99,6 +139,8 @@ idioma y `params_json` guarda los parámetros del diagnóstico.
 - `idx_metric_samples_lookup`: recorrer muestras por sesión y clave.
 - `idx_events_lookup`: recorrer eventos por sesión y secuencia.
 - `idx_app_errors_session`: errores por sesión.
+- `idx_sessions_weekend_id`: localizar las sesiones de un fin de semana.
+- `idx_weekends_game_link`: unicidad de identificadores de temporada/fin de semana.
 
 ## Consultas de ejemplo
 
@@ -156,6 +198,9 @@ uv run f1-strategist sessions laps 1 --car 0 --db captures/sessions.db
 uv run f1-strategist sessions events 1 --kind safety_car_changed --db captures/sessions.db
 uv run f1-strategist sessions metrics 1 --key 'fuel.*' --db captures/sessions.db
 uv run f1-strategist sessions export 1 --format json --db captures/sessions.db
+uv run f1-strategist weekends list --db captures/sessions.db
+uv run f1-strategist weekends show 1 --db captures/sessions.db
+uv run f1-strategist weekend show --session 1 --db captures/sessions.db
 ```
 
 `held_metric_values` no se limita a leer la última fila: rellena las vueltas observadas
@@ -203,8 +248,8 @@ huella para la misma captura y configuración.
 
 Las migraciones son inmutables y se aplican en orden. Para cambiar el esquema:
 
-1. Añade una tupla de sentencias nuevas en `schema.py`, por ejemplo `_V3_STATEMENTS`.
-2. Incrementa `SCHEMA_VERSION` y añade `Migration(version=3, statements=_V3_STATEMENTS)` al
+1. Añade una tupla de sentencias nuevas en `schema.py`, por ejemplo `_V6_STATEMENTS`.
+2. Incrementa `SCHEMA_VERSION` y añade `Migration(version=6, statements=_V6_STATEMENTS)` al
    final de `MIGRATIONS`. No edites migraciones ya publicadas.
 3. Actualiza `_SESSION_COLUMNS`, `SessionInfo`, `create_session`, `update_session`,
    `finish_session`, `_session_from_row` y los métodos de lectura o escritura afectados.

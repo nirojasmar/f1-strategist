@@ -19,6 +19,7 @@ from .metrics.history import LapHistory, LapHistorySnapshot
 from .offline import OfflineResult, run_capture_offline
 from .parser import PARSER_VERSION, ParsedPacket
 from .race_state import RaceEvent, RaceState, RaceStateSnapshot
+from .weekend_profile import WeekendProfile
 
 FINGERPRINT_SCHEMA_VERSION = 1
 
@@ -178,11 +179,15 @@ def fingerprint_capture(
     config: AppConfig | MetricsConfig | None = None,
     *,
     float_digits: int = 9,
+    profiles_by_uid: Mapping[int, WeekendProfile] | None = None,
 ) -> FingerprintRun:
     """Reproduce una captura offline y calcula su huella determinista."""
     metrics_config = _effective_metrics_config(config)
     complete_config = _complete_config(config)
-    collector = _FingerprintCollector(MetricsEngine(metrics_config))
+    collector = _FingerprintCollector(
+        MetricsEngine(metrics_config),
+        profiles_by_uid=profiles_by_uid or {},
+    )
     offline = run_capture_offline(path, [collector])
     if collector.last_state is not None and collector.last_observed_at is not None:
         collector.engine.finalize(collector.last_state, collector.last_observed_at)
@@ -213,8 +218,14 @@ def fingerprint_capture(
 
 
 class _FingerprintCollector:
-    def __init__(self, engine: MetricsEngine) -> None:
+    def __init__(
+        self,
+        engine: MetricsEngine,
+        *,
+        profiles_by_uid: Mapping[int, WeekendProfile] | None = None,
+    ) -> None:
         self.engine = engine
+        self.profiles_by_uid = dict(profiles_by_uid or {})
         self.events: list[RaceEvent] = []
         self.state = RaceState(self.events.append)
         self.last_state: RaceStateSnapshot | None = None
@@ -224,6 +235,14 @@ class _FingerprintCollector:
         self.state.apply(packet, observed_at)
         self.last_state = self.state.snapshot()
         self.last_observed_at = observed_at
+        session = self.last_state.session
+        self.engine.set_profile(
+            self.profiles_by_uid.get(session.uid)
+            if session.uid is not None
+            and session.session_type is not None
+            and session.session_type.lower() in {"race", "race_2", "race_3"}
+            else None
+        )
         self.engine.apply(packet, observed_at, self.last_state)
 
 

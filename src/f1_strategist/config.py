@@ -113,6 +113,7 @@ class MetricsConfig(BaseModel):
     fuel_effect_s_per_kg: float | None = Field(default=None, ge=0, allow_inf_nan=False)
     tyre_wear_limit_pct: float | None = Field(default=None, ge=0, le=100, allow_inf_nan=False)
     ers_capacity_joules: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+    min_representative_laps: int = Field(default=4, ge=1)
 
     @field_validator("min_samples")
     @classmethod

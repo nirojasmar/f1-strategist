@@ -444,6 +444,53 @@ def build_race_timed(
         yield packet, observed_at
 
 
+def build_weekend_timed(
+    cars: tuple[ScenarioCar, ...] | list[ScenarioCar],
+    total_laps: int,
+    samples_per_lap: int = 2,
+) -> Iterator[tuple[ParsedPacket, float]]:
+    """Genera práctica, clasificación y carrera del mismo fin de semana.
+
+    Cada sesión conserva el mismo circuito, temporada y fin de semana, y usa
+    un ``session_link_identifier`` distinto. Los UID y el reloj observado son
+    distintos entre sesiones para ejercitar los límites del pipeline.
+    """
+    session_specs = (
+        (0xF12501, "practice_1", 1),
+        (0xF12502, "qualifying_1", 5),
+        (0xF12503, "race", 15),
+    )
+    weekend_structure = (
+        EnumValue(1, "practice_1"),
+        EnumValue(5, "qualifying_1"),
+        EnumValue(15, "race"),
+    )
+    observed_offset = 0.0
+    for session_uid, session_name, session_type in session_specs:
+        first_observed_at: float | None = None
+        last_relative_time = 0.0
+        for packet, observed_at in build_race_timed(cars, total_laps, samples_per_lap):
+            if first_observed_at is None:
+                first_observed_at = observed_at
+            relative_time = observed_at - first_observed_at
+            packet = replace(
+                packet,
+                header=replace(packet.header, session_uid=session_uid),
+            )
+            if isinstance(packet, SessionPacket):
+                packet = replace(
+                    packet,
+                    session_type=EnumValue(session_type, session_name),
+                    season_link_identifier=2026,
+                    weekend_link_identifier=1,
+                    session_link_identifier=session_type,
+                    weekend_structure=weekend_structure,
+                )
+            yield packet, relative_time + observed_offset
+            last_relative_time = relative_time
+        observed_offset += last_relative_time + 0.001
+
+
 def _generate_race(
     cars: tuple[ScenarioCar, ...],
     total_laps: int,

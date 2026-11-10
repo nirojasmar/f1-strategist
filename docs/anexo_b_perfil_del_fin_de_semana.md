@@ -1,7 +1,7 @@
 # Anexo B --- Perfil del fin de semana: datos de práctica y clasificación para la estrategia
 
-**Estado:** propuesta aprobada en principio; **«Fase 3.5»**, entre la Fase 3 (grabación y replay) y la Fase 4
-(motor de estrategia mínimo)
+**Estado:** Fase 3.5 implementada; P8 verificada localmente en Windows. La validación en Linux por CI
+queda pendiente. La fase se sitúa entre la Fase 3 (grabación y replay) y la Fase 4 (motor de estrategia mínimo).
 **Fecha:** 2026-11-08
 **Relacionado:** [`roadmap`](roadmap_ingeniero_carrera_f1_25.md), [`requerimientos`](requerimientos_ingeniero_carrera_f1_25.md)
 (RF-04), [`outline`](outline_tecnico_ingeniero_carrera_f1_25.md), [`progress.md`](../progress.md), los planes de las
@@ -218,7 +218,9 @@ distintas, sin conflicto); `metrics/history.py` solo recibe un campo nuevo en P7
     mismo circuito e identificadores) y probar el flujo completo: grabar, cerrar sesiones, construir el perfil,
     registrar el perfil en la carrera y reproducir con la misma huella. Documentar el esquema nuevo y actualizar
     el outline, el roadmap (Fase 3.5) y `progress.md`.
--   **Aceptación:** pasa en Windows y Linux; los fallos indican sesión, compuesto y valor esperado.
+-   **Aceptación:** pasa en Windows y Linux; los fallos indican sesión, compuesto y valor esperado. En Windows,
+    la prueba integrada confirma el cierre de práctica/clasificación, perfil de carrera persistido y la misma
+    huella al ingerir de nuevo la captura usando el perfil registrado. Linux sigue pendiente de CI.
 
 ## 9. Tareas del usuario
 
