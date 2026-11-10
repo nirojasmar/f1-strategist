@@ -190,7 +190,6 @@ def test_a_short_stint_without_clean_laps_is_insufficient() -> None:
         _lap(1, tyre_age_start=0, lap_time_s=91.0, fuel_end_kg=99.0, pit_exit=True),
         _lap(
             2,
-            tyre_age_start=0,
             lap_time_s=88.0,
             fuel_start_kg=97.5,
             flags=frozenset({"incomplete"}),
@@ -302,3 +301,162 @@ def test_open_stint_without_end_lap_is_summarized_up_to_the_last_lap() -> None:
     assert len(summaries) == 1
     assert summaries[0].end_lap is None
     assert summaries[0].laps == 4
+
+
+def test_practice_in_lap_stays_in_the_previous_compound() -> None:
+    """SessionHistory cierra C2 en la 5, pero la in-lap 6 todavía es C2."""
+    c2 = _green_stint(1, 6, compound="medium", base_time_s=91.0, wear_per_lap=0.5)
+    c2[-1] = _lap(
+        6,
+        compound="medium",
+        tyre_age_start=5,
+        lap_time_s=95.0,
+        fuel_start_kg=92.5,
+        fuel_end_kg=91.0,
+        wear_start=2.5,
+        wear_end=3.0,
+        pit_entry=True,
+    )
+    c1 = _green_stint(
+        7,
+        11,
+        compound="hard",
+        base_time_s=89.5,
+        wear_per_lap=0.4,
+        out_lap=True,
+    )
+    stints = (
+        TyreStint(compound="medium", visual_compound="medium", start_lap=1, end_lap=5),
+        TyreStint(compound="hard", visual_compound="hard", start_lap=6),
+    )
+
+    summaries = summarize_stints((*c2, *c1), stints, MetricsConfig())
+
+    assert [(item.compound, item.start_lap, item.end_lap) for item in summaries] == [
+        ("medium", 1, 6),
+        ("hard", 7, None),
+    ]
+    assert summaries[0].laps == 6
+    # La salida de boxes y la primera vuelta no cuentan; quedan 4 limpias de C1.
+    assert summaries[1].clean_laps == 4
+    assert summaries[1].laps == 5
+    assert summaries[1].wear_rate_pct_per_lap == pytest.approx(0.4)
+
+
+def test_race_in_lap_does_not_contaminate_the_next_compound() -> None:
+    """SessionHistory cierra C3 en la 1, pero la parada real es en la 2."""
+    c3 = _green_stint(1, 2, compound="soft", base_time_s=91.0, wear_per_lap=0.6)
+    c3[-1] = _lap(
+        2,
+        compound="soft",
+        tyre_age_start=1,
+        lap_time_s=96.0,
+        fuel_start_kg=97.0,
+        fuel_end_kg=95.5,
+        wear_start=0.6,
+        wear_end=1.2,
+        pit_entry=True,
+    )
+    c1 = _green_stint(3, 12, compound="hard", base_time_s=90.0, wear_per_lap=0.3, out_lap=True)
+    stints = (
+        TyreStint(compound="soft", visual_compound="soft", start_lap=1, end_lap=1),
+        TyreStint(compound="hard", visual_compound="hard", start_lap=2),
+    )
+
+    summaries = summarize_stints((*c3, *c1), stints, MetricsConfig())
+
+    assert [(item.compound, item.start_lap, item.end_lap) for item in summaries] == [
+        ("soft", 1, 2),
+        ("hard", 3, None),
+    ]
+    assert summaries[0].laps == 2
+    assert summaries[1].clean_laps == 9
+
+
+def test_age_reset_starts_a_new_stint_without_compound_change() -> None:
+    laps = (
+        *_green_stint(1, 3, compound="soft"),
+        _lap(4, compound="soft", tyre_age_start=0, wear_end=0.5),
+        _lap(5, compound="soft", tyre_age_start=1, wear_end=1.0),
+    )
+
+    summaries = summarize_stints(
+        laps, (TyreStint(compound="soft", start_lap=1, end_lap=5),), MetricsConfig()
+    )
+
+    assert [(item.start_lap, item.end_lap) for item in summaries] == [(1, 3), (4, 5)]
+
+
+def test_two_pit_stops_produce_three_stints() -> None:
+    laps = (
+        *_green_stint(1, 4, compound="soft"),
+        *_green_stint(5, 8, compound="medium", out_lap=True),
+        *_green_stint(9, 12, compound="hard", out_lap=True),
+    )
+    stints = (
+        TyreStint(compound="soft", start_lap=1, end_lap=4),
+        TyreStint(compound="medium", start_lap=5, end_lap=8),
+        TyreStint(compound="hard", start_lap=9),
+    )
+
+    summaries = summarize_stints(laps, stints, MetricsConfig())
+
+    assert [(item.compound, item.start_lap, item.end_lap) for item in summaries] == [
+        ("soft", 1, 4),
+        ("medium", 5, 8),
+        ("hard", 9, None),
+    ]
+
+
+def test_a_late_session_history_cannot_move_observed_stint_boundaries() -> None:
+    laps = (
+        *_green_stint(1, 5, compound="soft"),
+        *_green_stint(6, 10, compound="hard", out_lap=True),
+    )
+    incomplete = (TyreStint(compound="soft", start_lap=1),)
+    complete = (
+        TyreStint(compound="soft", start_lap=1, end_lap=5),
+        TyreStint(compound="hard", start_lap=6),
+    )
+
+    before = summarize_stints(laps, incomplete, MetricsConfig())
+    after = summarize_stints(laps, complete, MetricsConfig())
+
+    expected = [("soft", 1, 5), ("hard", 6, None)]
+    assert [(item.compound, item.start_lap, item.end_lap) for item in before] == expected
+    assert [(item.compound, item.start_lap, item.end_lap) for item in after] == expected
+
+
+def test_declared_boundaries_are_used_when_observed_data_is_missing() -> None:
+    laps = (
+        LapRecord(car_index=0, lap_number=1, closed=True),
+        LapRecord(car_index=0, lap_number=2, closed=True),
+        LapRecord(car_index=0, lap_number=3, closed=True, compound="hard"),
+    )
+    stints = (
+        TyreStint(compound="soft", start_lap=1, end_lap=2),
+        TyreStint(compound="hard", start_lap=3),
+    )
+
+    summaries = summarize_stints(laps, stints, MetricsConfig())
+
+    assert [(item.compound, item.start_lap, item.end_lap) for item in summaries] == [
+        ("soft", 1, 2),
+        ("hard", 3, None),
+    ]
+
+
+def test_declared_boundary_splits_same_compound_without_observed_age() -> None:
+    laps = (
+        LapRecord(car_index=0, lap_number=1, closed=True, compound="soft"),
+        LapRecord(car_index=0, lap_number=2, closed=True, compound="soft"),
+        LapRecord(car_index=0, lap_number=3, closed=True, compound="soft"),
+    )
+    stints = (
+        TyreStint(compound="soft", start_lap=1, end_lap=2),
+        TyreStint(compound="soft", start_lap=3),
+    )
+
+    summaries = summarize_stints(laps, stints, MetricsConfig())
+
+    assert [(item.start_lap, item.end_lap) for item in summaries] == [(1, 2), (3, None)]

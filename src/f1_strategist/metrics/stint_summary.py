@@ -5,6 +5,13 @@ declaradas por el juego, y devuelve un resumen por tanda. No accede al estado
 de la sesión ni a SQLite; la persistencia corresponde al grabador (P4) y la
 agregación por fin de semana al perfil (P5).
 
+Los límites de ``SessionHistory`` pueden cerrar una tanda antes de la vuelta de
+entrada a boxes: el juego asigna esa vuelta al compuesto nuevo, pero al cerrarla
+el coche aún lleva el compuesto viejo. Por eso la asignación primaria usa el
+compuesto y la edad observados en cada vuelta; los límites declarados solo
+sirven de respaldo cuando falta el dato observado. Así la in-lap permanece en la
+tanda que correspondía y no contamina las vueltas de la tanda siguiente.
+
 El desgaste medido es la señal principal de degradación. El ritmo se informa en
 bruto y, solo cuando la configuración define ``fuel_effect_s_per_kg``, también
 corregido por el combustible consumido: sin ese parámetro no se inventa la
@@ -82,10 +89,16 @@ def summarize_stints(
     """Resume las tandas de un coche a partir de sus vueltas.
 
     Las vueltas deben pertenecer a un único coche; las tandas se ordenan por
-    vuelta inicial y las vueltas fuera de cualquier tanda se ignoran. Las
+    vuelta inicial y las vueltas fuera de la cobertura declarada se ignoran. Las
     tandas sin vueltas observadas no generan resumen. La función es pura y
     determinista: no modifica sus entradas y el resultado no depende del orden
     en que se reciban.
+
+    La tanda se delimita con el compuesto y la edad observados al cerrar cada
+    vuelta. Un cambio de compuesto, un reinicio de edad, una salida de boxes o
+    el inicio de una tanda declarada cuando falta el dato observado abren una
+    tanda nueva. La entrada a boxes no abre tanda: la in-lap sigue perteneciendo
+    al compuesto con el que se cruzó la meta.
     """
     records = tuple(sorted(laps, key=lambda record: record.lap_number))
     ordered = tuple(sorted(stints, key=lambda stint: stint.start_lap))
@@ -98,18 +111,126 @@ def summarize_stints(
             f"recibió los índices {', '.join(str(index) for index in car_indexes)}"
         )
     car_index = car_indexes[0]
-    summaries: list[StintSummary] = []
-    for stint in ordered:
-        period = tuple(
-            record
-            for record in records
+    periods = _stint_periods(records, ordered)
+    if not periods:
+        return ()
+    last_covered_lap = periods[-1][-1].lap_number
+    return tuple(
+        _summarize(
+            car_index,
+            index,
+            _summary_stint(period, ordered, last_covered_lap),
+            period,
+            config,
+        )
+        for index, period in enumerate(periods)
+    )
+
+
+def _stint_periods(
+    records: Sequence[LapRecord],
+    stints: Sequence[TyreStint],
+) -> tuple[tuple[LapRecord, ...], ...]:
+    """Agrupa vueltas por compuesto y edad observados, con respaldo declarado."""
+    first_lap = stints[0].start_lap
+    last_lap = stints[-1].end_lap
+    covered = tuple(
+        record
+        for record in records
+        if record.lap_number >= first_lap and (last_lap is None or record.lap_number <= last_lap)
+    )
+    if not covered:
+        return ()
+    declared_starts = {stint.start_lap for stint in stints}
+    periods: list[list[LapRecord]] = []
+    for record in covered:
+        previous = periods[-1][-1] if periods else None
+        starts = previous is None or _starts_observed_stint(record, previous)
+        if (
+            not starts
+            and previous is not None
+            and record.lap_number in declared_starts
+            and not _observed_continuation(previous, record)
+        ):
+            starts = True
+        if starts:
+            periods.append([record])
+        else:
+            periods[-1].append(record)
+    return tuple(tuple(period) for period in periods)
+
+
+def _starts_observed_stint(record: LapRecord, previous: LapRecord) -> bool:
+    """Indica si la vuelta abre una tanda según el estado observado."""
+    if record.pit_exit:
+        return True
+    if (
+        record.compound is not None
+        and previous.compound is not None
+        and record.compound != previous.compound
+    ):
+        return True
+    if record.tyre_age_start == 0:
+        return True
+    return (
+        record.tyre_age_end is not None
+        and previous.tyre_age_end is not None
+        and record.tyre_age_end <= previous.tyre_age_end
+    )
+
+
+def _observed_continuation(previous: LapRecord, record: LapRecord) -> bool:
+    """Indica si la edad observada confirma que la tanda continúa.
+
+    Un compuesto igual no basta: si falta la edad, un límite declarado puede ser
+    la única señal disponible de que hubo un cambio de neumáticos.
+    """
+    if previous.tyre_age_end is not None and record.tyre_age_end is not None:
+        return record.tyre_age_end > previous.tyre_age_end
+    if previous.tyre_age_start is not None and record.tyre_age_start is not None:
+        return record.tyre_age_start > previous.tyre_age_start
+    return False
+
+
+def _summary_stint(
+    period: Sequence[LapRecord],
+    stints: Sequence[TyreStint],
+    last_covered_lap: int,
+) -> TyreStint:
+    """Construye la tanda efectiva de un grupo de vueltas."""
+    declared = _best_overlap(period, stints)
+    compound = _first_value(record.compound for record in period)
+    if compound is None and declared is not None:
+        compound = declared.compound
+    visual = declared.visual_compound if declared is not None else None
+    open_tail = stints[-1].end_lap is None and period[-1].lap_number == last_covered_lap
+    end_lap = None if open_tail else period[-1].lap_number
+    return TyreStint(
+        compound=compound,
+        visual_compound=visual or compound,
+        start_lap=period[0].lap_number,
+        end_lap=end_lap,
+    )
+
+
+def _best_overlap(
+    period: Sequence[LapRecord],
+    stints: Sequence[TyreStint],
+) -> TyreStint | None:
+    """Tanda declarada con más vueltas en común con el periodo observado."""
+    best: TyreStint | None = None
+    best_overlap = 0
+    for stint in stints:
+        overlap = sum(
+            1
+            for record in period
             if record.lap_number >= stint.start_lap
             and (stint.end_lap is None or record.lap_number <= stint.end_lap)
         )
-        if not period:
-            continue
-        summaries.append(_summarize(car_index, len(summaries), stint, period, config))
-    return tuple(summaries)
+        if overlap > best_overlap:
+            best = stint
+            best_overlap = overlap
+    return best
 
 
 def _summarize(
