@@ -149,7 +149,7 @@ def test_weighted_median_aggregation_with_known_values() -> None:
     assert soft.pace_mean_s.value == pytest.approx(90.5)
     assert soft.fuel_consumption_kg_per_lap.value == pytest.approx(0.2)
     assert soft.track_temperature_c.value == pytest.approx(32.0)
-    assert soft.fuel_range_kg == (39.0, 40.0)
+    assert soft.fuel_range_kg == (37.0, 40.0)
     assert soft.weather == ("clear", "cloudy")
     assert soft.pace_delta_vs_reference_s.value == pytest.approx(1.0)
     assert soft.pace_delta_vs_reference_s.samples == 2
@@ -166,6 +166,34 @@ def test_weighted_median_aggregation_with_known_values() -> None:
     assert profile.pit_loss_s.samples == 3
     assert profile.pit_loss_s.quality is Quality.OK
     assert profile.pit_loss_s.sessions == (1, 2)
+
+
+@pytest.mark.parametrize(
+    ("fuel_start", "fuel_end", "expected"),
+    [
+        (40.0, 38.0, (38.0, 40.0)),
+        (None, 38.0, (38.0, 38.0)),
+        (40.0, None, (40.0, 40.0)),
+    ],
+)
+def test_fuel_range_uses_all_available_stint_endpoints(
+    fuel_start: float | None,
+    fuel_end: float | None,
+    expected: tuple[float, float],
+) -> None:
+    profile = build_weekend_profile(
+        (
+            WeekendSession(
+                session_id=1,
+                stint_summaries=(_summary(fuel_start_kg=fuel_start, fuel_end_kg=fuel_end),),
+            ),
+        ),
+        MetricsConfig(),
+    )
+
+    compound = profile.compound("c3")
+    assert compound is not None
+    assert compound.fuel_range_kg == expected
 
 
 def test_non_representative_stints_are_counted_but_not_used_for_values() -> None:

@@ -1,19 +1,24 @@
 from __future__ import annotations
 
+import json
 import math
 import struct
 import time
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from f1_strategist.capture import CapturedPacket, CaptureWriter
 from f1_strategist.cli import main
+from f1_strategist.fingerprint import file_sha256, fingerprint_capture
 from f1_strategist.metrics.export import laps_to_rows, run_metrics_capture, snapshot_to_dict
 from f1_strategist.packets import HEADER_SIZE
 from f1_strategist.parser import PacketParseError, ParsedPacket
 from f1_strategist.playback import PlaybackSession
+from f1_strategist.store import SessionInfo, SessionStore
+from f1_strategist.weekend_profile import WeekendProfile
 from tests.conftest import make_packet
 from tests.scenarios import ScenarioCar, build_race_timed
 
@@ -369,6 +374,61 @@ def test_play_command_at_speed_zero(
 
     assert main(["play", str(path), "--speed", "0"]) == 0
     assert "Reproducción completada" in capsys.readouterr().out
+
+
+def test_play_and_verify_load_the_profile_registered_for_the_capture(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path, packets = _capture(tmp_path, monkeypatch)
+    session_uid = packets[0][0].header.session_uid
+    profile = WeekendProfile()
+    database = tmp_path / "sessions.db"
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        f"[recording]\ndatabase = {json.dumps(str(database))}\n",
+        encoding="utf-8",
+    )
+    with SessionStore.open(database) as store:
+        store.create_session(
+            SessionInfo(
+                session_uid=session_uid,
+                source="live",
+                started_at_utc="2026-11-05T10:00:00Z",
+                session_type="race",
+                capture_sha256=file_sha256(path),
+                profile_json=profile.to_json(),
+                profile_hash=profile.hash,
+            )
+        )
+
+    playback_profiles: dict[int, WeekendProfile] = {}
+    real_playback = PlaybackSession
+
+    def create_playback(*args: Any, **kwargs: Any) -> PlaybackSession:
+        playback_profiles.update(kwargs["profiles_by_uid"])
+        return real_playback(*args, **kwargs)
+
+    monkeypatch.setattr("f1_strategist.cli.PlaybackSession", create_playback)
+    monkeypatch.setattr(
+        "f1_strategist.cli._run_playback_console",
+        lambda _cfg, session, _console: (session.play(), session.wait(timeout=10)),
+    )
+    monkeypatch.setattr("f1_strategist.cli._install_signal_handlers", lambda: None)
+
+    assert main(["play", str(path), "--speed", "0", "--config", str(config_path)]) == 0
+    assert playback_profiles == {session_uid: profile}
+
+    verify_profiles: dict[int, WeekendProfile] = {}
+    real_fingerprint = fingerprint_capture
+
+    def fingerprint_with_profiles(*args: Any, **kwargs: Any) -> Any:
+        verify_profiles.update(kwargs["profiles_by_uid"])
+        return real_fingerprint(*args, **kwargs)
+
+    monkeypatch.setattr("f1_strategist.cli.fingerprint_capture", fingerprint_with_profiles)
+    assert main(["verify", str(path), "--runs", "1", "--config", str(config_path)]) == 0
+    assert verify_profiles == {session_uid: profile}
 
 
 def test_play_command_rejects_a_missing_capture(

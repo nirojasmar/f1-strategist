@@ -24,7 +24,7 @@ from .capture import CaptureError
 from .config import AppConfig, ConfigError, apply_overrides, load_config
 from .console import format_bytes, render, run_console
 from .datasets import DEFAULT_MANIFEST, Manifest, Scenario, load_manifest, verify_scenario
-from .fingerprint import fingerprint_capture
+from .fingerprint import build_run_info, fingerprint_capture
 from .metrics.export import EXPORT_FORMATS, render_metrics_export, run_metrics_capture
 from .offline import OfflineResult
 from .packets import packet_name
@@ -44,7 +44,8 @@ from .store.queries import (
 )
 from .summary import summarize
 from .trim import trim_capture
-from .weekend_provider import resolve_weekend_profile
+from .weekend_profile import WeekendProfile
+from .weekend_provider import profiles_for_capture, resolve_weekend_profile
 
 _SPEED_STEPS = (0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0)
 
@@ -530,12 +531,14 @@ def _run_playback_console(
 
 def _cmd_play(args: argparse.Namespace, console: Console, err: Console) -> int:
     cfg = load_config(args.config)
+    profiles = _profiles_for_capture(cfg, args.file, err)
     session = PlaybackSession(
         args.file,
         cfg.metrics,
         loop=args.loop,
         speed=args.speed,
         start_lap=args.start_lap,
+        profiles_by_uid=profiles,
     )
     _install_signal_handlers()
     try:
@@ -556,9 +559,10 @@ def _cmd_verify(args: argparse.Namespace, console: Console, err: Console) -> int
     if args.runs < 1:
         raise ValueError("--runs debe ser mayor o igual que 1")
     cfg = load_config(args.config)
+    profiles = _profiles_for_capture(cfg, args.file, err)
     first = None
     for index in range(args.runs):
-        result = fingerprint_capture(args.file, cfg)
+        result = fingerprint_capture(args.file, cfg, profiles_by_uid=profiles)
         integrity_problems = result.offline.integrity_problems()
         if integrity_problems:
             err.print("[red]Error:[/] No se puede verificar una captura incompleta:")
@@ -590,6 +594,27 @@ def _cmd_verify(args: argparse.Namespace, console: Console, err: Console) -> int
         f"Python {info.python_version}"
     )
     return 0
+
+
+def _profiles_for_capture(
+    cfg: AppConfig,
+    path: Path,
+    err: Console,
+) -> dict[int, WeekendProfile]:
+    """Carga perfiles registrados para la captura, si existe la base configurada."""
+    database = cfg.recording.database
+    if not path.is_file() or not database.is_file():
+        return {}
+    run_info = build_run_info(cfg, path)
+    try:
+        with SessionStore.open(database, readonly=True) as store:
+            return profiles_for_capture(store, run_info.capture_sha256)
+    except StoreError as exc:
+        err.print(
+            "[yellow]Aviso:[/] No se pudieron cargar perfiles registrados; "
+            f"la reproducción continuará sin ellos ({exc})."
+        )
+        return {}
 
 
 def _cmd_inspect(args: argparse.Namespace, console: Console, err: Console) -> int:

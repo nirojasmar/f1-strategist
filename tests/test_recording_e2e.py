@@ -17,13 +17,16 @@ import pytest
 from f1_strategist.capture import CapturedPacket, CaptureWriter
 from f1_strategist.config import AppConfig, CaptureConfig, RecordingConfig, TelemetryConfig
 from f1_strategist.fingerprint import (
-    compute_capture_fingerprint,
     compute_fingerprint,
     file_sha256,
     fingerprint_capture,
 )
 from f1_strategist.metrics.engine import MetricsEngine, MetricsSnapshot
-from f1_strategist.metrics.export import render_metrics_export, run_metrics_capture
+from f1_strategist.metrics.export import (
+    render_metrics_export,
+    run_metrics_capture,
+    snapshot_to_dict,
+)
 from f1_strategist.metrics.history import LapHistorySnapshot, LapRecord
 from f1_strategist.metrics.types import Metric, Quality, Window
 from f1_strategist.offline import run_capture_offline
@@ -42,6 +45,7 @@ from f1_strategist.session import CaptureSession
 from f1_strategist.store import MetricSample, SessionInfo, SessionStore
 from f1_strategist.store.queries import render_session_export
 from f1_strategist.weekend_profile import WeekendProfile, profile_from_json
+from f1_strategist.weekend_provider import build_profile_for_weekend
 from tests.conftest import make_packet
 from tests.scenarios import ScenarioCar, build_race_timed, build_weekend_timed
 
@@ -567,6 +571,10 @@ def test_synthetic_weekend_profile_replays_with_the_registered_fingerprint(
         assert registered_profile.hash == race_row.profile_hash, (
             "race profile: expected stored hash to match its serialized value"
         )
+        race_inventory = tuple(store.iter_tyre_inventory(race_row.id, kind="race_start"))
+        assert registered_profile.inventory == race_inventory, (
+            "race profile: expected the current race-start inventory"
+        )
         profile_sessions = set(registered_profile.sessions)
         expected_profile_sessions = {item.id for item in prior_rows if item.id is not None}
         assert profile_sessions == expected_profile_sessions, (
@@ -594,19 +602,99 @@ def test_synthetic_weekend_profile_replays_with_the_registered_fingerprint(
         c5.wear_rate_pct_per_lap.value
     ), "race / c5 wear rate: expected replay to use the registered profile"
 
-    collector = _EventCollector(profile=registered_profile)
-    run_capture_offline(race_capture, [collector])
-    collector.finish()
-    expected_fingerprint = compute_capture_fingerprint(
-        collector.events,
-        collector.engine.history,
-        collector.engine.snapshot(),
-        race_config,
+    playback = PlaybackSession(
         race_capture,
+        race_config.metrics,
+        speed=0,
+        profiles_by_uid={session_uids[-1]: registered_profile},
     )
-    assert ingested.fingerprint == expected_fingerprint, (
-        "race replay: expected identical fingerprint with the registered profile"
+    playback.play()
+    assert playback.wait(timeout=10)
+    assert playback.error is None
+    playback_metrics = snapshot_to_dict(playback.metrics_snapshot())
+    assert playback_metrics["metrics"]["profile.wear_rate_pct_per_lap"]["value"] == (
+        c5.wear_rate_pct_per_lap.value
     )
+
+    replay_fingerprint = fingerprint_capture(
+        race_capture,
+        race_config,
+        profiles_by_uid={session_uids[-1]: registered_profile},
+    )
+    assert ingested.fingerprint == replay_fingerprint.fingerprint
+
+
+def test_continuous_weekend_waits_for_previous_sessions_to_be_written(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cars = (
+        replace(_cars()[0], compounds=("c5",)),
+        replace(_cars()[1], compounds=("c4",)),
+    )
+    packets = list(build_weekend_timed(cars, total_laps=5, samples_per_lap=1))
+    _patch_parser(monkeypatch, packets)
+    source = tmp_path / "continuous-weekend.f1cap"
+    _write_capture(source, packets, interval_s=0.01)
+
+    add_stint_summaries = SessionStore.add_stint_summaries
+
+    def slow_stint_write(
+        store: SessionStore,
+        session_id: int,
+        summaries: Any,
+    ) -> None:
+        time.sleep(0.02)
+        add_stint_summaries(store, session_id, summaries)
+
+    monkeypatch.setattr(SessionStore, "add_stint_summaries", slow_stint_write)
+    config = _live_config(tmp_path)
+    session = CaptureSession(config)
+    session.start()
+    try:
+        sent = replay_capture(source, "127.0.0.1", session.bound_port, speed=0)
+        assert _wait_until(
+            lambda: (
+                session.snapshot().capture_packets >= sent
+                and session.race_snapshot().session.ended is True
+            )
+        )
+    finally:
+        session.stop()
+
+    session_uids = tuple(dict.fromkeys(packet.header.session_uid for packet, _ in packets))
+    with SessionStore.open(config.recording.database) as store:
+        rows = [
+            item
+            for item in store.list_sessions()
+            if item.source == "live" and item.session_uid in session_uids
+        ]
+        assert len(rows) == 3
+        race = next(item for item in rows if item.session_uid == session_uids[-1])
+        assert race.id is not None
+        assert race.weekend_id is not None
+        assert race.profile_json is not None
+        profile = profile_from_json(race.profile_json)
+        previous_ids = tuple(
+            sorted(
+                item.id
+                for item in rows
+                if item.session_uid != session_uids[-1] and item.id is not None
+            )
+        )
+        assert profile.sessions == previous_ids
+        race_inventory = tuple(store.iter_tyre_inventory(race.id, kind="race_start"))
+        assert race_inventory
+        assert profile.inventory == race_inventory
+        expected = build_profile_for_weekend(
+            store,
+            race.weekend_id,
+            config.metrics,
+            exclude_session_uid=race.session_uid,
+            inventory_override=profile.inventory,
+        )
+
+    assert profile.to_json() == expected.to_json()
 
 
 class _MemoryStore:

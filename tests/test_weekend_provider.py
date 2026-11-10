@@ -2,17 +2,26 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import replace
 from pathlib import Path
 
 from f1_strategist.config import MetricsConfig
 from f1_strategist.metrics.stint_summary import StintSummary
 from f1_strategist.metrics.types import Quality
-from f1_strategist.store import SessionInfo, SessionStore, TyreInventorySnapshot, WeekendInfo
+from f1_strategist.store import (
+    MetricSample,
+    SessionInfo,
+    SessionStore,
+    TyreInventorySnapshot,
+    WeekendInfo,
+)
+from f1_strategist.weekend_profile import WeekendProfile
 from f1_strategist.weekend_provider import (
     WeekendProfileResult,
     build_profile_for_weekend,
     locate_weekend,
+    profiles_for_capture,
     registered_profile,
     resolve_weekend_profile,
 )
@@ -99,6 +108,9 @@ class _BrokenStore:
     def list_weekends(self) -> list[WeekendInfo]:
         raise RuntimeError("base de datos rota")
 
+    def list_sessions(self) -> list[SessionInfo]:
+        raise RuntimeError("base de datos rota")
+
     def find_weekend(
         self, *, weekend_link_id: int, season_link_id: int | None = None
     ) -> WeekendInfo | None:
@@ -107,10 +119,15 @@ class _BrokenStore:
     def list_weekend_sessions(self, weekend_id: int) -> list[SessionInfo]:
         raise RuntimeError("base de datos rota")
 
-    def iter_stint_summaries(self, session_id: int) -> list[StintSummary]:
+    def iter_stint_summaries(self, session_id: int) -> Iterator[StintSummary]:
         raise RuntimeError("base de datos rota")
 
     def iter_tyre_inventory(self, session_id: int) -> list[TyreInventorySnapshot]:
+        raise RuntimeError("base de datos rota")
+
+    def iter_metric_samples(
+        self, session_id: int, *, key: str | None = None, lap: int | None = None
+    ) -> Iterator[MetricSample]:
         raise RuntimeError("base de datos rota")
 
 
@@ -136,7 +153,11 @@ def test_profile_is_built_from_the_sessions_of_the_weekend(tmp_path: Path) -> No
         store.add_stint_summaries(qualifying, [_summary(compound="c4", pace_mean_s=89.0)])
         store.add_tyre_inventory(practice, [_inventory_set(kind="race_start", set_index=0)])
 
-        result = resolve_weekend_profile(store, _session(), MetricsConfig())
+        result = resolve_weekend_profile(
+            store,
+            _session(weekend_id=weekend_id),
+            MetricsConfig(),
+        )
 
     assert result.error is None
     assert result.weekend_id == weekend_id
@@ -163,20 +184,21 @@ def test_weekend_is_located_from_the_game_identifiers(tmp_path: Path) -> None:
         assert located == weekend
 
 
-def test_weekend_is_located_by_a_unique_track(tmp_path: Path) -> None:
+def test_weekend_is_not_guessed_from_track_or_mismatched_ids(tmp_path: Path) -> None:
     with SessionStore.open(tmp_path / "sessions.db") as store:
         practice = store.create_session(_session(session_uid=1, session_type="practice_1"))
         weekend_id = store.link_sessions([practice])
         weekend = store.get_weekend(weekend_id)
 
-        assert locate_weekend(store, _session(session_uid=2)) == weekend
+        assert locate_weekend(store, _session(session_uid=2)) is None
+        assert locate_weekend(store, _session(session_uid=2, weekend_id=weekend_id)) == weekend
+        assert locate_weekend(store, _session(session_uid=2, weekend_link_id=999)) is None
 
         store.create_session(_session(session_uid=3, track="spa"))
         spa_practice = store.list_sessions()[1].id
         assert spa_practice is not None
         store.link_sessions([spa_practice])
 
-        # Dos fines de semana en el mismo circuito: no se adivina cuál usar.
         other = store.create_session(_session(session_uid=4, track="monza"))
         store.link_sessions([other])
 
@@ -216,10 +238,12 @@ def test_excluded_session_does_not_feed_the_profile(tmp_path: Path) -> None:
         store.link_sessions([practice, race])
         store.add_stint_summaries(practice, [_summary(compound="c3")])
         store.add_stint_summaries(race, [_summary(compound="c5", pace_mean_s=88.0)])
+        race_info = store.get_session(race)
+        assert race_info is not None and race_info.weekend_id is not None
 
         profile = build_profile_for_weekend(
             store,
-            store.get_session(race).weekend_id,  # type: ignore[union-attr]
+            race_info.weekend_id,
             MetricsConfig(),
             exclude_session_id=race,
         )
@@ -227,6 +251,58 @@ def test_excluded_session_does_not_feed_the_profile(tmp_path: Path) -> None:
     assert profile.sessions == (practice,)
     assert profile.compound("c3") is not None
     assert profile.compound("c5") is None
+
+
+def test_pit_loss_uses_latest_sample_once_and_preserves_stop_count(tmp_path: Path) -> None:
+    with SessionStore.open(tmp_path / "sessions.db") as store:
+        practice = store.create_session(_session(session_uid=1, session_type="practice_1"))
+        race = store.create_session(_session(session_uid=2))
+        weekend_id = store.link_sessions([practice, race])
+        store.add_metric_samples(
+            practice,
+            [
+                MetricSample(10.0, "pit.loss_estimate_s", "low", "s", 1, 10.0, 1, 20.0),
+                MetricSample(20.0, "pit.loss_estimate_s", "low", "s", 2, 20.0, 2, 21.0),
+                MetricSample(30.0, "pit.loss_estimate_s", "low", "s", 2, 30.0, 2, 21.0),
+            ],
+        )
+
+        result = resolve_weekend_profile(
+            store,
+            _session(session_uid=3, weekend_id=weekend_id),
+            MetricsConfig(),
+        )
+
+    assert result.profile is not None
+    assert result.profile.pit_loss_s.value == 21.0
+    assert result.profile.pit_loss_s.samples == 2
+    assert result.profile.pit_loss_s.quality is Quality.LOW
+    assert result.profile.pit_loss_s.sessions == (practice,)
+
+
+def test_profiles_are_loaded_by_capture_and_session_uid(tmp_path: Path) -> None:
+    profile = WeekendProfile()
+    with SessionStore.open(tmp_path / "sessions.db") as store:
+        store.create_session(
+            _session(
+                session_uid=101,
+                capture_sha256="a" * 64,
+                profile_json=profile.to_json(),
+                profile_hash=profile.hash,
+            )
+        )
+        store.create_session(
+            _session(
+                session_uid=202,
+                capture_sha256="a" * 64,
+                profile_json=profile.to_json(),
+                profile_hash=profile.hash,
+            )
+        )
+
+        profiles = profiles_for_capture(store, "a" * 64)
+
+    assert profiles == {101: profile, 202: profile}
 
 
 def test_registered_profile_reads_the_stored_json_and_hash() -> None:

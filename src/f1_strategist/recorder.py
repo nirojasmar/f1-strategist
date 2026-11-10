@@ -7,7 +7,7 @@ import math
 import queue
 import threading
 import time
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -36,7 +36,8 @@ from .store import (
     TyreInventorySnapshot,
 )
 from .store.sqlite_store import InventoryKind, SessionSource
-from .weekend_profile import WeekendProfile, profile_from_json
+from .weekend_profile import WeekendProfile
+from .weekend_provider import profiles_for_capture
 
 _EVENT_MEMORY_LIMIT = 8192
 _PENDING_ERROR_LIMIT = 100
@@ -124,6 +125,13 @@ class _Stop:
     tyre_inventory: tuple[TyreInventorySnapshot, ...] = ()
 
 
+@dataclass(frozen=True, slots=True)
+class _Barrier:
+    """Marca de cola que se confirma después de todos los lotes anteriores."""
+
+    completed: threading.Event
+
+
 def serialize_config(config: AppConfig) -> str:
     """Serializa la configuración de forma canónica para guardarla como metadato."""
     return json.dumps(
@@ -165,7 +173,7 @@ class SessionRecorder:
         self._default_profile = default_profile
         self._profiles: dict[int, tuple[str, str]] = {}
         self._lock = threading.Lock()
-        self._queue: queue.Queue[_Batch | _Stop] = queue.Queue(maxsize=config.queue_size)
+        self._queue: queue.Queue[_Batch | _Barrier | _Stop] = queue.Queue(maxsize=config.queue_size)
 
         self._dropped_by_uid: dict[int, int] = {}
         self._writer_incomplete = False
@@ -350,6 +358,22 @@ class SessionRecorder:
         """
         with self._lock:
             self._profiles[session_uid] = (profile_json, profile_hash)
+
+    def flush(self, timeout: float) -> bool:
+        """Espera, con límite, a que el escritor confirme todo el trabajo encolado."""
+        if not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError("timeout debe ser finito y positivo")
+        deadline = time.monotonic() + timeout
+        barrier = _Barrier(threading.Event())
+        with self._lock:
+            if self._stop_requested or self._stopped:
+                return False
+            try:
+                self._queue.put(barrier, timeout=timeout)
+            except queue.Full:
+                return False
+        remaining = max(0.0, deadline - time.monotonic())
+        return barrier.completed.wait(remaining) and self.error is None
 
     def stop(
         self,
@@ -538,7 +562,7 @@ class SessionRecorder:
             session_uid=uid,
             final_metrics_json=self._pending_final_metrics.pop(uid, None),
             stint_summaries=self._stint_summaries(state, history),
-            tyre_inventory=self._inventory(state, "session_end"),
+            tyre_inventory=self.inventory_for_state(state, "session_end"),
         )
 
     def _stint_summaries(
@@ -564,7 +588,7 @@ class SessionRecorder:
             return ()
 
     @staticmethod
-    def _inventory(
+    def inventory_for_state(
         state: RaceStateSnapshot | None,
         kind: InventoryKind,
     ) -> tuple[TyreInventorySnapshot, ...]:
@@ -599,7 +623,7 @@ class SessionRecorder:
         session_type = state.session.session_type
         if session_type is None or session_type.lower() not in _RACE_SESSION_TYPES:
             return ()
-        return self._inventory(state, "race_start")
+        return self.inventory_for_state(state, "race_start")
 
     def _build_session_info(
         self,
@@ -844,6 +868,12 @@ class SessionRecorder:
                 pending = []
                 self._finish(item)
                 return
+            if isinstance(item, _Barrier):
+                self._flush(pending)
+                pending = []
+                item.completed.set()
+                deadline = time.monotonic() + flush_interval
+                continue
             pending.append(item)
             if len(pending) >= self._config.batch_size:
                 self._flush(pending)
@@ -1007,11 +1037,11 @@ class _IngestCollector:
         engine: MetricsEngine,
         recorder: SessionRecorder,
         *,
-        default_profile: WeekendProfile | None = None,
+        profiles_by_uid: Mapping[int, WeekendProfile],
     ) -> None:
         self.engine = engine
         self.recorder = recorder
-        self.default_profile = default_profile
+        self.profiles_by_uid = dict(profiles_by_uid)
         self.events: list[RaceEvent] = []
         self.state = RaceState(self.events.append)
         self.last_state: RaceStateSnapshot | None = None
@@ -1043,12 +1073,18 @@ class _IngestCollector:
         self.last_observed_at = observed_at
         self.last_header_time = packet.header.session_time
         self.last_header = packet.header
+        uid = snapshot.session.uid
         session_type = snapshot.session.session_type
-        self.engine.set_profile(
-            self.default_profile
-            if session_type is not None and session_type.lower() in _RACE_SESSION_TYPES
+        profile = (
+            self.profiles_by_uid.get(uid)
+            if uid is not None
+            and session_type is not None
+            and session_type.lower() in _RACE_SESSION_TYPES
             else None
         )
+        self.engine.set_profile(profile)
+        if uid is not None and profile is not None:
+            self.recorder.set_weekend_profile(uid, profile.to_json(), profile.hash)
         self.engine.apply(packet, observed_at, snapshot)
         self.recorder.observe(
             packet.header.session_time,
@@ -1075,15 +1111,10 @@ def ingest_capture(
         return _result_from_session(store, existing, skipped=True)
     old_sessions = _find_same_capture(store, run_info) if replace else ()
 
-    registered_profile = _registered_profile(store, run_info)
-    default_profile: WeekendProfile | None = None
-    if registered_profile is not None:
-        try:
-            default_profile = profile_from_json(registered_profile[0])
-        except (KeyError, TypeError, ValueError) as exc:
-            raise StoreError(f"El perfil registrado no es válido: {exc}") from exc
-        if default_profile.hash != registered_profile[1]:
-            raise StoreError("La huella del perfil registrado no coincide con su contenido")
+    try:
+        registered_profiles = profiles_for_capture(store, run_info.capture_sha256)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise StoreError(f"Los perfiles registrados no son válidos: {exc}") from exc
 
     engine = MetricsEngine(app_config.metrics)
     recorder = SessionRecorder(
@@ -1095,9 +1126,8 @@ def ingest_capture(
         config_json=serialize_config(app_config),
         block_when_full=True,
         metrics_config=app_config.metrics,
-        default_profile=registered_profile,
     )
-    collector = _IngestCollector(engine, recorder, default_profile=default_profile)
+    collector = _IngestCollector(engine, recorder, profiles_by_uid=registered_profiles)
     offline: OfflineResult | None = None
     metrics: MetricsSnapshot | None = None
     fingerprint: str | None = None
@@ -1167,28 +1197,6 @@ def _find_ingested(store: SessionStore, run_info: RunInfo) -> SessionInfo | None
             and session.final_metrics_json is not None
         ):
             return session
-    return None
-
-
-def _registered_profile(
-    store: SessionStore,
-    run_info: RunInfo,
-) -> tuple[str, str] | None:
-    """Perfil ya registrado de la misma captura, para reutilizarlo al reproducir.
-
-    Busca en todas las sesiones (no solo las ingeridas) la más reciente que
-    comparta la huella del fichero de captura y tenga perfil guardado. Así una
-    reproducción usa el perfil exacto de la grabación en vivo en lugar de
-    recalcularlo con datos que pueden haber cambiado.
-    """
-    if run_info.capture_sha256 is None:
-        return None
-    for session in reversed(store.list_sessions()):
-        if session.capture_sha256 != run_info.capture_sha256:
-            continue
-        if session.profile_json is None or session.profile_hash is None:
-            continue
-        return session.profile_json, session.profile_hash
     return None
 
 

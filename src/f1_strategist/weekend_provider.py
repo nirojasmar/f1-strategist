@@ -20,14 +20,21 @@ from typing import Protocol
 
 from .config import MetricsConfig
 from .metrics.stint_summary import StintSummary
-from .store import SessionInfo, TyreInventorySnapshot, WeekendInfo
-from .weekend_profile import WeekendProfile, WeekendSession, build_weekend_profile
+from .metrics.types import Quality
+from .store import MetricSample, SessionInfo, TyreInventorySnapshot, WeekendInfo
+from .weekend_profile import (
+    WeekendProfile,
+    WeekendSession,
+    build_weekend_profile,
+    profile_from_json,
+)
 
 __all__ = [
     "WeekendProfileResult",
     "WeekendReader",
     "build_profile_for_weekend",
     "locate_weekend",
+    "profiles_for_capture",
     "registered_profile",
     "resolve_weekend_profile",
 ]
@@ -39,6 +46,8 @@ class WeekendReader(Protocol):
     def get_weekend(self, weekend_id: int) -> WeekendInfo | None: ...
 
     def list_weekends(self) -> list[WeekendInfo]: ...
+
+    def list_sessions(self) -> list[SessionInfo]: ...
 
     def find_weekend(
         self,
@@ -52,6 +61,10 @@ class WeekendReader(Protocol):
     def iter_stint_summaries(self, session_id: int) -> Iterator[StintSummary]: ...
 
     def iter_tyre_inventory(self, session_id: int) -> Iterable[TyreInventorySnapshot]: ...
+
+    def iter_metric_samples(
+        self, session_id: int, *, key: str | None = None, lap: int | None = None
+    ) -> Iterator[MetricSample]: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,26 +90,21 @@ class WeekendProfileResult:
 def locate_weekend(store: WeekendReader, session: SessionInfo) -> WeekendInfo | None:
     """Localiza el fin de semana de una sesión.
 
-    Primero usa el enlace ya guardado en la sesión, después los identificadores
-    del juego y, como último recurso, un fin de semana manual del mismo circuito
-    solo si es el único, para no mezclar fines de semana distintos. Devuelve
-    ``None`` si no hay un fin de semana inequívoco.
+    Solo usa un enlace ya guardado en la sesión o los identificadores del juego.
+    El circuito por sí solo no confirma que dos sesiones pertenezcan al mismo
+    fin de semana.
     """
     if session.weekend_id is not None:
-        weekend = store.get_weekend(session.weekend_id)
-        if weekend is not None:
-            return weekend
+        return store.get_weekend(session.weekend_id)
     if session.weekend_link_id is not None:
+        if session.weekend_link_id <= 0:
+            return None
         weekend = store.find_weekend(
             weekend_link_id=session.weekend_link_id,
             season_link_id=session.season_link_id,
         )
-        if weekend is not None:
-            return weekend
-    if session.track is None:
-        return None
-    candidates = [weekend for weekend in store.list_weekends() if weekend.track == session.track]
-    return candidates[0] if len(candidates) == 1 else None
+        return weekend
+    return None
 
 
 def build_profile_for_weekend(
@@ -105,28 +113,57 @@ def build_profile_for_weekend(
     cfg: MetricsConfig,
     *,
     exclude_session_id: int | None = None,
+    exclude_session_uid: int | None = None,
+    inventory_override: tuple[TyreInventorySnapshot, ...] | None = None,
 ) -> WeekendProfile:
     """Construye el perfil de un fin de semana leyendo sus sesiones del almacén.
 
     Excluye la sesión en curso si se indica, para que la carrera que empieza no
     se use a sí misma como referencia. Cada sesión aporta sus resúmenes de tanda
-    y las instantáneas del inventario de neumáticos; la pérdida en boxes no
-    existe en los resúmenes, así que el perfil la deja no disponible.
+    y las instantáneas del inventario de neumáticos. La pérdida en boxes usa la
+    última muestra válida de cada sesión para no duplicar métricas retenidas.
     """
     excluded = exclude_session_id
     weekend_sessions: list[WeekendSession] = []
     for stored in store.list_weekend_sessions(weekend_id):
-        if stored.id is None or stored.id == excluded:
+        if stored.id is None or stored.id == excluded or stored.session_uid == exclude_session_uid:
             continue
+        pit_sample = next(
+            (
+                sample
+                for sample in reversed(
+                    tuple(store.iter_metric_samples(stored.id, key="pit.loss_estimate_s"))
+                )
+                if sample.value_num is not None
+                and sample.sample_count > 0
+                and sample.quality in {Quality.OK.value, Quality.LOW.value}
+            ),
+            None,
+        )
+        if pit_sample is None or pit_sample.value_num is None:
+            pit_losses: tuple[float, ...] = ()
+            pit_loss_sample_counts: tuple[int, ...] = ()
+            pit_loss_qualities: tuple[Quality, ...] = ()
+        else:
+            pit_losses = (pit_sample.value_num,)
+            pit_loss_sample_counts = (pit_sample.sample_count,)
+            pit_loss_qualities = (Quality(pit_sample.quality),)
         weekend_sessions.append(
             WeekendSession(
                 session_id=stored.id,
                 session_type=stored.session_type,
                 stint_summaries=tuple(store.iter_stint_summaries(stored.id)),
                 tyre_inventory=tuple(store.iter_tyre_inventory(stored.id)),
+                pit_losses_s=pit_losses,
+                pit_loss_sample_counts=pit_loss_sample_counts,
+                pit_loss_qualities=pit_loss_qualities,
             )
         )
-    return build_weekend_profile(weekend_sessions, cfg)
+    return build_weekend_profile(
+        weekend_sessions,
+        cfg,
+        inventory_override=inventory_override,
+    )
 
 
 def resolve_weekend_profile(
@@ -135,6 +172,8 @@ def resolve_weekend_profile(
     cfg: MetricsConfig,
     *,
     exclude_session_id: int | None = None,
+    exclude_session_uid: int | None = None,
+    inventory_override: tuple[TyreInventorySnapshot, ...] | None = None,
 ) -> WeekendProfileResult:
     """Resuelve el perfil de la sesión sin lanzar nunca una excepción.
 
@@ -151,9 +190,13 @@ def resolve_weekend_profile(
             weekend.id,
             cfg,
             exclude_session_id=exclude_session_id,
+            exclude_session_uid=exclude_session_uid,
+            inventory_override=inventory_override,
         )
     except Exception as exc:  # noqa: BLE001 - la captura nunca se detiene por el perfil
         return WeekendProfileResult(error=str(exc) or type(exc).__name__)
+    if not profile.sessions:
+        return WeekendProfileResult(weekend_id=weekend.id)
     return WeekendProfileResult(weekend_id=weekend.id, profile=profile)
 
 
@@ -166,3 +209,33 @@ def registered_profile(session: SessionInfo) -> tuple[str, str] | None:
     if session.profile_json is None or session.profile_hash is None:
         return None
     return session.profile_json, session.profile_hash
+
+
+def profiles_for_capture(
+    store: WeekendReader,
+    capture_sha256: str | None,
+) -> dict[int, WeekendProfile]:
+    """Carga los perfiles registrados por UID de sesión de una captura."""
+    if capture_sha256 is None:
+        return {}
+    profiles: dict[int, WeekendProfile] = {}
+    for session in store.list_sessions():
+        if (
+            session.capture_sha256 != capture_sha256
+            or session.profile_json is None
+            or session.profile_hash is None
+        ):
+            continue
+        profile = profile_from_json(session.profile_json)
+        if profile.hash != session.profile_hash:
+            raise ValueError(
+                f"La huella del perfil registrado para la sesión {session.session_uid} "
+                "no coincide con su contenido"
+            )
+        previous = profiles.get(session.session_uid)
+        if previous is not None and previous.hash != profile.hash:
+            raise ValueError(
+                f"Hay perfiles registrados distintos para la sesión {session.session_uid}"
+            )
+        profiles[session.session_uid] = profile
+    return profiles

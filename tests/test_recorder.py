@@ -17,7 +17,7 @@ import pytest
 from f1_strategist.capture import CapturedPacket, CaptureWriter
 from f1_strategist.cli import main
 from f1_strategist.config import AppConfig, CaptureConfig, RecordingConfig, TelemetryConfig
-from f1_strategist.fingerprint import fingerprint_capture
+from f1_strategist.fingerprint import file_sha256, fingerprint_capture
 from f1_strategist.messages import message
 from f1_strategist.metrics.engine import MetricsSnapshot
 from f1_strategist.metrics.export import run_metrics_capture
@@ -46,7 +46,7 @@ from f1_strategist.store import (
 )
 from f1_strategist.weekend_profile import WeekendProfile
 from tests.conftest import make_packet
-from tests.scenarios import ScenarioCar, build_race_timed
+from tests.scenarios import ScenarioCar, build_race_timed, build_weekend_timed
 
 
 class _FakeStore:
@@ -1077,6 +1077,70 @@ def test_ingest_reuses_the_profile_registered_for_the_same_capture(
     assert ingested.profile_hash == profile.hash
 
 
+def test_ingest_selects_profiles_per_race_uid_in_a_multisession_capture(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    race = list(build_race_timed(_cars(), total_laps=3, samples_per_lap=1))
+    first_uid = race[0][0].header.session_uid
+    second_uid = first_uid + 1
+    packets = race + [
+        (
+            replace(
+                packet,
+                header=replace(packet.header, session_uid=second_uid),
+            ),
+            observed_at + max(timestamp for _, timestamp in race) + 1.0,
+        )
+        for packet, observed_at in race
+    ]
+    path = tmp_path / "two-races.f1cap"
+    with CaptureWriter(path) as writer:
+        for index in range(len(packets)):
+            writer.write(
+                CapturedPacket(
+                    recv_time_ns=index * 1_000_000,
+                    source_ip="127.0.0.1",
+                    source_port=4000,
+                    payload=make_packet(1, extra=struct.pack("<I", index)),
+                )
+            )
+    parsed = [packet for packet, _ in packets]
+
+    def fake_parse(payload: bytes) -> ParsedPacket:
+        index = struct.unpack_from("<I", payload, HEADER_SIZE)[0]
+        return parsed[index]
+
+    monkeypatch.setattr("f1_strategist.offline.parse_packet", fake_parse)
+    capture_hash = file_sha256(path)
+    first_profile = WeekendProfile()
+    second_profile = replace(first_profile, sessions=(99,))
+    database = tmp_path / "sessions.db"
+    with SessionStore.open(database) as store:
+        for uid, profile in ((first_uid, first_profile), (second_uid, second_profile)):
+            store.create_session(
+                SessionInfo(
+                    session_uid=uid,
+                    source="live",
+                    started_at_utc="2026-11-05T10:00:00Z",
+                    capture_sha256=capture_hash,
+                    session_type="race",
+                    profile_json=profile.to_json(),
+                    profile_hash=profile.hash,
+                )
+            )
+
+        ingest_capture(path, store, AppConfig())
+        ingested = {
+            session.session_uid: session
+            for session in store.list_sessions()
+            if session.source == "ingest"
+        }
+
+    assert ingested[first_uid].profile_hash == first_profile.hash
+    assert ingested[second_uid].profile_hash == second_profile.hash
+
+
 def _summary() -> StintSummary:
     """Resumen de tanda representativo para alimentar un perfil del fin de semana."""
     return StintSummary(
@@ -1116,6 +1180,8 @@ def _prepare_weekend(database: Path) -> int:
                 started_at_utc="2026-11-05T10:00:00Z",
                 track="monza",
                 session_type="practice_1",
+                season_link_id=1269315945,
+                weekend_link_id=1269315945,
             )
         )
         store.add_stint_summaries(session_id, [_summary()])
@@ -1123,9 +1189,15 @@ def _prepare_weekend(database: Path) -> int:
     return session_id
 
 
-def _run_live_session(monkeypatch: pytest.MonkeyPatch, database: Path) -> CaptureSession:
+def _run_live_session(
+    monkeypatch: pytest.MonkeyPatch,
+    database: Path,
+    *,
+    packets: list[tuple[ParsedPacket, float]] | None = None,
+) -> CaptureSession:
     """Ejecuta una carrera sintética en vivo contra la base de datos indicada."""
-    packets = list(build_race_timed(_cars(), total_laps=3, samples_per_lap=1))
+    if packets is None:
+        packets = list(build_race_timed(_cars(), total_laps=3, samples_per_lap=1))
     parsed = iter(packet for packet, _ in packets)
     monkeypatch.setattr("f1_strategist.session.parse_packet", lambda _: next(parsed))
 
@@ -1207,10 +1279,15 @@ def test_a_weekend_read_failure_does_not_stop_the_capture(
     database = tmp_path / "live.db"
     _prepare_weekend(database)
 
-    def broken_list_weekends(self: SessionStore) -> list[object]:
+    def broken_find_weekend(
+        self: SessionStore,
+        *,
+        weekend_link_id: int,
+        season_link_id: int | None = None,
+    ) -> object:
         raise RuntimeError("base de datos rota")
 
-    monkeypatch.setattr(SessionStore, "list_weekends", broken_list_weekends)
+    monkeypatch.setattr(SessionStore, "find_weekend", broken_find_weekend)
 
     session = _run_live_session(monkeypatch, database)
 
@@ -1224,6 +1301,32 @@ def test_a_weekend_read_failure_does_not_stop_the_capture(
     assert "base de datos rota" in str(snapshot.consumer_error.get("error"))
     assert len(sessions) == 2
     assert sessions[-1].profile_json is None
+
+
+def test_live_profile_is_cleared_when_the_session_changes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "live.db"
+    _prepare_weekend(database)
+    weekend = list(build_weekend_timed(_cars(), total_laps=3, samples_per_lap=1))
+    session_uids = tuple(dict.fromkeys(packet.header.session_uid for packet, _ in weekend))
+    race_packets = [item for item in weekend if item[0].header.session_uid == session_uids[-1]]
+    practice_source = [item for item in weekend if item[0].header.session_uid == session_uids[0]]
+    practice_origin = practice_source[0][1]
+    next_session_origin = max(observed_at for _, observed_at in weekend) + 1.0
+    practice_packets = [
+        (packet, next_session_origin + observed_at - practice_origin)
+        for packet, observed_at in practice_source
+    ]
+
+    session = _run_live_session(monkeypatch, database, packets=race_packets + practice_packets)
+
+    metric = session.metrics_snapshot().metrics["profile.wear_rate_pct_per_lap"]
+    assert session.race_snapshot().session.session_type == "practice_1"
+    assert session.weekend_profile is None
+    assert metric.value is None
+    assert metric.quality is Quality.UNAVAILABLE
 
 
 def test_ingest_waits_for_the_writer_instead_of_dropping_batches(

@@ -65,6 +65,11 @@ uv run f1-strategist weekends show 1 --db captures/sessions.db
 uv run f1-strategist weekends unlink 3 --db captures/sessions.db
 ```
 
+`play` y `verify` reutilizan los perfiles guardados en la base indicada por
+`recording.database` cuando coinciden el hash de captura y el UID de sesión.
+Sin un perfil compatible, la reproducción continúa sin prior; un perfil
+corrupto o ambiguo se informa como error.
+
 `ingest` informa del ID de la sesión creada; usa ese valor (o el que muestra `sessions list`)
 en los comandos `sessions` y `weekends`.
 

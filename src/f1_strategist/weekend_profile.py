@@ -217,6 +217,8 @@ class WeekendSession:
     stint_summaries: tuple[StintSummary, ...] = ()
     tyre_inventory: tuple[TyreInventorySnapshot, ...] = ()
     pit_losses_s: tuple[float, ...] = ()
+    pit_loss_sample_counts: tuple[int, ...] = ()
+    pit_loss_qualities: tuple[Quality, ...] = ()
 
     def __post_init__(self) -> None:
         if self.session_id < 1:
@@ -224,6 +226,8 @@ class WeekendSession:
         object.__setattr__(self, "stint_summaries", tuple(self.stint_summaries))
         object.__setattr__(self, "tyre_inventory", tuple(self.tyre_inventory))
         object.__setattr__(self, "pit_losses_s", tuple(self.pit_losses_s))
+        object.__setattr__(self, "pit_loss_sample_counts", tuple(self.pit_loss_sample_counts))
+        object.__setattr__(self, "pit_loss_qualities", tuple(self.pit_loss_qualities))
 
 
 def build_weekend_profile(
@@ -231,6 +235,7 @@ def build_weekend_profile(
     cfg: MetricsConfig,
     *,
     reference_compound: str | None = None,
+    inventory_override: tuple[TyreInventorySnapshot, ...] | None = None,
 ) -> WeekendProfile:
     """Agrega las sesiones de un fin de semana en un perfil inmutable.
 
@@ -274,7 +279,9 @@ def build_weekend_profile(
         compounds=compounds,
         reference_compound=reference,
         pit_loss_s=pit_loss,
-        inventory=_select_inventory(ordered),
+        inventory=(
+            _select_inventory(ordered) if inventory_override is None else tuple(inventory_override)
+        ),
         sessions=tuple(session.session_id for session in ordered),
         quality=_profile_quality(compounds),
     )
@@ -426,7 +433,7 @@ def _build_compound(
     pace_rows: list[tuple[float, int, int]] = []
     consumption_rows: list[tuple[float, int, int]] = []
     temperature_rows: list[tuple[float, int, int]] = []
-    fuel_starts: list[float] = []
+    fuel_values: list[float] = []
     weather: set[str] = set()
     visual: set[str] = set()
     laps = 0
@@ -439,7 +446,9 @@ def _build_compound(
             visual.add(summary.visual_compound)
         weather.update(summary.weather)
         if summary.fuel_start_kg is not None:
-            fuel_starts.append(summary.fuel_start_kg)
+            fuel_values.append(summary.fuel_start_kg)
+        if summary.fuel_end_kg is not None:
+            fuel_values.append(summary.fuel_end_kg)
 
     for session_id, summary in entries:
         if representative and not summary.representative:
@@ -458,8 +467,8 @@ def _build_compound(
 
     sessions = {session_id for session_id, _ in entries}
     fuel_range: tuple[float, float] | None = None
-    if fuel_starts:
-        fuel_range = (min(fuel_starts), max(fuel_starts))
+    if fuel_values:
+        fuel_range = (min(fuel_values), max(fuel_values))
 
     return CompoundProfile(
         compound=compound,
@@ -539,22 +548,40 @@ def _weighted_median(samples: Sequence[tuple[float, int]]) -> float | None:
 
 
 def _aggregate_pit_loss(sessions: Sequence[WeekendSession]) -> ProfileValue:
-    rows = [
-        (loss, 1, session.session_id)
-        for session in sessions
-        for loss in session.pit_losses_s
-        if math.isfinite(loss)
-    ]
+    rows: list[tuple[float, int, int, Quality]] = []
+    for session in sessions:
+        for index, loss in enumerate(session.pit_losses_s):
+            if not math.isfinite(loss):
+                continue
+            count = (
+                session.pit_loss_sample_counts[index]
+                if index < len(session.pit_loss_sample_counts)
+                else 1
+            )
+            if count <= 0:
+                continue
+            quality = (
+                session.pit_loss_qualities[index]
+                if index < len(session.pit_loss_qualities)
+                else Quality.OK
+            )
+            rows.append((loss, count, session.session_id, quality))
     if not rows:
         return ProfileValue(None)
-    value = _weighted_median([(sample, weight) for sample, weight, _ in rows])
+    value = _weighted_median([(sample, weight) for sample, weight, _, _ in rows])
     if value is None:
         return ProfileValue(None)
+    sample_count = sum(weight for _, weight, _, _ in rows)
     return ProfileValue(
         value=value,
-        samples=len(rows),
-        quality=(Quality.OK if len(rows) >= _PIT_LOSS_OK_SAMPLES else Quality.LOW),
-        sessions=tuple({session_id for _, _, session_id in rows}),
+        samples=sample_count,
+        quality=(
+            Quality.OK
+            if sample_count >= _PIT_LOSS_OK_SAMPLES
+            and all(quality is Quality.OK for _, _, _, quality in rows)
+            else Quality.LOW
+        ),
+        sessions=tuple({session_id for _, _, session_id, _ in rows}),
     )
 
 
