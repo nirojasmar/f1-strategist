@@ -474,7 +474,7 @@ def test_synthetic_weekend_profile_replays_with_the_registered_fingerprint(
         replace(_cars()[0], compounds=("c5",)),
         replace(_cars()[1], compounds=("c4",)),
     )
-    packets = list(build_weekend_timed(weekend_cars, total_laps=5, samples_per_lap=1))
+    packets = list(build_weekend_timed(weekend_cars, total_laps=8, samples_per_lap=2))
     _patch_parser(monkeypatch, packets)
     session_uids = tuple(dict.fromkeys(packet.header.session_uid for packet, _ in packets))
     assert len(session_uids) == 3, "weekend: expected practice, qualifying, and race"
