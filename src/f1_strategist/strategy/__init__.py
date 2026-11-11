@@ -2,6 +2,12 @@
 
 from __future__ import annotations
 
+from .pace_model import (
+    CompoundModel,
+    CompoundModels,
+    build_compound_models,
+    project_lap_times,
+)
 from .types import (
     ASSUMPTION_FUEL_EFFECT_NOT_SEPARATED,
     ASSUMPTION_PROFILE_PRIOR_USED,
@@ -42,4 +48,8 @@ __all__ = [
     "StrategyRecommendation",
     "StrategySnapshot",
     "compute_inputs_hash",
+    "CompoundModel",
+    "CompoundModels",
+    "build_compound_models",
+    "project_lap_times",
 ]
