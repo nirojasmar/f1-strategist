@@ -1,0 +1,45 @@
+"""Motor de estrategia: tipos comunes, modelos y decisión (Fase 4)."""
+
+from __future__ import annotations
+
+from .types import (
+    ASSUMPTION_FUEL_EFFECT_NOT_SEPARATED,
+    ASSUMPTION_PROFILE_PRIOR_USED,
+    ASSUMPTION_RIVALS_DO_NOT_PIT,
+    BASELINE_STAY_OUT,
+    RISK_DAMAGE_NOT_MODELLED,
+    RISK_TRAFFIC_NOT_PRICED,
+    RISK_TYRE_DAMAGE_NOT_MODELLED,
+    RISK_TYRE_LIFE_EXCEEDED,
+    RISK_WET_CONDITIONS,
+    STRATEGY_SCHEMA_VERSION,
+    AlternativeResult,
+    Perturbation,
+    StrategyAction,
+    StrategyAlternative,
+    StrategyEvaluation,
+    StrategyRecommendation,
+    StrategySnapshot,
+    compute_inputs_hash,
+)
+
+__all__ = [
+    "ASSUMPTION_FUEL_EFFECT_NOT_SEPARATED",
+    "ASSUMPTION_PROFILE_PRIOR_USED",
+    "ASSUMPTION_RIVALS_DO_NOT_PIT",
+    "BASELINE_STAY_OUT",
+    "RISK_DAMAGE_NOT_MODELLED",
+    "RISK_TRAFFIC_NOT_PRICED",
+    "RISK_TYRE_DAMAGE_NOT_MODELLED",
+    "RISK_TYRE_LIFE_EXCEEDED",
+    "RISK_WET_CONDITIONS",
+    "STRATEGY_SCHEMA_VERSION",
+    "AlternativeResult",
+    "Perturbation",
+    "StrategyAction",
+    "StrategyAlternative",
+    "StrategyEvaluation",
+    "StrategyRecommendation",
+    "StrategySnapshot",
+    "compute_inputs_hash",
+]

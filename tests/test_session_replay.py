@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 
 from f1_strategist.capture import CapturedPacket, CaptureReader, CaptureWriter
-from f1_strategist.config import AppConfig, CaptureConfig, TelemetryConfig
+from f1_strategist.config import AppConfig, CaptureConfig, RecordingConfig, TelemetryConfig
 from f1_strategist.diagnostics import diagnose
 from f1_strategist.packets import HEADER_STRUCT
 from f1_strategist.replay import replay_capture
@@ -48,6 +48,7 @@ def test_replay_is_received_and_recorded(tmp_path: Path) -> None:
     cfg = AppConfig(
         telemetry=TelemetryConfig(listen_port=0),
         capture=CaptureConfig(enabled=True, directory=tmp_path / "out"),
+        recording=RecordingConfig(enabled=False),
     )
     session = CaptureSession(cfg)
     session.start()
@@ -83,6 +84,7 @@ def test_capture_writer_failure_does_not_kill_consumer(tmp_path: Path) -> None:
     cfg = AppConfig(
         telemetry=TelemetryConfig(listen_port=0),
         capture=CaptureConfig(enabled=True, directory=tmp_path / "out"),
+        recording=RecordingConfig(enabled=False),
     )
     session = CaptureSession(cfg)
     session.start()
@@ -112,6 +114,7 @@ def test_replay_respects_original_timing(tmp_path: Path) -> None:
     cfg = AppConfig(
         telemetry=TelemetryConfig(listen_port=0),
         capture=CaptureConfig(enabled=False),
+        recording=RecordingConfig(enabled=False),
     )
     session = CaptureSession(cfg)
     session.start()
@@ -130,6 +133,7 @@ def test_consumer_publishes_parsed_packets_to_race_state() -> None:
         AppConfig(
             telemetry=TelemetryConfig(listen_port=0),
             capture=CaptureConfig(enabled=False),
+            recording=RecordingConfig(enabled=False),
         )
     )
     session.start()

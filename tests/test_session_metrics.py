@@ -6,7 +6,13 @@ from pathlib import Path
 import pytest
 
 from f1_strategist.capture import CapturedPacket, CaptureReader
-from f1_strategist.config import AppConfig, CaptureConfig, MetricsConfig, TelemetryConfig
+from f1_strategist.config import (
+    AppConfig,
+    CaptureConfig,
+    MetricsConfig,
+    RecordingConfig,
+    TelemetryConfig,
+)
 from f1_strategist.metrics.engine import MetricsEngine, MetricsSnapshot
 from f1_strategist.packets import HEADER_STRUCT
 from f1_strategist.parser import ParsedPacket
@@ -123,6 +129,7 @@ def test_engine_failure_does_not_stop_state_or_capture(tmp_path: Path) -> None:
         AppConfig(
             telemetry=TelemetryConfig(listen_port=0),
             capture=CaptureConfig(enabled=True, directory=tmp_path / "out"),
+            recording=RecordingConfig(enabled=False),
         ),
         metrics_engine=_FailingEngine(),
     )
