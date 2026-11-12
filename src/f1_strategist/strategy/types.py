@@ -184,6 +184,121 @@ class StrategyRecommendation:
 
 
 @dataclass(frozen=True, slots=True)
+class DataQuality:
+    """Disponibilidad y calidad de las entradas críticas de la decisión.
+
+    La decisión (S6) no recibe los modelos: recibe este resumen para poder
+    declarar ``INSUFFICIENT_DATA`` sin mirar por dentro de cada componente.
+    """
+
+    pace: Quality = Quality.UNAVAILABLE
+    pit_loss: Quality = Quality.UNAVAILABLE
+    session_is_race: bool = True
+    laps_remaining: float | None = None
+    stale: bool = False
+    pace_samples: int = 0
+    prior_weight: float = 0.0
+
+    def __post_init__(self) -> None:
+        if self.pace_samples < 0:
+            raise ValueError("pace_samples no puede ser negativo")
+        if self.laps_remaining is not None:
+            _check_finite("laps_remaining", self.laps_remaining)
+            if self.laps_remaining < 0:
+                raise ValueError("laps_remaining no puede ser negativo")
+        _check_finite("prior_weight", self.prior_weight)
+        if not 0 <= self.prior_weight <= 1:
+            raise ValueError("prior_weight debe estar entre 0 y 1")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "pace": self.pace.value,
+            "pit_loss": self.pit_loss.value,
+            "session_is_race": self.session_is_race,
+            "laps_remaining": _round(self.laps_remaining),
+            "stale": self.stale,
+            "pace_samples": self.pace_samples,
+            "prior_weight": _round(self.prior_weight),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class StrategyDecision:
+    """Decisión del motor: acción, alternativa elegida e incertidumbre.
+
+    ``sensitive_to`` y ``notes`` son conjuntos de claves: se ordenan para que
+    dos decisiones equivalentes se serialicen igual.
+    """
+
+    action: StrategyAction
+    key: str | None = None
+    pit_lap: int | None = None
+    compound: str | None = None
+    gain_vs_baseline_s: float | None = None
+    gain_interval_s: tuple[float, float] | None = None
+    confidence: float = 0.0
+    sensitive_to: tuple[str, ...] = ()
+    notes: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.action in {StrategyAction.PIT_NOW, StrategyAction.PIT_IN} and not self.key:
+            raise ValueError("Una decisión de parada requiere una clave")
+        if self.key is not None and not self.key:
+            raise ValueError("La clave de la decisión no puede estar vacía")
+        if self.pit_lap is not None and self.pit_lap < 1:
+            raise ValueError("pit_lap debe ser positivo")
+        if self.gain_vs_baseline_s is not None:
+            _check_finite("gain_vs_baseline_s", self.gain_vs_baseline_s)
+        if self.gain_interval_s is not None:
+            low, high = self.gain_interval_s
+            _check_finite("gain_interval_s", low)
+            _check_finite("gain_interval_s", high)
+            if low > high:
+                raise ValueError("gain_interval_s requiere low <= high")
+            object.__setattr__(self, "gain_interval_s", (low, high))
+        _check_finite("confidence", self.confidence)
+        if not 0 <= self.confidence <= 1:
+            raise ValueError("confidence debe estar entre 0 y 1")
+        object.__setattr__(self, "sensitive_to", tuple(sorted(set(self.sensitive_to))))
+        object.__setattr__(self, "notes", tuple(dict.fromkeys(self.notes)))
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "action": self.action.value,
+            "key": self.key,
+            "pit_lap": self.pit_lap,
+            "compound": self.compound,
+            "gain_vs_baseline_s": _round(self.gain_vs_baseline_s),
+            "gain_interval_s": (
+                None
+                if self.gain_interval_s is None
+                else [_round(self.gain_interval_s[0]), _round(self.gain_interval_s[1])]
+            ),
+            "confidence": _round(self.confidence),
+            "sensitive_to": list(self.sensitive_to),
+            "notes": list(self.notes),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> StrategyDecision:
+        """Reconstruye la decisión desde su representación JSON validada."""
+        interval = data.get("gain_interval_s")
+        return cls(
+            action=StrategyAction(data["action"]),
+            key=data.get("key"),
+            pit_lap=data.get("pit_lap"),
+            compound=data.get("compound"),
+            gain_vs_baseline_s=data.get("gain_vs_baseline_s"),
+            gain_interval_s=(
+                None if interval is None else (float(interval[0]), float(interval[1]))
+            ),
+            confidence=float(data.get("confidence", 0.0)),
+            sensitive_to=tuple(data.get("sensitive_to", ())),
+            notes=tuple(data.get("notes", ())),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class StrategyAlternative:
     """Alternativa tal como se publica en la evaluación."""
 
