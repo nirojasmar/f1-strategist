@@ -8,6 +8,12 @@ from .pace_model import (
     build_compound_models,
     project_lap_times,
 )
+from .pit_model import (
+    PitLossEstimate,
+    RejoinEstimate,
+    estimate_pit_loss,
+    estimate_rejoin,
+)
 from .types import (
     ASSUMPTION_FUEL_EFFECT_NOT_SEPARATED,
     ASSUMPTION_PROFILE_PRIOR_USED,
@@ -52,4 +58,8 @@ __all__ = [
     "CompoundModels",
     "build_compound_models",
     "project_lap_times",
+    "PitLossEstimate",
+    "RejoinEstimate",
+    "estimate_pit_loss",
+    "estimate_rejoin",
 ]
