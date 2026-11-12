@@ -14,8 +14,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
-from .config import AppConfig, MetricsConfig, RecordingConfig
-from .fingerprint import RunInfo, build_run_info, compute_capture_fingerprint
+from .config import AppConfig, MetricsConfig, RecordingConfig, StrategyConfig
+from .fingerprint import (
+    RunInfo,
+    build_run_info,
+    compute_capture_fingerprint,
+    compute_strategy_fingerprint,
+)
 from .messages import DiagnosticMessage
 from .metrics.engine import MetricsEngine, MetricsSnapshot
 from .metrics.export import snapshot_to_dict
@@ -32,10 +37,13 @@ from .store import (
     SessionStore,
     StoredError,
     StoredEvent,
+    StoredStrategyEvaluation,
     StoreError,
     TyreInventorySnapshot,
 )
 from .store.sqlite_store import InventoryKind, SessionSource
+from .strategy.engine import StrategyEngine
+from .strategy.types import StrategySnapshot
 from .weekend_profile import WeekendProfile
 from .weekend_provider import profiles_for_capture
 
@@ -82,6 +90,10 @@ class RecorderStore(Protocol):
         self, session_id: int, snapshots: Iterable[TyreInventorySnapshot]
     ) -> None: ...
 
+    def add_strategy_evaluations(
+        self, session_id: int, evaluations: Iterable[StoredStrategyEvaluation]
+    ) -> None: ...
+
 
 @dataclass(frozen=True, slots=True)
 class _SessionClose:
@@ -108,6 +120,7 @@ class _Batch:
     incomplete_uids: frozenset[int] = frozenset()
     previous_close: _SessionClose | None = None
     tyre_inventory: tuple[TyreInventorySnapshot, ...] = ()
+    strategy_evaluations: tuple[StoredStrategyEvaluation, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -161,6 +174,7 @@ class SessionRecorder:
         block_when_full: bool = False,
         metrics_config: MetricsConfig | None = None,
         default_profile: tuple[str, str] | None = None,
+        strategy_config: StrategyConfig | None = None,
     ) -> None:
         self._store = store
         self._config = config
@@ -170,6 +184,9 @@ class SessionRecorder:
         self._config_json = config_json
         self._block_when_full = block_when_full
         self._metrics_config = metrics_config or MetricsConfig()
+        self._strategy_fingerprint = (
+            compute_strategy_fingerprint(strategy_config) if strategy_config is not None else None
+        )
         self._default_profile = default_profile
         self._profiles: dict[int, tuple[str, str]] = {}
         self._lock = threading.Lock()
@@ -208,6 +225,9 @@ class SessionRecorder:
         self._pending_previous_closures: dict[int, _SessionClose] = {}
         self._session_ids: set[int] = set()
         self._race_start_saved: set[int] = set()
+        self._strategy_seq = 0
+        self._last_strategy_lap: int | None = None
+        self._last_strategy_revision: int | None = None
 
         self._thread = threading.Thread(target=self._run, name="session-recorder", daemon=True)
         self._thread.start()
@@ -358,6 +378,67 @@ class SessionRecorder:
         """
         with self._lock:
             self._profiles[session_uid] = (profile_json, profile_hash)
+
+    def record_strategy(self, snapshot: StrategySnapshot) -> None:
+        """Encola una evaluación por vuelta y por cambio de revisión."""
+        try:
+            evaluation = snapshot.evaluation
+            if evaluation is None:
+                return
+            with self._lock:
+                info = self._producer_info
+                uid = self._session_uid
+                if info is None or uid is None:
+                    return
+                if evaluation.session_uid != str(uid):
+                    raise ValueError(
+                        "La evaluación de estrategia no corresponde a la sesión del grabador"
+                    )
+                if (
+                    evaluation.lap == self._last_strategy_lap
+                    and evaluation.revision == self._last_strategy_revision
+                ):
+                    return
+                seq = self._strategy_seq + 1
+                incomplete = self._writer_incomplete or uid in self._dropped_by_uid
+
+            recommendation = evaluation.recommendation
+            interval = recommendation.gain_interval_s
+            stored = StoredStrategyEvaluation(
+                seq=seq,
+                t_sim_s=snapshot.updated_at_monotonic,
+                lap=evaluation.lap,
+                action=recommendation.action.value,
+                recommended_key=recommendation.key,
+                gain_vs_baseline_s=recommendation.gain_vs_baseline_s,
+                gain_low_s=interval[0] if interval is not None else None,
+                gain_high_s=interval[1] if interval is not None else None,
+                confidence=recommendation.confidence,
+                data_quality=evaluation.data_quality.value,
+                inputs_hash=evaluation.inputs_hash,
+                profile_hash=evaluation.profile_hash,
+                evaluation_json=evaluation.to_json(),
+            )
+            enqueued = self._enqueue(
+                _Batch(
+                    session_uid=uid,
+                    session_info=info,
+                    participants=(),
+                    laps=(),
+                    events=(),
+                    metrics=(),
+                    errors=(),
+                    incomplete=incomplete,
+                    incomplete_uids=self._incomplete_uids(),
+                    strategy_evaluations=(stored,),
+                )
+            )
+            if enqueued:
+                self._strategy_seq = seq
+                self._last_strategy_lap = evaluation.lap
+                self._last_strategy_revision = evaluation.revision
+        except Exception as exc:  # noqa: BLE001 - el grabador nunca detiene la captura
+            self._remember_error(exc)
 
     def flush(self, timeout: float) -> bool:
         """Espera, con límite, a que el escritor confirme todo el trabajo encolado."""
@@ -550,6 +631,9 @@ class SessionRecorder:
         self._last_history = None
         self._last_metrics = None
         self._last_header_time = None
+        self._strategy_seq = 0
+        self._last_strategy_lap = None
+        self._last_strategy_revision = None
 
     def _build_session_close(
         self,
@@ -663,6 +747,7 @@ class SessionRecorder:
             ("parser_version", run_info.parser_version),
             ("config_hash", run_info.config_hash),
             ("config_json", self._config_json),
+            ("strategy_fingerprint", self._strategy_fingerprint),
             ("season_link_id", state.session.season_link_id),
             ("weekend_link_id", state.session.weekend_link_id),
             ("session_link_id", state.session.session_link_id),
@@ -938,6 +1023,8 @@ class SessionRecorder:
             self._store.add_errors(session_id, batch.errors)
         if batch.tyre_inventory:
             self._store.add_tyre_inventory(session_id, batch.tyre_inventory)
+        if batch.strategy_evaluations:
+            self._store.add_strategy_evaluations(session_id, batch.strategy_evaluations)
         return created_session_id
 
     def _close_current(
@@ -1035,11 +1122,13 @@ class _IngestCollector:
     def __init__(
         self,
         engine: MetricsEngine,
+        strategy_engine: StrategyEngine,
         recorder: SessionRecorder,
         *,
         profiles_by_uid: Mapping[int, WeekendProfile],
     ) -> None:
         self.engine = engine
+        self.strategy_engine = strategy_engine
         self.recorder = recorder
         self.profiles_by_uid = dict(profiles_by_uid)
         self.events: list[RaceEvent] = []
@@ -1086,6 +1175,13 @@ class _IngestCollector:
         if uid is not None and profile is not None:
             self.recorder.set_weekend_profile(uid, profile.to_json(), profile.hash)
         self.engine.apply(packet, observed_at, snapshot)
+        self.strategy_engine.apply(
+            snapshot,
+            self.engine.snapshot(),
+            self.engine.history.snapshot(),
+            profile,
+            observed_at,
+        )
         self.recorder.observe(
             packet.header.session_time,
             observed_at,
@@ -1094,6 +1190,7 @@ class _IngestCollector:
             self.engine.history,
             header=packet.header,
         )
+        self.recorder.record_strategy(self.strategy_engine.snapshot())
 
 
 def ingest_capture(
@@ -1117,6 +1214,7 @@ def ingest_capture(
         raise StoreError(f"Los perfiles registrados no son válidos: {exc}") from exc
 
     engine = MetricsEngine(app_config.metrics)
+    strategy_engine = StrategyEngine(app_config.strategy, app_config.metrics)
     recorder = SessionRecorder(
         store,
         app_config.recording,
@@ -1126,8 +1224,14 @@ def ingest_capture(
         config_json=serialize_config(app_config),
         block_when_full=True,
         metrics_config=app_config.metrics,
+        strategy_config=app_config.strategy,
     )
-    collector = _IngestCollector(engine, recorder, profiles_by_uid=registered_profiles)
+    collector = _IngestCollector(
+        engine,
+        strategy_engine,
+        recorder,
+        profiles_by_uid=registered_profiles,
+    )
     offline: OfflineResult | None = None
     metrics: MetricsSnapshot | None = None
     fingerprint: str | None = None

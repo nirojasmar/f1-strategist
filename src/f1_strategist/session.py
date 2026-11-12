@@ -44,9 +44,7 @@ class CaptureSession:
         self.stats = Stats()
         self._race_state = RaceState()
         self._metrics_engine = metrics_engine or MetricsEngine(config.metrics)
-        self._strategy_engine = strategy_engine or StrategyEngine(
-            config.strategy, config.metrics
-        )
+        self._strategy_engine = strategy_engine or StrategyEngine(config.strategy, config.metrics)
         self._queue: queue.Queue[CapturedPacket] = queue.Queue(maxsize=queue_size)
         self._receiver = UdpReceiver(config.telemetry, self._queue, self.stats)
         self._writer: CaptureWriter | None = None
@@ -166,6 +164,7 @@ class CaptureSession:
                     capture_path=self.capture_path,
                     config_json=serialize_config(self.config),
                     metrics_config=self.config.metrics,
+                    strategy_config=self.config.strategy,
                 )
             except BaseException:
                 store.close()
@@ -387,6 +386,8 @@ class CaptureSession:
                                 self._weekend_profile,
                                 observed_at,
                             )
+                            if recorder is not None:
+                                recorder.record_strategy(self._strategy_engine.snapshot())
                         except Exception as exc:
                             _LOGGER.exception("Unexpected error while updating strategy")
                             self._record_error(message("strategy_engine_error", error=str(exc)))

@@ -16,8 +16,18 @@ import pytest
 
 from f1_strategist.capture import CapturedPacket, CaptureWriter
 from f1_strategist.cli import main
-from f1_strategist.config import AppConfig, CaptureConfig, RecordingConfig, TelemetryConfig
-from f1_strategist.fingerprint import file_sha256, fingerprint_capture
+from f1_strategist.config import (
+    AppConfig,
+    CaptureConfig,
+    RecordingConfig,
+    StrategyConfig,
+    TelemetryConfig,
+)
+from f1_strategist.fingerprint import (
+    compute_strategy_fingerprint,
+    file_sha256,
+    fingerprint_capture,
+)
 from f1_strategist.messages import message
 from f1_strategist.metrics.engine import MetricsSnapshot
 from f1_strategist.metrics.export import run_metrics_capture
@@ -42,7 +52,15 @@ from f1_strategist.store import (
     SessionStore,
     StoredError,
     StoredEvent,
+    StoredStrategyEvaluation,
     TyreInventorySnapshot,
+)
+from f1_strategist.strategy.types import (
+    STRATEGY_SCHEMA_VERSION,
+    StrategyAction,
+    StrategyEvaluation,
+    StrategyRecommendation,
+    StrategySnapshot,
 )
 from f1_strategist.weekend_profile import WeekendProfile
 from tests.conftest import make_packet
@@ -66,6 +84,7 @@ class _FakeStore:
         self.capture_hash_updates: list[tuple[int, str]] = []
         self.stint_summaries: list[tuple[int, StintSummary]] = []
         self.tyre_inventory: list[tuple[int, TyreInventorySnapshot]] = []
+        self.strategy_evaluations: list[tuple[int, StoredStrategyEvaluation]] = []
         self._next_id = 1
 
     @contextmanager
@@ -131,6 +150,13 @@ class _FakeStore:
         self, session_id: int, snapshots: Iterable[TyreInventorySnapshot]
     ) -> None:
         self.tyre_inventory.extend((session_id, snapshot) for snapshot in snapshots)
+
+    def add_strategy_evaluations(
+        self,
+        session_id: int,
+        evaluations: Iterable[StoredStrategyEvaluation],
+    ) -> None:
+        self.strategy_evaluations.extend((session_id, item) for item in evaluations)
 
 
 def _cars() -> tuple[ScenarioCar, ScenarioCar]:
@@ -246,6 +272,35 @@ def _history(*records: LapRecord) -> LapHistorySnapshot:
         records={car_index: tuple(items) for car_index, items in grouped.items()},
         session_uid=1,
     )
+
+
+def _strategy_snapshot(
+    lap: int,
+    revision: int = 0,
+    action: StrategyAction = StrategyAction.NO_CHANGE,
+) -> StrategySnapshot:
+    evaluation = StrategyEvaluation(
+        revision=revision,
+        session_uid="1",
+        lap=lap,
+        laps_remaining=5.0,
+        baseline="stay_out",
+        recommendation=StrategyRecommendation(
+            action=action,
+            key=action.value,
+            gain_vs_baseline_s=1.5,
+            gain_interval_s=(0.5, 2.5),
+            confidence=0.75,
+        ),
+        alternatives=(),
+        assumptions=(),
+        risks=(),
+        sensitive_to=(),
+        data_quality=Quality.OK,
+        inputs_hash="a" * 64,
+        schema_version=STRATEGY_SCHEMA_VERSION,
+    )
+    return StrategySnapshot(evaluation=evaluation, updated_at_monotonic=float(lap + revision))
 
 
 def _session_id(recorder: SessionRecorder) -> int:
@@ -399,6 +454,63 @@ def test_session_change_creates_a_second_row_and_closes_the_first(tmp_path: Path
         assert sessions[1].ended_at_utc is not None
 
 
+def test_record_strategy_persists_each_lap_and_revision_change(tmp_path: Path) -> None:
+    with SessionStore.open(tmp_path / "sessions.db") as store:
+        recorder = SessionRecorder(
+            store,
+            RecordingConfig(batch_size=1, flush_interval_s=0.01),
+            strategy_config=StrategyConfig(),
+        )
+        try:
+            recorder.observe(1.0, 1.0, _snapshot(lap=1), _metrics(), _history())
+            recorder.record_strategy(_strategy_snapshot(1))
+            recorder.record_strategy(_strategy_snapshot(1))
+            recorder.record_strategy(_strategy_snapshot(1, 1, StrategyAction.PIT_NOW))
+            recorder.observe(
+                2.0,
+                2.0,
+                _snapshot(lap=2),
+                _metrics(computed_at=2.0),
+                _history(),
+            )
+            recorder.record_strategy(_strategy_snapshot(2, 1, StrategyAction.PIT_NOW))
+        finally:
+            recorder.stop()
+
+        session_id = _session_id(recorder)
+        evaluations = list(store.iter_strategy_evaluations(session_id))
+        session = store.get_session(session_id)
+        assert [item.seq for item in evaluations] == [1, 2, 3]
+        assert [(item.lap, item.action) for item in evaluations] == [
+            (1, "NO_CHANGE"),
+            (1, "PIT_NOW"),
+            (2, "PIT_NOW"),
+        ]
+        assert evaluations[1].gain_low_s == 0.5
+        assert evaluations[1].gain_high_s == 2.5
+        assert session is not None
+        assert session.strategy_fingerprint is not None
+
+
+def test_record_strategy_drops_without_blocking_when_queue_is_full() -> None:
+    store = _FakeStore(delay=0.2)
+    recorder = SessionRecorder(
+        store,
+        RecordingConfig(queue_size=1, batch_size=1, flush_interval_s=0.01),
+    )
+    try:
+        recorder.observe(1.0, 1.0, _snapshot(), _metrics(), _history())
+        _wait_until(lambda: bool(store.sessions))
+        started = time.perf_counter()
+        for revision in range(10):
+            recorder.record_strategy(_strategy_snapshot(1, revision))
+        assert time.perf_counter() - started < 0.05
+        assert recorder.dropped_batches > 0
+        assert recorder.incomplete
+    finally:
+        recorder.stop()
+
+
 def test_events_are_not_duplicated_across_observations(tmp_path: Path) -> None:
     event = RaceEvent(kind="flag", occurred_at_monotonic=5.0, value="yellow")
     with SessionStore.open(tmp_path / "sessions.db") as store:
@@ -531,11 +643,13 @@ def test_capture_session_writes_live_sessions_to_sqlite(
         assert len(sessions) == 1
         assert sessions[0].source == "live"
         assert sessions[0].ended_at_utc is not None
+        assert sessions[0].strategy_fingerprint is not None
         session_id = sessions[0].id
         assert session_id is not None
         assert sum(1 for _ in store.iter_laps(session_id)) > 0
         assert sum(1 for _ in store.iter_events(session_id)) > 0
         assert sum(1 for _ in store.iter_metric_samples(session_id)) > 0
+        assert sum(1 for _ in store.iter_strategy_evaluations(session_id)) > 0
 
 
 class _FakeRecorder:
@@ -595,6 +709,13 @@ def test_ingest_does_not_depend_on_the_capture_path(
         assert second.skipped
         assert second.session_id == first.session_id
         assert len(store.list_sessions()) == 1
+        session = store.get_session(first.session_id)
+        assert session is not None
+        assert session.strategy_fingerprint == compute_strategy_fingerprint(AppConfig().strategy)
+        evaluations = list(store.iter_strategy_evaluations(first.session_id))
+        assert evaluations
+        assert [item.seq for item in evaluations] == list(range(1, len(evaluations) + 1))
+        assert list(store.iter_strategy_evaluations(second.session_id)) == evaluations
 
 
 def test_late_metadata_is_merged_into_the_session(tmp_path: Path) -> None:

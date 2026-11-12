@@ -758,6 +758,9 @@ class _MemoryStore:
     def add_tyre_inventory(self, session_id: int, snapshots: Any) -> None:
         return None
 
+    def add_strategy_evaluations(self, session_id: int, evaluations: Any) -> None:
+        return None
+
 
 def _benchmark_inputs(count: int) -> list[tuple[RaceStateSnapshot, MetricsSnapshot]]:
     session = RaceSessionSnapshot(

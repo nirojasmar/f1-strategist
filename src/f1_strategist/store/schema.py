@@ -11,7 +11,7 @@ import sqlite3
 from dataclasses import dataclass
 
 #: Versión que entiende este código.
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 
 class StoreError(Exception):
@@ -269,6 +269,29 @@ _V5_STATEMENTS: tuple[str, ...] = (
     "ALTER TABLE sessions ADD COLUMN profile_hash TEXT",
 )
 
+_V6_STATEMENTS: tuple[str, ...] = (
+    "ALTER TABLE sessions ADD COLUMN strategy_fingerprint TEXT",
+    """
+    CREATE TABLE strategy_evaluations (
+        session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        seq INTEGER NOT NULL CHECK (seq > 0),
+        t_sim_s REAL NOT NULL,
+        lap INTEGER NOT NULL CHECK (lap > 0),
+        action TEXT NOT NULL,
+        recommended_key TEXT NOT NULL,
+        gain_vs_baseline_s REAL,
+        gain_low_s REAL,
+        gain_high_s REAL,
+        confidence REAL CHECK (confidence IS NULL OR confidence BETWEEN 0 AND 1),
+        data_quality TEXT NOT NULL,
+        inputs_hash TEXT NOT NULL,
+        profile_hash TEXT,
+        evaluation_json TEXT NOT NULL,
+        PRIMARY KEY (session_id, seq)
+    )
+    """,
+)
+
 #: Migraciones ordenadas; el índice 0 lleva el esquema a la versión 1.
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(version=1, statements=_V1_STATEMENTS),
@@ -276,6 +299,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration(version=3, statements=_V3_STATEMENTS),
     Migration(version=4, statements=_V4_STATEMENTS),
     Migration(version=5, statements=_V5_STATEMENTS),
+    Migration(version=6, statements=_V6_STATEMENTS),
 )
 
 
@@ -343,6 +367,7 @@ def check_supported_version(connection: sqlite3.Connection) -> int:
         "weekends",
         "stint_summaries",
         "tyre_inventory_snapshots",
+        "strategy_evaluations",
     }
     existing_tables = {
         str(row[0])

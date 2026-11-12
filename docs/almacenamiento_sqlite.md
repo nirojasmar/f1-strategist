@@ -15,7 +15,7 @@ registros de forma permanente; conviene conservar copias de `sessions.db` junto 
 capturas.
 
 El esquema vive en [`src/f1_strategist/store/schema.py`](../src/f1_strategist/store/schema.py)
-y la versión actual es `SCHEMA_VERSION = 5`. La versión se guarda en `PRAGMA user_version`.
+y la versión actual es `SCHEMA_VERSION = 6`. La versión se guarda en `PRAGMA user_version`.
 Al abrir la base en modo escritura se aplican las migraciones pendientes. Los comandos
 `sessions` la abren en solo lectura: ante una base con un esquema anterior la rechazan sin
 migrarla y piden abrirla antes en modo escritura; una base creada por una versión más nueva
@@ -46,6 +46,7 @@ reconstruida desde una captura (`ingest`).
 | `weekend_structure_json` | Orden de tipos de sesión anunciado por el juego. |
 | `weekend_id` | Fin de semana al que pertenece la sesión, automático o manual. |
 | `profile_json`, `profile_hash` | Perfil canónico usado al iniciar una carrera y su SHA-256. |
+| `strategy_fingerprint` | SHA-256 independiente de la configuración de estrategia canónica. |
 
 ### `weekends`
 
@@ -119,6 +120,14 @@ Instantáneas de cada juego de neumáticos del piloto. `kind` es `session_end` o
 prefiere el inventario de inicio de carrera y, si falta, usa la última instantánea de
 cierre de sesión.
 
+### `strategy_evaluations`
+
+Evaluaciones publicadas por el motor de estrategia, en orden por sesión y secuencia. Se
+guarda una evaluación por vuelta y otra cada vez que cambia la revisión de la recomendación.
+La fila conserva la acción y alternativa recomendadas, la ganancia estimada y su intervalo,
+la confianza, calidad de datos, huellas de entradas y perfil, y el JSON completo de la
+evaluación. La clave `(session_id, seq)` permite reescribir una secuencia sin duplicar filas.
+
 ### Perfil del fin de semana
 
 `profile_json` conserva el documento versionado (`schema_version`) exacto que alimentó
@@ -141,6 +150,7 @@ de práctica y clasificación no reciben esas métricas.
 - `idx_app_errors_session`: errores por sesión.
 - `idx_sessions_weekend_id`: localizar las sesiones de un fin de semana.
 - `idx_weekends_game_link`: unicidad de identificadores de temporada/fin de semana.
+- La clave primaria de `strategy_evaluations` permite recorrer sus filas por sesión y secuencia.
 
 ## Consultas de ejemplo
 
@@ -248,9 +258,9 @@ huella para la misma captura y configuración.
 
 Las migraciones son inmutables y se aplican en orden. Para cambiar el esquema:
 
-1. Añade una tupla de sentencias nuevas en `schema.py`, por ejemplo `_V6_STATEMENTS`.
-2. Incrementa `SCHEMA_VERSION` y añade `Migration(version=6, statements=_V6_STATEMENTS)` al
-   final de `MIGRATIONS`. No edites migraciones ya publicadas.
+1. Añade una tupla de sentencias nuevas en `schema.py`, con la siguiente versión disponible.
+2. Incrementa `SCHEMA_VERSION` y añade la migración correspondiente al final de `MIGRATIONS`.
+   No edites migraciones ya publicadas.
 3. Actualiza `_SESSION_COLUMNS`, `SessionInfo`, `create_session`, `update_session`,
    `finish_session`, `_session_from_row` y los métodos de lectura o escritura afectados.
 4. Añade una prueba que abra una base de la versión anterior, aplique la migración y
@@ -266,6 +276,9 @@ modificarla.
 - La captura es la fuente de verdad para volver a calcular vueltas, eventos y métricas.
 - `capture_sha256` identifica el archivo; `config_hash` identifica la configuración.
 - `fingerprint` identifica el resultado derivado y permite comparar ejecuciones.
+- `strategy_fingerprint` identifica por separado la configuración de estrategia serializada
+  de forma canónica; no modifica ni invalida la huella de captura existente y no depende del
+  sistema operativo ni del orden de las claves.
 - `incomplete = 1` indica que faltan datos: truncamiento de captura, pérdida de lotes en la
   cola del grabador, error de escritura o cierre anómalo. La sesión sigue siendo consultable,
   pero no debe usarse como referencia completa.

@@ -21,6 +21,7 @@ from f1_strategist.store import (
     SessionStore,
     StoredError,
     StoredEvent,
+    StoredStrategyEvaluation,
     StoreError,
     apply_migrations,
 )
@@ -477,6 +478,70 @@ def test_finish_session_stores_the_final_metrics_and_capture_hash(tmp_path: Path
     assert session is not None
     assert session.final_metrics_json == '{"schema_version":1}'
     assert session.capture_sha256 == "d" * 64
+
+
+def test_strategy_evaluations_roundtrip_and_upsert_by_sequence(tmp_path: Path) -> None:
+    record = StoredStrategyEvaluation(
+        seq=2,
+        t_sim_s=12.5,
+        lap=3,
+        action="PIT_IN",
+        recommended_key="pit_in:medium",
+        gain_vs_baseline_s=2.0,
+        gain_low_s=1.0,
+        gain_high_s=3.0,
+        confidence=0.8,
+        data_quality="ok",
+        inputs_hash="a" * 64,
+        profile_hash="b" * 64,
+        evaluation_json='{"lap":3}',
+    )
+    earlier = StoredStrategyEvaluation(
+        seq=1,
+        t_sim_s=10.0,
+        lap=2,
+        action="NO_CHANGE",
+        recommended_key="stay_out",
+        gain_vs_baseline_s=None,
+        gain_low_s=None,
+        gain_high_s=None,
+        confidence=None,
+        data_quality="low",
+        inputs_hash="c" * 64,
+        profile_hash=None,
+        evaluation_json='{"lap":2}',
+    )
+    with SessionStore.open(tmp_path / "sessions.db") as store:
+        session_id = store.create_session(_session(strategy_fingerprint="e" * 64))
+        store.add_strategy_evaluations(session_id, [record, earlier])
+        store.add_strategy_evaluations(session_id, [record])
+
+        assert store.get_session(session_id).strategy_fingerprint == "e" * 64  # type: ignore[union-attr]
+        assert list(store.iter_strategy_evaluations(session_id)) == [earlier, record]
+
+
+def test_schema_v5_migrates_without_losing_session_data(tmp_path: Path) -> None:
+    path = tmp_path / "sessions.db"
+    connection = sqlite3.connect(path)
+    try:
+        apply_migrations(connection, MIGRATIONS[:-1])
+        connection.execute(
+            "INSERT INTO sessions (session_uid, source, started_at_utc, fingerprint) "
+            "VALUES ('123', 'live', '2026-11-05T10:00:00Z', ?)",
+            ("f" * 64,),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    with SessionStore.open(path) as store:
+        session = store.get_session(1)
+        assert store.connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+        assert session is not None
+        assert session.session_uid == 123
+        assert session.fingerprint == "f" * 64
+        assert session.strategy_fingerprint is None
+        assert list(store.iter_strategy_evaluations(1)) == []
 
 
 def test_update_session_completes_metadata_without_erasing_it(tmp_path: Path) -> None:

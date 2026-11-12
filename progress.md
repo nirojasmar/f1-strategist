@@ -66,7 +66,7 @@ Documentos de diseño:
 | 2. Métricas e histórico | Implementada; validación parcial | A1--A4, B1--B3, C1--C4/C2b, D1--D9, E1--E4 y F2--F4 implementados. F3 y la documentación se actualizaron según O5; la semántica/tolerancia del MFD sigue abierta aunque la validación local actual pasa. |
 | 3. Grabación y replay | Implementada; validación local completa | G1--G8 implementados sobre SQLite versionado (actualmente v5 tras las migraciones de Fase 3.5), `play`/`replay`, datasets, huella y `verify`, grabador en vivo e `ingest`, inspección con `sessions`, pruebas E2E y benchmarks. Documentación en `docs/almacenamiento_sqlite.md`. Queda repetir CI en Linux y macOS. |
 | 3.5. Perfil del fin de semana | Implementada; validación local Windows | P1--P8 implementadas. Esquema SQLite v5, enlace de sesiones, resúmenes de tandas, inventario, perfil versionado y métricas `profile.*`; la prueba integrada cubre práctica, clasificación, carrera y reingesta con huella estable. Validación Linux por CI pendiente. |
-| 4. Motor de estrategia | En curso; ola 0 cerrada | Rama `f4-wave-0-baseline`: H1, H2, S1--S4 y los 13 fixes de `review_fase_4_ola_0.md`, más el esqueleto del motor y los tipos del contrato. Siguiente: S5 (evaluador de alternativas). |
+| 4. Motor de estrategia | En curso; S1--S8 implementadas | Ola 0 cerrada; S5--S8 cubren evaluación, decisión, motor integrado y registro de evaluaciones en SQLite v6. Siguiente: S9 (consola y comandos `strategy`). |
 | 5--10 | No iniciadas | |
 
 ## 5. Qué está verificado y qué no
@@ -224,6 +224,9 @@ Documentos de diseño:
 -   Validación Windows de la ola 0: `uv run pytest -q` (790 aprobadas, 4 benchmarks excluidos), Ruff
     (lint y formato, 116 archivos) y Pyright (0 errores) pasan. La suite partió de 768 pruebas antes de
     los fixes de la revisión.
+-   S8: SQLite v6 migra desde v5 sin perder sesiones, guarda evaluaciones por vuelta y cambio de revisión
+    en vivo y en `ingest`, y conserva una huella canónica de estrategia separada de `fingerprint`.
+    La suite completa actual pasa (859 pruebas; 4 benchmarks excluidos), Ruff y Pyright (0 errores).
 
 **No verificado todavía:**
 
@@ -235,9 +238,9 @@ Documentos de diseño:
 -   La Fase 3.5 solo está validada en Windows: CI en Linux y macOS queda pendiente (Docker no tiene
     daemon disponible y WSL solo muestra la distribución interna `docker-desktop`). El perfil del fin de
     semana tampoco se ha probado todavía contra capturas reales de un fin de semana completo.
--   La Fase 4 solo se ha validado con escenarios sintéticos: los modelos de ritmo, desgaste, pérdida en
-    boxes y reglas de neumáticos aún no se han contrastado contra una captura real con paradas
-    estratégicas. La decisión final (S6--S10) tampoco existe todavía.
+-   La Fase 4 aún requiere validación con capturas reales de estrategia y condiciones variadas. El panel
+    y los comandos de consulta (S9), además de la validación y rendimiento de extremo a extremo (S10),
+    siguen pendientes.
 -   Queda volver a ejecutar CI de GitHub Actions después de la Ola 5.
 
 ## 6. Bitácora
@@ -653,6 +656,18 @@ fixes de la revisión (`0b3bd76`).
     Ruff (lint y formato, 116 archivos) y Pyright (0 errores) pasan. La suite partió de 768 pruebas
     antes de los fixes (+22 nuevas). `git diff --check` limpio. CI remota no se ejecutó.
 
+### 2026-11-12
+
+**S8 --- Registro de evaluaciones en SQLite, esquema v6.**
+
+-   Migración v6 añade `sessions.strategy_fingerprint` y `strategy_evaluations`, conservando las bases
+    v5 y sus datos. El almacén expone escritura idempotente por `(session_id, seq)` y lectura ordenada.
+-   `SessionRecorder.record_strategy` encola evaluaciones sin acceso síncrono a SQLite; persiste una por
+    vuelta y cada cambio de revisión. La sesión en vivo y la ingesta offline usan la misma ruta.
+-   La huella independiente cubre la configuración de estrategia en JSON canónico y no depende del
+    orden de claves ni del sistema operativo; la huella existente de captura no cambia.
+-   Verificación Windows: 859 pruebas aprobadas, 4 benchmarks excluidos; Ruff y Pyright (0 errores).
+
 ## 7. Hallazgos de la primera captura real
 
 Captura: 68 541 paquetes, ~66 MB, 795,5 s entre el primer y el último paquete. Salida de `inspect`:
@@ -818,8 +833,8 @@ La Fase 3 está implementada y documentada. El criterio de salida se verificó l
 repetir CI en Linux y macOS. La Fase 2 mantiene abierta la semántica del indicador de combustible del MFD
 y el fixture de Monza acredita solo los escenarios observados localmente. El siguiente trabajo es:
 
-1.  **Fase 4:** ola 0 cerrada (tipos, ritmo, boxes y neumáticos). Siguiente: S5 (evaluador de
-    alternativas), S6 (sensibilidad y decisión) y S7--S11 (motor, SQLite v6, consola y validación).
+1.  **Fase 4:** S1--S8 implementadas (motor y registro SQLite v6). Siguiente: S9 (panel de consola y
+    comandos `strategy`) y S10 (validación E2E y rendimiento).
 2.  **CI:** volver a ejecutar GitHub Actions después de la Ola 2.
 3.  **Calibración diferida:** ajustar los parámetros que hoy no tienen valor universal y ampliar la
     validación a capturas con lluvia, safety car y otras condiciones.
