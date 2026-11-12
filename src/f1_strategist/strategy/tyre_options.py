@@ -26,6 +26,7 @@ from .pace_model import canonical_compound
 
 #: Compuestos fuera del alcance: solo se avisa de su presencia.
 WET_COMPOUNDS: frozenset[str] = frozenset({"intermediate", "wet"})
+MANDATORY_DRY_COMPOUNDS: frozenset[str] = frozenset({"hard", "medium"})
 
 #: Estados de clima que ya implican pista mojada.
 WET_WEATHER: frozenset[str] = frozenset({"light_rain", "heavy_rain", "wet", "storm"})
@@ -49,6 +50,10 @@ NOTE_FORECAST_LAP_TIME_APPROXIMATE = "forecast_lap_time_approximate"
 NOTE_RULE_PENDING = "two_compounds_pending"
 NOTE_RULE_DISABLED = "two_compounds_disabled"
 NOTE_RULE_SATISFIED = "two_compounds_satisfied"
+NOTE_RULE_SPRINT = "two_compounds_not_applicable_sprint"
+NOTE_RULE_SESSION_UNKNOWN = "race_type_unknown_rule_not_applied"
+NOTE_RULE_WET_WAIVED = "two_compounds_waived_wet"
+NOTE_MANDATORY_COMPOUND_PENDING = "medium_or_hard_pending"
 NOTE_LIFE_RISK = "tyre_life_risk"
 NOTE_LIFE_UNKNOWN = "tyre_life_unknown"
 NOTE_LIFE_SCALED = "useful_life_scaled_by_wear"
@@ -163,6 +168,42 @@ def _current_compound(inputs: MetricInputs) -> str | None:
         return None
     fitted = car.fitted_tyre.actual_tyre_compound if car.fitted_tyre is not None else None
     return canonical_compound(car.actual_tyre_compound or fitted)
+
+
+def _is_mandatory_dry_compound(compound: str | None, visual: str | None) -> bool:
+    actual = canonical_compound(compound)
+    shown = canonical_compound(visual)
+    return _is_dry(actual) and (
+        actual in MANDATORY_DRY_COMPOUNDS or shown in MANDATORY_DRY_COMPOUNDS
+    )
+
+
+def _has_mandatory_dry_compound(inputs: MetricInputs) -> bool:
+    if any(
+        _is_mandatory_dry_compound(stint.compound, stint.visual_compound)
+        for stint in inputs.history.stints_for(inputs.car_index)
+    ):
+        return True
+    car = inputs.car
+    if car is None:
+        return False
+    fitted = car.fitted_tyre
+    actual = car.actual_tyre_compound or (
+        fitted.actual_tyre_compound if fitted is not None else None
+    )
+    visual = car.visual_tyre_compound or (
+        fitted.visual_tyre_compound if fitted is not None else None
+    )
+    return _is_mandatory_dry_compound(actual, visual)
+
+
+def _is_sprint(inputs: MetricInputs) -> bool | None:
+    session = inputs.state.session
+    if session.session_type != "race":
+        return False
+    if not session.weekend_structure:
+        return None
+    return any("sprint_shootout" in item for item in session.weekend_structure)
 
 
 def _used_dry_compounds(inputs: MetricInputs, current: str | None) -> tuple[str, ...]:
@@ -317,10 +358,11 @@ def _quality(
 def tyre_options(inputs: MetricInputs, cfg: StrategyConfig) -> TyreOptions:
     """Acota qué paradas son posibles y válidas en la vuelta actual.
 
-    La regla de dos compuestos secos solo puede evaluarse con el histórico de
-    tandas y el compuesto montado; si no hay datos suficientes se declara
-    pendiente y la parada pasa a ser obligatoria. Las condiciones de lluvia se
-    declaran pero no se modelan (fuera de alcance).
+    En una carrera normal sin lluvia se exigen dos compuestos secos distintos,
+    uno medio o duro. En fines de semana Sprint se identifica el Sprint por el
+    calendario que incluye una sesión de Sprint Shootout; la carrera principal
+    sigue sujeta a la regla. Las condiciones de lluvia se declaran pero no se
+    modelan (fuera de alcance).
     """
     session = inputs.state.session
     current = _current_compound(inputs)
@@ -328,15 +370,6 @@ def tyre_options(inputs: MetricInputs, cfg: StrategyConfig) -> TyreOptions:
     wet_tyres_used = _used_wet_compounds(inputs, current)
 
     notes: list[str] = []
-    rule_enabled = cfg.require_two_dry_compounds
-    requires_stop = rule_enabled and not wet_tyres_used and len(used) < 2
-    if not rule_enabled:
-        notes.append(NOTE_RULE_DISABLED)
-    elif requires_stop:
-        notes.append(NOTE_RULE_PENDING)
-    else:
-        notes.append(NOTE_RULE_SATISFIED)
-
     wet = session.weather in WET_WEATHER
     if wet:
         notes.append(NOTE_WET)
@@ -345,8 +378,36 @@ def tyre_options(inputs: MetricInputs, cfg: StrategyConfig) -> TyreOptions:
         notes.extend(horizon_notes)
         if _rain_expected(inputs, horizon):
             wet = True
-            notes.append(NOTE_FORECAST_RAIN)
-            notes.append(NOTE_WET)
+            notes.extend((NOTE_FORECAST_RAIN, NOTE_WET))
+
+    sprint = _is_sprint(inputs)
+    race_session = session.session_type in {
+        "race",
+        "race_2",
+        "race_3",
+    }
+    rule_enabled = cfg.require_two_dry_compounds and race_session and sprint is False
+    rule_waived = wet or wet_tyres_used
+    mandatory_compound_used = _has_mandatory_dry_compound(inputs)
+    requires_mandatory_compound = rule_enabled and not rule_waived and not mandatory_compound_used
+    requires_stop = (
+        rule_enabled and not rule_waived and (len(used) < 2 or requires_mandatory_compound)
+    )
+    if not rule_enabled:
+        if sprint is True:
+            notes.append(NOTE_RULE_SPRINT)
+        elif cfg.require_two_dry_compounds and session.session_type == "race" and sprint is None:
+            notes.append(NOTE_RULE_SESSION_UNKNOWN)
+        else:
+            notes.append(NOTE_RULE_DISABLED)
+    elif rule_waived:
+        notes.append(NOTE_RULE_WET_WAIVED)
+    elif requires_stop:
+        notes.append(NOTE_RULE_PENDING)
+        if requires_mandatory_compound:
+            notes.append(NOTE_MANDATORY_COMPOUND_PENDING)
+    else:
+        notes.append(NOTE_RULE_SATISFIED)
 
     inventory = inputs.state.tyre_inventory
     remaining = _remaining_laps(inputs)
@@ -365,9 +426,15 @@ def tyre_options(inputs: MetricInputs, cfg: StrategyConfig) -> TyreOptions:
         if not _is_dry(compound):
             skipped_wet = True
             continue
-        if requires_stop and compound == current:
-            continue
-        options.append(_option(item, compound, remaining))
+        option = _option(item, compound, remaining)
+        if requires_stop:
+            if compound == current:
+                continue
+            if requires_mandatory_compound and not _is_mandatory_dry_compound(
+                option.compound, option.visual_compound
+            ):
+                continue
+        options.append(option)
     if skipped_wet:
         notes.append(NOTE_WET_SETS_SKIPPED)
     if unknown_availability:
@@ -405,16 +472,21 @@ __all__ = [
     "NOTE_LIFE_RISK",
     "NOTE_LIFE_SCALED",
     "NOTE_LIFE_UNKNOWN",
+    "NOTE_MANDATORY_COMPOUND_PENDING",
     "NOTE_NO_INVENTORY",
     "NOTE_NO_OPTIONS",
     "NOTE_RULE_DISABLED",
     "NOTE_RULE_PENDING",
     "NOTE_RULE_SATISFIED",
+    "NOTE_RULE_SESSION_UNKNOWN",
+    "NOTE_RULE_SPRINT",
+    "NOTE_RULE_WET_WAIVED",
     "NOTE_WET",
     "NOTE_WET_SETS_SKIPPED",
     "RAIN_PROBABILITY_THRESHOLD",
     "WET_COMPOUNDS",
     "WET_WEATHER",
+    "MANDATORY_DRY_COMPOUNDS",
     "TyreOption",
     "TyreOptions",
     "tyre_options",

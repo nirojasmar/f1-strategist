@@ -668,6 +668,19 @@ fixes de la revisión (`0b3bd76`).
     orden de claves ni del sistema operativo; la huella existente de captura no cambia.
 -   Verificación Windows: 859 pruebas aprobadas, 4 benchmarks excluidos; Ruff y Pyright (0 errores).
 
+**UE1 y UE3 --- fixtures reales y regla de neumáticos.**
+
+-   UE1: se añadieron los fixtures anonimizados de práctica y carrera de Suzuka al manifiesto; los cinco
+    escenarios del manifiesto se verifican correctamente.
+-   UE3: `tyre_options` exige en carreras normales secas dos compuestos distintos, con al menos un juego
+    visualmente medio o duro. La regla no se impone con lluvia ni en Sprint; una sesión `race` sin
+    `weekend_structure` queda sin clasificar y no activa la regla prematuramente.
+-   La captura de China confirma el Sprint por `short_sprint_shootout` en `weekend_structure` (`race`) y la
+    carrera principal como `race_2`. En algunos paquetes de esta última, la telemetría registra ventana
+    ideal/límite 9/17; queda pendiente confirmar visualmente el texto del HUD.
+-   Validación: 866 pruebas aprobadas, 4 benchmarks excluidos; pruebas de neumáticos (31), Ruff y Pyright
+    pasan.
+
 ## 7. Hallazgos de la primera captura real
 
 Captura: 68 541 paquetes, ~66 MB, 795,5 s entre el primer y el último paquete. Salida de `inspect`:
