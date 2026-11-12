@@ -46,9 +46,10 @@ def _evaluation(**changes: object) -> StrategyEvaluation:
         baseline=BASELINE_STAY_OUT,
         recommendation=StrategyRecommendation(
             action=StrategyAction.PIT_NOW,
-            key="pit_now:hard",
+            key="pit_now:hard:set2",
             pit_lap=12,
             compound="hard",
+            set_index=2,
             gain_vs_baseline_s=3.5,
             gain_interval_s=(1.5, 5.5),
             confidence=0.7,
@@ -61,11 +62,13 @@ def _evaluation(**changes: object) -> StrategyEvaluation:
                 rejoin_position=None,
             ),
             StrategyAlternative(
-                key="pit_now:hard",
+                key="pit_now:hard:set2",
                 remaining_time_s=1795.5,
                 gain_vs_baseline_s=3.5,
                 rejoin_position=4,
                 traffic_risk=False,
+                set_index=2,
+                quality=Quality.LOW,
             ),
         ),
         assumptions=(ASSUMPTION_FUEL_EFFECT_NOT_SEPARATED, "profile_prior_used"),
@@ -90,10 +93,15 @@ def test_evaluation_round_trips_through_json() -> None:
     assert restored["laps_remaining"] == 8.0
     assert restored["baseline"] == BASELINE_STAY_OUT
     assert restored["recommendation"]["action"] == "PIT_NOW"
-    assert restored["recommendation"]["key"] == "pit_now:hard"
+    assert restored["recommendation"]["key"] == "pit_now:hard:set2"
+    assert restored["recommendation"]["set_index"] == 2
     assert restored["recommendation"]["gain_interval_s"] == [1.5, 5.5]
     assert restored["recommendation"]["confidence"] == 0.7
-    assert [item["key"] for item in restored["alternatives"]] == ["pit_now:hard", "stay_out"]
+    assert [item["key"] for item in restored["alternatives"]] == [
+        "pit_now:hard:set2",
+        "stay_out",
+    ]
+    assert restored["alternatives"][0]["quality"] == "low"
     assert restored["data_quality"] == "ok"
     assert restored["profile_hash"] == "abc123"
 
@@ -109,7 +117,7 @@ def test_serialization_is_order_independent_and_canonical() -> None:
 
     assert first.to_json() == first.to_json()
     assert first.to_json() == second.to_json()
-    assert first.to_dict()["alternatives"][0]["key"] == "pit_now:hard"
+    assert first.to_dict()["alternatives"][0]["key"] == "pit_now:hard:set2"
     assert list(first.assumptions) == sorted(first.assumptions)
     assert list(first.risks) == sorted(first.risks)
 
@@ -143,11 +151,32 @@ def test_evaluation_reads_legacy_schema_v1_without_forecasts() -> None:
     payload.pop("forecast_car_index")
     payload.pop("forecast_compound")
     payload.pop("projected_lap_times_s")
+    payload["recommendation"].pop("set_index")
+    payload["recommendation"].pop("notes")
+    for alternative in payload["alternatives"]:
+        alternative.pop("set_index")
+        alternative.pop("quality")
 
     restored = StrategyEvaluation.from_dict(payload)
 
     assert restored.schema_version == 1
     assert restored.projected_lap_times_s is None
+
+
+def test_evaluation_reads_schema_v2_without_set_identity_and_quality() -> None:
+    payload = _evaluation().to_dict()
+    payload["schema_version"] = 2
+    payload["recommendation"].pop("set_index")
+    payload["recommendation"].pop("notes")
+    for alternative in payload["alternatives"]:
+        alternative.pop("set_index")
+        alternative.pop("quality")
+
+    restored = StrategyEvaluation.from_dict(payload)
+
+    assert restored.schema_version == 2
+    assert restored.recommendation.set_index is None
+    assert restored.alternatives[0].quality is Quality.OK
 
 
 def test_evaluation_rejects_duplicate_alternative_keys() -> None:
@@ -246,7 +275,7 @@ def test_evaluation_rejects_inconsistent_data() -> None:
         )
 
 
-@pytest.mark.parametrize("version", [None, True, 1.0, 1.5, 0, 3, 99])
+@pytest.mark.parametrize("version", [None, True, 1.0, 1.5, 0, 4, 99])
 def test_deserialization_rejects_invalid_schema_versions(version: object) -> None:
     payload = _evaluation().to_dict()
     payload["schema_version"] = version

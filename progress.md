@@ -45,7 +45,7 @@ Documentos de diseño:
 | Lenguaje y entorno | Python 3.12+, `uv`, `ruff`, `pyright`, `pytest` | Acordado (2026-10-31) |
 | Modelos y configuración | `pydantic` v2 y TOML | Acordado |
 | LLM | Cliente HTTP a API compatible con OpenAI, adaptador intercambiable | Acordado; modelo concreto pendiente |
-| Almacenamiento | Captura binaria cruda (`.f1cap`) + SQLite para derivados | Implementado; esquema actual v5 documentado en `docs/almacenamiento_sqlite.md` |
+| Almacenamiento | Captura binaria cruda (`.f1cap`) + SQLite para derivados | Implementado; esquema actual v7 documentado en `docs/almacenamiento_sqlite.md` |
 | Grabación e ingesta | Grabador en vivo con hilo y cola acotada; `ingest` offline idempotente | Implementado (G5); la cola del vivo no bloquea y la ingesta espera al escritor para no perder lotes |
 | Replay y huella | Replay interno (`play`) y reemisión UDP (`replay`); huella canónica compartida por `verify` e `ingest` | Implementado (G2, G4, G5); la velocidad no cambia el tiempo simulado y la captura truncada se marca incompleta |
 | Perfil del fin de semana | Se construye al empezar la carrera y se registra en la sesión (`profile_json` + `profile_hash`); la reproducción usa el registrado | Implementado (Fase 3.5, P1--P8); sin fin de semana enlazado no hay perfil y la captura continúa |
@@ -231,6 +231,12 @@ Documentos de diseño:
     `strategy show`, `export` (JSON/CSV) y `review` usan la lectura de sesiones; `review` compara el error
     absoluto medio por horizonte y omite datos históricos sin proyección. La lectura v6 permanece disponible.
     Verificación Windows: 878 pruebas aprobadas, 4 benchmarks excluidos; Ruff y Pyright (0 errores).
+-   Revisión de la ola 1: se corrigieron H1, H2 y H4--H10 (identidad de juegos, línea base obligatoria,
+    bloqueo por calidad/condiciones, cadencia, revisión de errores, proyección fraccionaria, vida de neumáticos,
+    `review` y formato). H3 bloquea lluvia, SC/VSC y los eventos observables de bandera roja; la telemetría no
+    expone un indicador directo y persistente de bandera roja activa, por lo que queda pendiente validación real.
+    La reproducción de Suzuka ya termina correctamente con claves únicas. Validación Windows: 899 aprobadas,
+    4 benchmarks excluidos; Ruff lint/formato y Pyright pasan.
 
 **No verificado todavía:**
 
@@ -243,7 +249,8 @@ Documentos de diseño:
     daemon disponible y WSL solo muestra la distribución interna `docker-desktop`). El perfil del fin de
     semana tampoco se ha probado todavía contra capturas reales de un fin de semana completo.
 -   La Fase 4 aún requiere validación con capturas reales de estrategia y condiciones variadas. La
-    validación y rendimiento de extremo a extremo de S10 siguen pendientes.
+    bandera roja no se ha probado con una captura real; tampoco se ha medido el requisito de rendimiento
+    de S7 (<1 ms medio). La validación E2E y rendimiento de S10 siguen pendientes.
 -   Queda volver a ejecutar CI de GitHub Actions después de la Ola 5.
 
 ## 6. Bitácora
@@ -691,7 +698,24 @@ fixes de la revisión (`0b3bd76`).
 -   SQLite v7 conserva el coche, compuesto y tiempos proyectados por vuelta para comparar contra vueltas
     reales válidas posteriores. Las bases v6 siguen siendo consultables, pero sus evaluaciones sin pronóstico
     no contribuyen a `review`.
--   Verificación Windows: 878 pruebas aprobadas, 4 benchmarks excluidos; Ruff y Pyright (0 errores).
+-   Verificación Windows inicial: 878 pruebas aprobadas, 4 benchmarks excluidos; Ruff y Pyright (0 errores).
+
+**Revisión de la ola 1 --- correcciones posteriores a S9.**
+
+-   H1: las alternativas y recomendaciones identifican el juego de neumáticos; se comprobó la reproducción
+    original sobre Suzuka, que ahora emite JSON con código 0 y alternativas únicas.
+-   H2: la línea base obligatoria usa la ventana ideal o, si no está disponible, la última parada viable;
+    una parada obligatoria se recomienda aunque no haya ganancia robusta frente a ese plan.
+-   H3: lluvia actual/pronosticada y SC/VSC bloquean recomendaciones. Los eventos observables de bandera roja
+    mantienen el bloqueo hasta cerrar una vuelta normal tras la reanudación; la detección en vivo requiere una
+    captura real, pues el protocolo no publica una señal directa de bandera roja activa.
+-   H4--H8: se incorporan calidad e identidad del juego al contrato de evaluación v3; el motor reevalúa cambios
+    de historial, inventario, distancia y frescura, reintenta fallos con cadencia mínima e incrementa revisión
+    al entrar/salir de error. Las fracciones se proyectan cronológicamente y el riesgo de vida se limita al plan
+    seleccionado y considera ambos juegos.
+-   H9--H10: `review` omite vueltas inválidas/ausentes sin truncar horizontes posteriores, pero se detiene ante
+    paradas o cambio de compuesto; el formato completo exigido por CI pasa.
+-   Validación Windows: 899 pruebas aprobadas, 4 benchmarks excluidos; Ruff lint/formato y Pyright (0 errores).
 
 ## 7. Hallazgos de la primera captura real
 

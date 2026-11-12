@@ -23,7 +23,7 @@ from typing import Any
 
 from ..metrics.types import Quality
 
-STRATEGY_SCHEMA_VERSION = 2
+STRATEGY_SCHEMA_VERSION = 3
 """Versión del contrato serializado; se incrementa ante cambios incompatibles."""
 
 BASELINE_STAY_OUT = "stay_out"
@@ -38,6 +38,8 @@ RISK_TYRE_DAMAGE_NOT_MODELLED = "tyre_damage_not_modelled"
 RISK_TRAFFIC_NOT_PRICED = "traffic_not_priced"
 RISK_TYRE_LIFE_EXCEEDED = "tyre_life_exceeded"
 RISK_WET_CONDITIONS = "wet_conditions"
+RISK_SAFETY_CAR = "safety_car_conditions"
+RISK_RED_FLAG = "red_flag_conditions"
 
 _FLOAT_DIGITS = 9
 
@@ -131,12 +133,16 @@ class StrategyRecommendation:
     gain_vs_baseline_s: float | None = None
     gain_interval_s: tuple[float, float] | None = None
     confidence: float | None = None
+    set_index: int | None = None
+    notes: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.key:
             raise ValueError("La clave de la recomendación no puede estar vacía")
         if self.pit_lap is not None and self.pit_lap < 1:
             raise ValueError("pit_lap debe ser positivo")
+        if self.set_index is not None and self.set_index < 0:
+            raise ValueError("set_index no puede ser negativo")
         if self.gain_vs_baseline_s is not None:
             _check_finite("gain_vs_baseline_s", self.gain_vs_baseline_s)
         if self.gain_interval_s is not None:
@@ -150,6 +156,7 @@ class StrategyRecommendation:
             _check_finite("confidence", self.confidence)
             if not 0 <= self.confidence <= 1:
                 raise ValueError("confidence debe estar entre 0 y 1")
+        object.__setattr__(self, "notes", tuple(dict.fromkeys(self.notes)))
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -164,6 +171,8 @@ class StrategyRecommendation:
                 else [_round(self.gain_interval_s[0]), _round(self.gain_interval_s[1])]
             ),
             "confidence": _round(self.confidence),
+            "set_index": self.set_index,
+            "notes": list(self.notes),
         }
 
     @classmethod
@@ -180,6 +189,8 @@ class StrategyRecommendation:
                 None if interval is None else (float(interval[0]), float(interval[1]))
             ),
             confidence=data.get("confidence"),
+            set_index=data.get("set_index"),
+            notes=tuple(data.get("notes", ())),
         )
 
 
@@ -198,6 +209,7 @@ class DataQuality:
     stale: bool = False
     pace_samples: int = 0
     prior_weight: float = 0.0
+    unmodeled_conditions: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.pace_samples < 0:
@@ -209,6 +221,7 @@ class DataQuality:
         _check_finite("prior_weight", self.prior_weight)
         if not 0 <= self.prior_weight <= 1:
             raise ValueError("prior_weight debe estar entre 0 y 1")
+        object.__setattr__(self, "unmodeled_conditions", tuple(self.unmodeled_conditions))
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -219,6 +232,7 @@ class DataQuality:
             "stale": self.stale,
             "pace_samples": self.pace_samples,
             "prior_weight": _round(self.prior_weight),
+            "unmodeled_conditions": list(self.unmodeled_conditions),
         }
 
 
@@ -239,6 +253,7 @@ class StrategyDecision:
     confidence: float = 0.0
     sensitive_to: tuple[str, ...] = ()
     notes: tuple[str, ...] = ()
+    set_index: int | None = None
 
     def __post_init__(self) -> None:
         if self.action in {StrategyAction.PIT_NOW, StrategyAction.PIT_IN} and not self.key:
@@ -247,6 +262,8 @@ class StrategyDecision:
             raise ValueError("La clave de la decisión no puede estar vacía")
         if self.pit_lap is not None and self.pit_lap < 1:
             raise ValueError("pit_lap debe ser positivo")
+        if self.set_index is not None and self.set_index < 0:
+            raise ValueError("set_index no puede ser negativo")
         if self.gain_vs_baseline_s is not None:
             _check_finite("gain_vs_baseline_s", self.gain_vs_baseline_s)
         if self.gain_interval_s is not None:
@@ -277,6 +294,7 @@ class StrategyDecision:
             "confidence": _round(self.confidence),
             "sensitive_to": list(self.sensitive_to),
             "notes": list(self.notes),
+            "set_index": self.set_index,
         }
 
     @classmethod
@@ -295,6 +313,7 @@ class StrategyDecision:
             confidence=float(data.get("confidence", 0.0)),
             sensitive_to=tuple(data.get("sensitive_to", ())),
             notes=tuple(data.get("notes", ())),
+            set_index=data.get("set_index"),
         )
 
 
@@ -307,6 +326,8 @@ class StrategyAlternative:
     gain_vs_baseline_s: float
     rejoin_position: int | None = None
     traffic_risk: bool | None = None
+    set_index: int | None = None
+    quality: Quality = Quality.OK
 
     def __post_init__(self) -> None:
         if not self.key:
@@ -315,6 +336,8 @@ class StrategyAlternative:
         _check_finite("gain_vs_baseline_s", self.gain_vs_baseline_s)
         if self.rejoin_position is not None and self.rejoin_position < 1:
             raise ValueError("rejoin_position debe ser positivo")
+        if self.set_index is not None and self.set_index < 0:
+            raise ValueError("set_index no puede ser negativo")
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -323,6 +346,8 @@ class StrategyAlternative:
             "gain_vs_baseline_s": _round(self.gain_vs_baseline_s),
             "rejoin_position": self.rejoin_position,
             "traffic_risk": self.traffic_risk,
+            "set_index": self.set_index,
+            "quality": self.quality.value,
         }
 
     @classmethod
@@ -334,6 +359,8 @@ class StrategyAlternative:
             gain_vs_baseline_s=float(data["gain_vs_baseline_s"]),
             rejoin_position=data.get("rejoin_position"),
             traffic_risk=data.get("traffic_risk"),
+            set_index=data.get("set_index"),
+            quality=Quality(data.get("quality", Quality.OK.value)),
         )
 
 
@@ -362,10 +389,10 @@ class StrategyEvaluation:
     def __post_init__(self) -> None:
         if type(self.schema_version) is not int:
             raise ValueError("schema_version debe ser un entero")
-        if self.schema_version not in {1, STRATEGY_SCHEMA_VERSION}:
+        if self.schema_version not in {1, 2, STRATEGY_SCHEMA_VERSION}:
             raise ValueError(
                 f"schema_version no soportada: {self.schema_version}; "
-                f"esperada 1 o {STRATEGY_SCHEMA_VERSION}"
+                f"esperada 1, 2 o {STRATEGY_SCHEMA_VERSION}"
             )
         if self.revision < 0:
             raise ValueError("revision no puede ser negativa")
@@ -444,10 +471,10 @@ class StrategyEvaluation:
         schema_version = data.get("schema_version")
         if type(schema_version) is not int:
             raise ValueError("schema_version debe estar presente y ser un entero")
-        if schema_version not in {1, STRATEGY_SCHEMA_VERSION}:
+        if schema_version not in {1, 2, STRATEGY_SCHEMA_VERSION}:
             raise ValueError(
                 f"schema_version no soportada: {schema_version}; "
-                f"esperada 1 o {STRATEGY_SCHEMA_VERSION}"
+                f"esperada 1, 2 o {STRATEGY_SCHEMA_VERSION}"
             )
         revision = data.get("revision")
         if type(revision) is not int:

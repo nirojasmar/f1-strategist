@@ -70,8 +70,19 @@ def review_strategy_evaluations(
             continue
         for horizon, projected_time in enumerate(forecast, start=1):
             actual_lap = actual_by_key.get((car_index, evaluation.lap + horizon))
-            if not _comparable_lap(actual_lap, compound):
+            if actual_lap is None:
+                continue
+            if (
+                (
+                    actual_lap.compound is not None
+                    and actual_lap.compound.strip().lower() != compound.strip().lower()
+                )
+                or actual_lap.pit_entry
+                or actual_lap.pit_exit
+            ):
                 break
+            if not _comparable_lap(actual_lap, compound):
+                continue
             assert actual_lap is not None and actual_lap.lap_time_s is not None
             errors_by_horizon[horizon].append(abs(projected_time - actual_lap.lap_time_s))
             used_laps.add(evaluation.lap)

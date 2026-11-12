@@ -40,6 +40,8 @@ from .types import (
     ASSUMPTION_RIVALS_DO_NOT_PIT,
     BASELINE_STAY_OUT,
     RISK_DAMAGE_NOT_MODELLED,
+    RISK_RED_FLAG,
+    RISK_SAFETY_CAR,
     RISK_TRAFFIC_NOT_PRICED,
     RISK_TYRE_DAMAGE_NOT_MODELLED,
     RISK_TYRE_LIFE_EXCEEDED,
@@ -50,6 +52,7 @@ from .types import (
     Perturbation,
     StrategyAction,
     StrategyAlternative,
+    StrategyDecision,
     StrategyEvaluation,
     StrategyRecommendation,
     StrategySnapshot,
@@ -131,7 +134,7 @@ def _laps_remaining(state: RaceStateSnapshot) -> float | None:
 
 def _is_stale(state: RaceStateSnapshot, now: float) -> bool:
     """True si los grupos que alimentan el ritmo están obsoletos."""
-    for group in ("lap_data", "session_history"):
+    for group in ("lap_data", "session_history", "session", "tyre_sets"):
         try:
             freshness = state.freshness_for(group)
         except KeyError:
@@ -169,6 +172,7 @@ def _data_quality(
     models: CompoundModels,
     pit: PitLossEstimate,
     cfg: StrategyConfig,
+    unmodeled_conditions: tuple[str, ...],
 ) -> DataQuality:
     model = _pace_model(models, _mounted_compound(inputs.car))
     session = inputs.state.session
@@ -181,7 +185,41 @@ def _data_quality(
         stale=_is_stale(inputs.state, inputs.now),
         pace_samples=model.n_race_laps if model is not None else 0,
         prior_weight=_prior_weight(model, cfg),
+        unmodeled_conditions=unmodeled_conditions,
     )
+
+
+def _unmodeled_conditions(
+    inputs: MetricInputs,
+    options: TyreOptions,
+) -> tuple[str, ...]:
+    conditions: list[str] = []
+    if options.wet_conditions:
+        conditions.append(RISK_WET_CONDITIONS)
+    status = inputs.state.session.safety_car_status
+    if status in {"full_safety_car", "safety_car", "virtual_safety_car", "formation_lap"}:
+        conditions.append(RISK_SAFETY_CAR)
+    car = inputs.car
+    red_flag_events = [
+        event
+        for event in inputs.state.events
+        if event.kind == "red_flag" and event.session_uid in {None, inputs.state.session.uid}
+    ]
+    red_flag_active = status == "red_flag" or (car is not None and car.fia_flag == "red")
+    if red_flag_events:
+        latest_red_flag = max(red_flag_events, key=lambda event: event.occurred_at_monotonic)
+        later_laps = (
+            record
+            for record in inputs.history.records_for(inputs.car_index)
+            if record.ended_at_monotonic is not None
+            and record.ended_at_monotonic > latest_red_flag.occurred_at_monotonic
+        )
+        red_flag_active = red_flag_active or not any(
+            "red_flag" not in record.track_status_seen for record in later_laps
+        )
+    if red_flag_active:
+        conditions.append(RISK_RED_FLAG)
+    return tuple(conditions)
 
 
 def _projected_lap_forecast(
@@ -228,18 +266,19 @@ def _assumptions(
 
 
 def _risks(
-    options: TyreOptions,
     alternatives: tuple[AlternativeResult, ...],
+    decision: StrategyDecision,
+    unmodeled_conditions: tuple[str, ...],
 ) -> tuple[str, ...]:
     notes: list[str] = [RISK_DAMAGE_NOT_MODELLED, RISK_TYRE_DAMAGE_NOT_MODELLED]
-    used = {note for item in alternatives for note in item.notes}
+    selected = next((item for item in alternatives if item.key == decision.key), None)
+    used = set(selected.notes) if selected is not None else set()
     if RISK_TRAFFIC_NOT_PRICED in used:
         notes.append(RISK_TRAFFIC_NOT_PRICED)
     if RISK_TYRE_LIFE_EXCEEDED in used:
         notes.append(RISK_TYRE_LIFE_EXCEEDED)
-    if options.wet_conditions:
-        notes.append(RISK_WET_CONDITIONS)
-    return tuple(notes)
+    notes.extend(unmodeled_conditions)
+    return tuple(dict.fromkeys(notes))
 
 
 def _recommendation_signature(
@@ -251,6 +290,8 @@ def _recommendation_signature(
         recommendation.key,
         recommendation.pit_lap,
         recommendation.compound,
+        recommendation.set_index,
+        recommendation.notes,
     )
 
 
@@ -295,11 +336,26 @@ def evaluate_once(
     models = build_compound_models(inputs, cfg)
     pit = estimate_pit_loss(inputs, cfg)
     options = tyre_options(inputs, cfg)
-    quality = _data_quality(inputs, models, pit, cfg)
+    unmodeled_conditions = _unmodeled_conditions(inputs, options)
+    quality = _data_quality(inputs, models, pit, cfg, unmodeled_conditions)
     projected_lap_times = _projected_lap_forecast(inputs, models, options, quality)
 
+    baseline_key: str | None = None
+
     def evaluate(perturbation: Perturbation) -> tuple[AlternativeResult, ...]:
-        return evaluate_alternatives(models, pit, options, inputs, cfg, perturbation)
+        nonlocal baseline_key
+        alternatives = evaluate_alternatives(
+            models,
+            pit,
+            options,
+            inputs,
+            cfg,
+            perturbation,
+            baseline_key=baseline_key if perturbation != Perturbation() else None,
+        )
+        if perturbation == Perturbation() and alternatives:
+            baseline_key = alternatives[0].key
+        return alternatives
 
     decision = decide(evaluate, quality, cfg)
     alternatives = evaluate(Perturbation())
@@ -316,9 +372,11 @@ def evaluate_once(
             key=decision.key or baseline,
             pit_lap=decision.pit_lap,
             compound=decision.compound,
+            set_index=decision.set_index,
             gain_vs_baseline_s=decision.gain_vs_baseline_s,
             gain_interval_s=decision.gain_interval_s,
             confidence=decision.confidence,
+            notes=decision.notes,
         ),
         alternatives=tuple(
             StrategyAlternative(
@@ -327,16 +385,22 @@ def evaluate_once(
                 gain_vs_baseline_s=item.gain_vs_baseline_s,
                 rejoin_position=item.rejoin_position,
                 traffic_risk=item.traffic_risk,
+                set_index=item.set_index,
+                quality=item.quality,
             )
             for item in alternatives
         ),
         assumptions=_assumptions(models, pit, alternatives),
-        risks=_risks(options, alternatives),
+        risks=_risks(alternatives, decision, unmodeled_conditions),
         sensitive_to=decision.sensitive_to,
         data_quality=_worst(
             quality.pace,
             quality.pit_loss,
             options.quality,
+            next(
+                (item.quality for item in alternatives if item.key == decision.key),
+                Quality.OK,
+            ),
         ),
         inputs_hash=compute_inputs_hash(
             {
@@ -428,10 +492,14 @@ class StrategyEngine:
         if not self._config.enabled:
             return
         try:
-            signature = self._state_signature(state) + (
+            signature = self._state_signature(state, history, observed_at) + (
                 self._profile.hash if self._profile is not None else None,
             )
-            if signature == self._last_signature and self._snapshot.evaluation is not None:
+            if (
+                signature == self._last_signature
+                and self._snapshot.evaluation is not None
+                and self._snapshot.error is None
+            ):
                 return
             if (
                 self._last_evaluated_at is not None
@@ -439,7 +507,6 @@ class StrategyEngine:
             ):
                 return
 
-            self._last_signature = signature
             self._last_evaluated_at = observed_at
             inputs = MetricInputs(
                 state=state,
@@ -452,13 +519,24 @@ class StrategyEngine:
             evaluation = evaluate_once(inputs, self._config, revision=self._revision)
         except Exception as exc:  # noqa: BLE001 - un fallo no debe parar la captura
             _LOGGER.exception("Strategy evaluation failed")
+            failure = _failure_evaluation(state, self._revision)
+            if failure is not None:
+                failure_signature = _recommendation_signature(failure.recommendation)
+                if (
+                    self._last_recommendation is not None
+                    and failure_signature != self._last_recommendation
+                ):
+                    self._revision += 1
+                    failure = replace(failure, revision=self._revision)
+                self._last_recommendation = failure_signature
             self._snapshot = StrategySnapshot(
-                evaluation=_failure_evaluation(state, self._revision),
+                evaluation=failure,
                 updated_at_monotonic=observed_at,
                 error=f"{type(exc).__name__}: {exc}",
             )
             return
 
+        self._last_signature = signature
         signature_recommendation = _recommendation_signature(evaluation.recommendation)
         if (
             self._last_recommendation is not None
@@ -486,10 +564,23 @@ class StrategyEngine:
         self._snapshot = StrategySnapshot()
 
     @staticmethod
-    def _state_signature(state: RaceStateSnapshot) -> tuple[object, ...]:
+    def _state_signature(
+        state: RaceStateSnapshot,
+        history: LapHistorySnapshot,
+        now: float,
+    ) -> tuple[object, ...]:
         """Eventos que justifican una nueva evaluación (sección 5.9)."""
         session = state.session
         car = state.player_car
+        car_index = _player_car_index(state)
+        freshness = tuple(
+            (
+                group,
+                state.freshness_for(group).is_stale(now),
+            )
+            for group in ("lap_data", "session_history", "session", "tyre_sets")
+            if any(item.group == group for item in state.freshness)
+        )
         return (
             session.uid,
             session.session_type,
@@ -509,9 +600,17 @@ class StrategyEngine:
             session.pit_window_latest_lap,
             state.current_lap,
             car.current_lap if car is not None else None,
+            car.lap_distance_m if car is not None else None,
             _mounted_compound(car),
+            car.tyre_age_laps if car is not None else None,
+            car.fitted_tyre if car is not None else None,
             car.pit_status if car is not None else None,
             car.result_status if car is not None else None,
+            state.tyre_inventory,
+            state.tyre_inventory_updated_at_monotonic,
+            history.records_for(car_index) if car_index >= 0 else (),
+            history.stints_for(car_index) if car_index >= 0 else (),
+            freshness,
         )
 
 

@@ -798,14 +798,10 @@ class SessionStore:
             str(row["name"])
             for row in self._connection.execute("PRAGMA table_info(strategy_evaluations)")
         }
-        forecast_car_index = (
-            "forecast_car_index" if "forecast_car_index" in columns else "NULL"
-        )
+        forecast_car_index = "forecast_car_index" if "forecast_car_index" in columns else "NULL"
         forecast_compound = "forecast_compound" if "forecast_compound" in columns else "NULL"
         projected_lap_times = (
-            "projected_lap_times_json"
-            if "projected_lap_times_json" in columns
-            else "NULL"
+            "projected_lap_times_json" if "projected_lap_times_json" in columns else "NULL"
         )
         cursor = self._connection.execute(
             "SELECT seq, t_sim_s, lap, action, recommended_key, gain_vs_baseline_s, "

@@ -26,6 +26,11 @@ from ..config import StrategyConfig
 from ..metrics.types import Quality
 from .types import (
     BASELINE_STAY_OUT,
+    RISK_RED_FLAG,
+    RISK_SAFETY_CAR,
+    RISK_TRAFFIC_NOT_PRICED,
+    RISK_TYRE_LIFE_EXCEEDED,
+    RISK_WET_CONDITIONS,
     AlternativeResult,
     DataQuality,
     Perturbation,
@@ -41,6 +46,9 @@ NOTE_PACE_INSUFFICIENT = "pace_quality_insufficient"
 NOTE_PIT_LOSS_INSUFFICIENT = "pit_loss_unavailable"
 NOTE_STALE_DATA = "data_stale"
 NOTE_ALTERNATIVE_UNSTABLE = "alternative_unstable"
+NOTE_ALTERNATIVE_QUALITY = "alternative_quality_insufficient"
+NOTE_MANDATORY_STOP = "mandatory_stop"
+NOTE_UNMODELED_CONDITION = "unmodeled_condition"
 
 #: Claves de ``sensitive_to``: supuesto que, dentro de su banda, cambia la decisión.
 SENSITIVE_WEAR_SLOPE = "wear_slope"
@@ -60,6 +68,16 @@ _FULL_SAMPLES = 10
 
 #: Calidades que impiden decidir con rigor.
 _BLOCKING_QUALITIES = frozenset({Quality.INSUFFICIENT, Quality.UNAVAILABLE})
+_UNSELECTABLE_QUALITIES = frozenset({Quality.STALE, Quality.INSUFFICIENT, Quality.UNAVAILABLE})
+_RISK_NOTES = frozenset(
+    {
+        RISK_TYRE_LIFE_EXCEEDED,
+        RISK_TRAFFIC_NOT_PRICED,
+        RISK_WET_CONDITIONS,
+        RISK_SAFETY_CAR,
+        RISK_RED_FLAG,
+    }
+)
 
 #: Escala mínima de pendiente admitida al perturbar (``slope_scale`` debe ser > 0).
 _MIN_SLOPE_SCALE = 1e-3
@@ -131,6 +149,7 @@ def _best_stop(
         for item in results
         if item.action in {StrategyAction.PIT_NOW, StrategyAction.PIT_IN}
         and item.key not in unstable
+        and item.quality not in _UNSELECTABLE_QUALITIES
         and lower.get(item.key, -math.inf) > cfg.min_gain_s
     ]
     if not eligible:
@@ -178,9 +197,18 @@ def _sensitive_to(
     return tuple(keys)
 
 
-def _confidence(quality: DataQuality, width: float, cfg: StrategyConfig) -> float:
+def _confidence(
+    quality: DataQuality,
+    width: float,
+    cfg: StrategyConfig,
+    alternative_quality: Quality = Quality.OK,
+) -> float:
     """Confianza 0-1: calidad, muestras, peso del prior y amplitud del intervalo."""
-    base = min(_QUALITY_BASE[quality.pace], _QUALITY_BASE[quality.pit_loss])
+    base = min(
+        _QUALITY_BASE[quality.pace],
+        _QUALITY_BASE[quality.pit_loss],
+        _QUALITY_BASE[alternative_quality],
+    )
     samples = min(1.0, quality.pace_samples / _FULL_SAMPLES)
     data_factor = 0.6 + 0.4 * samples
     prior_factor = 1.0 - 0.5 * quality.prior_weight
@@ -206,6 +234,9 @@ def _insufficient_notes(quality: DataQuality, cfg: StrategyConfig) -> tuple[str,
         notes.append(NOTE_PIT_LOSS_INSUFFICIENT)
     if quality.stale:
         notes.append(NOTE_STALE_DATA)
+    if quality.unmodeled_conditions:
+        notes.extend(quality.unmodeled_conditions)
+        notes.append(NOTE_UNMODELED_CONDITION)
     return tuple(notes)
 
 
@@ -225,13 +256,6 @@ def decide(
     scenarios = _scenarios(cfg)
     runs = {name: evaluate(perturbation) for name, perturbation in scenarios.items()}
     neutral = runs["neutral"]
-    if not neutral:
-        return StrategyDecision(
-            action=StrategyAction.INSUFFICIENT_DATA,
-            confidence=0.0,
-            notes=(NOTE_NO_ALTERNATIVES,),
-        )
-
     insufficient = _insufficient_notes(quality, cfg)
     if insufficient:
         return StrategyDecision(
@@ -240,18 +264,58 @@ def decide(
             notes=insufficient,
         )
 
+    if not neutral:
+        return StrategyDecision(
+            action=StrategyAction.INSUFFICIENT_DATA,
+            confidence=0.0,
+            notes=(NOTE_NO_ALTERNATIVES,),
+        )
+
     lower, upper, unstable = _bounds(runs)
     sensitive_to = _sensitive_to(runs, cfg)
     chosen = _best_stop(neutral, lower, unstable, cfg)
 
     if chosen is None:
+        no_stay_out = BASELINE_STAY_OUT not in {item.key for item in neutral}
+        forced_stop = neutral[0] if no_stay_out else None
+        if (
+            forced_stop is not None
+            and forced_stop.action in {StrategyAction.PIT_NOW, StrategyAction.PIT_IN}
+            and forced_stop.quality not in _UNSELECTABLE_QUALITIES
+        ):
+            width = upper.get(forced_stop.key, forced_stop.gain_vs_baseline_s) - lower.get(
+                forced_stop.key, forced_stop.gain_vs_baseline_s
+            )
+            return StrategyDecision(
+                action=forced_stop.action,
+                key=forced_stop.key,
+                pit_lap=forced_stop.pit_lap,
+                compound=forced_stop.compound,
+                set_index=forced_stop.set_index,
+                gain_vs_baseline_s=forced_stop.gain_vs_baseline_s,
+                gain_interval_s=(
+                    lower.get(forced_stop.key, forced_stop.gain_vs_baseline_s),
+                    upper.get(forced_stop.key, forced_stop.gain_vs_baseline_s),
+                ),
+                confidence=_confidence(quality, width, cfg, forced_stop.quality),
+                notes=(NOTE_MANDATORY_STOP,)
+                + tuple(note for note in forced_stop.notes if note in _RISK_NOTES),
+            )
         key = _baseline_key(neutral)
         # La incertidumbre de un «no cambiar» es la de la alternativa que casi
         # ganó: si su intervalo es ancho, la confianza debe bajar.
         width = max((upper[item] - lower[item] for item in upper), default=0.0)
         notes = [NOTE_DEFAULT_NO_CHANGE]
-        if BASELINE_STAY_OUT not in {item.key for item in neutral}:
+        if no_stay_out:
             notes.append(NOTE_ALTERNATIVE_UNSTABLE)
+            if all(item.quality in _UNSELECTABLE_QUALITIES for item in neutral):
+                notes.append(NOTE_ALTERNATIVE_QUALITY)
+                return StrategyDecision(
+                    action=StrategyAction.INSUFFICIENT_DATA,
+                    key=key,
+                    confidence=0.0,
+                    notes=tuple(notes),
+                )
         return StrategyDecision(
             action=StrategyAction.NO_CHANGE,
             key=key,
@@ -268,13 +332,15 @@ def decide(
         key=chosen.key,
         pit_lap=chosen.pit_lap,
         compound=chosen.compound,
+        set_index=chosen.set_index,
         gain_vs_baseline_s=chosen.gain_vs_baseline_s,
         gain_interval_s=(
             lower.get(chosen.key, chosen.gain_vs_baseline_s),
             upper.get(chosen.key, chosen.gain_vs_baseline_s),
         ),
-        confidence=_confidence(quality, wide, cfg),
+        confidence=_confidence(quality, wide, cfg, chosen.quality),
         sensitive_to=sensitive_to,
+        notes=tuple(note for note in chosen.notes if note in _RISK_NOTES),
     )
 
 

@@ -167,13 +167,13 @@ def test_example_5_10_reproduces_the_baseline_and_the_stop_to_the_millisecond() 
     assert results[0].key == "stay_out"
     assert by_key["stay_out"].remaining_time_s == pytest.approx(1799.0, abs=1e-9)
     assert by_key["stay_out"].gain_vs_baseline_s == pytest.approx(0.0, abs=1e-9)
-    assert by_key["pit_now:hard"].remaining_time_s == pytest.approx(1795.5, abs=1e-9)
-    assert by_key["pit_now:hard"].gain_vs_baseline_s == pytest.approx(3.5, abs=1e-9)
+    assert by_key["pit_now:hard:set0"].remaining_time_s == pytest.approx(1795.5, abs=1e-9)
+    assert by_key["pit_now:hard:set0"].gain_vs_baseline_s == pytest.approx(3.5, abs=1e-9)
     assert by_key["stay_out"].action is StrategyAction.NO_CHANGE
-    assert by_key["pit_now:hard"].action is StrategyAction.PIT_NOW
+    assert by_key["pit_now:hard:set0"].action is StrategyAction.PIT_NOW
 
 
-def test_mid_lap_projection_pays_only_the_remaining_fraction() -> None:
+def test_mid_lap_projection_applies_fraction_to_current_lap_before_full_laps() -> None:
     # Media vuelta recorrida: quedan 19.5 vueltas.
     stay = _model("soft", 88.0, 0.10, initial_age_laps=10.0)
     results = evaluate_alternatives(
@@ -190,11 +190,34 @@ def test_mid_lap_projection_pays_only_the_remaining_fraction() -> None:
         StrategyConfig(),
     )
 
-    # 19·88 + 0.10·(10..28) + 0.5·(88 + 0.10·29) = 1753.55
-    assert results[0].remaining_time_s == pytest.approx(1753.55, abs=1e-9)
+    # 0.5·(88 + 0.10·10) + 19·88 + 0.10·(11..29) = 1754.5
+    assert results[0].remaining_time_s == pytest.approx(1754.5, abs=1e-9)
 
 
-def test_mandatory_stop_removes_stay_out_and_uses_the_best_stop_as_baseline() -> None:
+def test_mid_lap_stop_splits_old_and_new_tyre_projection_chronologically() -> None:
+    results = _by_key(
+        evaluate_alternatives(
+            _models(
+                _model("soft", 88.0, 0.10, initial_age_laps=10.0),
+                _model("hard", 88.3, 0.05),
+            ),
+            _pit(20.0),
+            _options(_option("hard")),
+            _inputs(
+                car=_car(
+                    current_lap=11,
+                    lap_distance_m=TRACK_LENGTH_M / 2.0,
+                    actual_tyre_compound="soft",
+                )
+            ),
+            StrategyConfig(),
+        )
+    )
+
+    assert results["pit_in_1:hard:set0"].remaining_time_s == pytest.approx(1751.15)
+
+
+def test_mandatory_stop_uses_latest_viable_stop_as_baseline_without_a_window() -> None:
     stay = _model("soft", 88.0, 0.10, initial_age_laps=10.0)
     results = evaluate_alternatives(
         _models(stay, _model("hard", 88.3, 0.05)),
@@ -205,13 +228,32 @@ def test_mandatory_stop_removes_stay_out_and_uses_the_best_stop_as_baseline() ->
     )
 
     assert "stay_out" not in _by_key(results)
-    # Sin ``STAY_OUT`` la línea base es la mejor parada evaluada.
+    # Sin ventana ideal, el plan de referencia conserva la última parada viable.
     baseline = results[0]
     assert baseline.action in (StrategyAction.PIT_NOW, StrategyAction.PIT_IN)
-    assert baseline.remaining_time_s == min(item.remaining_time_s for item in results)
+    assert baseline.pit_lap == 21
     assert baseline.gain_vs_baseline_s == pytest.approx(0.0, abs=1e-9)
     assert NOTE_BASELINE in baseline.notes
     assert NOTE_STAY_OUT_NOT_VIABLE in baseline.notes
+
+
+def test_mandatory_stop_uses_the_game_ideal_lap_as_baseline() -> None:
+    results = evaluate_alternatives(
+        _models(
+            _model("soft", 88.0, 0.10, initial_age_laps=10.0),
+            _model("hard", 88.3, 0.05),
+        ),
+        _pit(20.0),
+        _options(_option("hard"), stay_out_allowed=False),
+        _inputs(
+            car=_car(current_lap=11, lap_distance_m=0.0, actual_tyre_compound="soft"),
+            session_fields={"pit_window_ideal_lap": 15, "pit_window_latest_lap": 20},
+        ),
+        StrategyConfig(),
+    )
+
+    assert results[0].pit_lap == 15
+    assert results[0].gain_vs_baseline_s == pytest.approx(0.0)
 
 
 def test_stay_out_is_omitted_when_the_tyre_cannot_reach_the_end() -> None:
@@ -257,7 +299,7 @@ def test_perturbation_scales_the_slope_and_shifts_the_pit_loss() -> None:
     assert stressed["stay_out"].remaining_time_s == pytest.approx(
         neutral["stay_out"].remaining_time_s + 39.0, abs=1e-9
     )
-    assert stressed["pit_now:hard"].pit_loss_s == pytest.approx(25.0, abs=1e-9)
+    assert stressed["pit_now:hard:set0"].pit_loss_s == pytest.approx(25.0, abs=1e-9)
     assert NOTE_PERTURBATION in stressed["stay_out"].notes
 
 
@@ -318,7 +360,10 @@ def test_pit_in_alternatives_span_the_stop_window_and_carry_their_lap() -> None:
     )
 
     pit_ins = [result for result in results if result.action is StrategyAction.PIT_IN]
-    assert [result.key for result in pit_ins] == ["pit_in_1:hard", "pit_in_2:hard"]
+    assert [result.key for result in pit_ins] == [
+        "pit_in_1:hard:set0",
+        "pit_in_2:hard:set0",
+    ]
     assert [result.pit_lap for result in pit_ins] == [12, 13]
 
 
@@ -350,16 +395,16 @@ def test_traffic_cost_is_added_only_when_configured_and_only_to_the_immediate_st
         )
     )
 
-    assert priced["pit_now:hard"].traffic_risk
-    assert priced["pit_now:hard"].traffic_cost_s == pytest.approx(0.2, abs=1e-9)
-    assert priced["pit_now:hard"].rejoin_position == 2
-    assert NOTE_TRAFFIC_COST in priced["pit_now:hard"].notes
-    assert priced["pit_in_1:hard"].traffic_cost_s is None
+    assert priced["pit_now:hard:set0"].traffic_risk
+    assert priced["pit_now:hard:set0"].traffic_cost_s == pytest.approx(0.2, abs=1e-9)
+    assert priced["pit_now:hard:set0"].rejoin_position == 2
+    assert NOTE_TRAFFIC_COST in priced["pit_now:hard:set0"].notes
+    assert priced["pit_in_1:hard:set0"].traffic_cost_s is None
 
-    assert unpriced["pit_now:hard"].traffic_cost_s is None
-    assert unpriced["pit_now:hard"].traffic_risk
-    assert RISK_TRAFFIC_NOT_PRICED in unpriced["pit_now:hard"].notes
-    assert ASSUMPTION_RIVALS_DO_NOT_PIT in unpriced["pit_now:hard"].notes
+    assert unpriced["pit_now:hard:set0"].traffic_cost_s is None
+    assert unpriced["pit_now:hard:set0"].traffic_risk
+    assert RISK_TRAFFIC_NOT_PRICED in unpriced["pit_now:hard:set0"].notes
+    assert ASSUMPTION_RIVALS_DO_NOT_PIT in unpriced["pit_now:hard:set0"].notes
 
 
 def test_risk_of_tyre_life_is_declared_on_the_stop() -> None:
@@ -368,13 +413,54 @@ def test_risk_of_tyre_life_is_declared_on_the_stop() -> None:
         evaluate_alternatives(
             _models(stay, _model("hard", 88.3, 0.05)),
             _pit(20.0),
-            _options(_option("hard", life_risk=True)),
+            _options(_option("hard", useful_life_laps=10.0)),
             _inputs(car=_car(current_lap=11, lap_distance_m=0.0, actual_tyre_compound="soft")),
             StrategyConfig(),
         )
     )
 
-    assert "tyre_life_exceeded" in results["pit_now:hard"].notes
+    assert "tyre_life_exceeded" in results["pit_now:hard:set0"].notes
+    assert "tyre_life_exceeded" not in results["pit_in_10:hard:set0"].notes
+
+
+def test_same_compound_sets_have_distinct_alternative_keys() -> None:
+    options = _options(
+        _option("hard", set_index=2, initial_wear_pct=30.0),
+        _option("hard", set_index=5, initial_wear_pct=0.0),
+    )
+    results = evaluate_alternatives(
+        _models(
+            _model("soft", 88.0, 0.10, initial_age_laps=10.0),
+            _model("hard", 88.3, 0.05),
+        ),
+        _pit(20.0),
+        options,
+        _inputs(car=_car(current_lap=11, lap_distance_m=0.0, actual_tyre_compound="soft")),
+        StrategyConfig(),
+    )
+
+    keys = [item.key for item in results]
+    assert len(keys) == len(set(keys))
+    assert "pit_now:hard:set2" in keys
+    assert "pit_now:hard:set5" in keys
+
+
+def test_life_risk_accounts_for_old_set_until_a_delayed_stop() -> None:
+    results = evaluate_alternatives(
+        _models(
+            _model("soft", 88.0, 0.10, initial_age_laps=10.0, usable_life_laps=12.0),
+            _model("hard", 88.3, 0.05),
+        ),
+        _pit(20.0),
+        _options(_option("hard", useful_life_laps=20.0)),
+        _inputs(car=_car(current_lap=11, lap_distance_m=0.0, actual_tyre_compound="soft")),
+        StrategyConfig(max_pit_in_laps=4),
+    )
+
+    by_key = _by_key(results)
+    assert "tyre_life_exceeded" in by_key["pit_in_3:hard:set0"].notes
+    assert "tyre_life_exceeded" not in by_key["pit_in_2:hard:set0"].notes
+    assert "tyre_life_exceeded" not in by_key["pit_in_1:hard:set0"].notes
 
 
 def test_evaluation_is_deterministic() -> None:

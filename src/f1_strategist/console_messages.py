@@ -64,6 +64,11 @@ _STRATEGY_KEY_LABELS = {
     "traffic_not_priced": "Coste del tráfico no cuantificado",
     "tyre_life_exceeded": "La vida útil de un juego puede ser insuficiente",
     "wet_conditions": "Condiciones de lluvia fuera del modelo",
+    "safety_car_conditions": "Neutralización fuera del modelo",
+    "red_flag_conditions": "Bandera roja fuera del modelo",
+    "unmodeled_condition": "Condición fuera del modelo; recomendación suspendida",
+    "mandatory_stop": "Parada obligatoria; se muestra el plan de referencia",
+    "alternative_quality_insufficient": "Calidad insuficiente en las opciones de parada",
     "wear_slope": "Pendiente de desgaste",
     "pit_loss_s": "Pérdida en boxes",
 }
@@ -170,9 +175,7 @@ def render_strategy_rows(
     recommendation = evaluation.recommendation
     action = recommendation.action
     if action is StrategyAction.NO_CHANGE:
-        explanation = (
-            "Ninguna parada superó el mínimo de ganancia considerando la incertidumbre."
-        )
+        explanation = "Ninguna parada superó el mínimo de ganancia considerando la incertidumbre."
     elif action is StrategyAction.INSUFFICIENT_DATA:
         explanation = (
             "No se puede recomendar con los datos críticos disponibles."
@@ -193,6 +196,10 @@ def render_strategy_rows(
         ("Recomendación", _STRATEGY_ACTION_LABELS[action]),
         ("Explicación", explanation),
         ("Compuesto", recommendation.compound or "—"),
+        (
+            "Juego",
+            "—" if recommendation.set_index is None else str(recommendation.set_index),
+        ),
         (
             "Vuelta de parada",
             (
@@ -228,11 +235,10 @@ def render_strategy_rows(
             ),
         ),
         ("Calidad de datos", _QUALITY_LABELS[evaluation.data_quality]),
+        ("Motivo", _render_strategy_keys(recommendation.notes)),
         (
             "Vueltas restantes",
-            "—"
-            if evaluation.laps_remaining is None
-            else f"{evaluation.laps_remaining:.1f}",
+            "—" if evaluation.laps_remaining is None else f"{evaluation.laps_remaining:.1f}",
         ),
         (
             "Supuestos",

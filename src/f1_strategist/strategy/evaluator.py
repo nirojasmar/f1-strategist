@@ -6,8 +6,8 @@ neumático (S4) y el estado, y devuelve el tiempo restante de cada alternativa
 junto con su ganancia frente a la línea base.
 
 La línea base es continuar con el compuesto montado. Si una regla obliga a
-parar o el neumático no llega al final, la línea base pasa a ser la mejor
-parada evaluada, tal como describe el plan.
+parar o el neumático no llega al final, la referencia es la mejor opción en
+la vuelta ideal del juego o, si no hay ventana, en la última vuelta viable.
 
 El tiempo restante de una alternativa es la suma de sus vueltas proyectadas
 más la pérdida en boxes. La pérdida ya incluye la in-lap y la out-lap, así que
@@ -80,6 +80,7 @@ class _Candidate:
     rejoin_position: int | None = None
     traffic_risk: bool = False
     notes: tuple[str, ...] = ()
+    stop_in: int | None = None
 
 
 def _worst(*qualities: Quality) -> Quality:
@@ -157,19 +158,40 @@ def _copy_model(
     )
 
 
-def _projected_time(model: CompoundModel, start_age: float, laps: float) -> float:
+def _projected_time(
+    model: CompoundModel,
+    start_age: float,
+    laps: float,
+    *,
+    initial_fraction: float = 0.0,
+) -> float:
     """Suma los tiempos proyectados cubriendo exactamente ``laps`` vueltas.
 
-    La última vuelta se pondera por la fracción pendiente, de modo que una
-    alternativa a mitad de vuelta no paga una vuelta completa de más.
+    La fracción de la vuelta actual se proyecta primero a la edad actual; las
+    vueltas completas siguientes avanzan la edad antes de cualquier fracción final.
     """
-    whole = math.floor(laps)
-    total = math.fsum(project_lap_times(model, start_age, whole))
-    fractional = laps - whole
+    initial_fraction = min(max(initial_fraction, 0.0), laps)
+    total = (
+        initial_fraction * project_lap_times(model, start_age, 1)[0]
+        if initial_fraction > 0.0
+        else 0.0
+    )
+    after_initial = laps - initial_fraction
+    whole = math.floor(after_initial)
+    total += math.fsum(project_lap_times(model, start_age + 1.0, whole))
+    fractional = after_initial - whole
     if fractional > 0.0:
-        tail = project_lap_times(model, start_age + whole, 1)[0]
-        total += fractional * tail
+        total += fractional * project_lap_times(model, start_age + whole + 1.0, 1)[0]
     return total
+
+
+def _current_lap_fraction_remaining(inputs: MetricInputs) -> float:
+    car = inputs.car
+    track_length = inputs.state.session.track_length_m
+    if car is None or car.lap_distance_m is None or track_length is None or track_length <= 0:
+        return 0.0
+    fraction = min(max(car.lap_distance_m / track_length, 0.0), 1.0)
+    return 1.0 - fraction
 
 
 def _start_age(model: CompoundModel, option: TyreOption) -> float | None:
@@ -227,13 +249,19 @@ def _stay_out(
     model: CompoundModel,
     start_age: float,
     laps: float,
+    current_fraction: float,
     notes: tuple[str, ...],
 ) -> _Candidate | None:
     """Alternativa de no parar; ``None`` si el neumático no llega al final."""
     life = model.usable_life_laps
     if life is not None and start_age + laps > life:
         return None
-    projected = _projected_time(model, start_age, laps)
+    projected = _projected_time(
+        model,
+        start_age,
+        laps,
+        initial_fraction=current_fraction,
+    )
     return _Candidate(
         key=BASELINE_STAY_OUT,
         action=StrategyAction.NO_CHANGE,
@@ -249,6 +277,8 @@ def _pit(
     option: TyreOption,
     model: CompoundModel,
     *,
+    inputs: MetricInputs,
+    inventory_quality: Quality,
     stop_in: int,
     laps: float,
     stay: CompoundModel | None,
@@ -259,19 +289,27 @@ def _pit(
     rejoin: RejoinEstimate | None,
     traffic_cost_s: float | None,
     notes: tuple[str, ...],
+    option_identity: str,
 ) -> _Candidate | None:
     """Alternativa de parada; ``None`` si no puede proyectarse con rigor."""
     start_age = _start_age(model, option)
     if start_age is None:
         return None
-    new_laps = laps - stop_in
+    before_laps = float(stop_in)
+    current_fraction = _current_lap_fraction_remaining(inputs)
+    new_laps = laps - before_laps
     if new_laps <= 0.0:
         return None
     before = 0.0
     if stop_in > 0:
         if stay is None or stay_age is None:
             return None
-        before = _projected_time(stay, stay_age, float(stop_in))
+        before = _projected_time(
+            stay,
+            stay_age,
+            before_laps,
+            initial_fraction=current_fraction,
+        )
     # El fin de vida del juego seleccionado manda sobre el del compuesto: es la
     # goma que se monta y la que sufre el posible acantilado.
     life = None if option.useful_life_laps is None else start_age + option.useful_life_laps
@@ -281,19 +319,29 @@ def _pit(
         usable_life=life,
         visual_compound=option.visual_compound,
     )
-    after = _projected_time(option_model, start_age, new_laps)
+    after = _projected_time(
+        option_model,
+        start_age,
+        new_laps,
+        initial_fraction=current_fraction,
+    )
     action = StrategyAction.PIT_NOW if stop_in == 0 else StrategyAction.PIT_IN
-    suffix = f":{option.compound}" if option.compound else ""
+    suffix = f":{option.compound}:{option_identity}"
     key = f"pit_now{suffix}" if stop_in == 0 else f"pit_in_{stop_in}{suffix}"
     local = _traffic_notes(rejoin, traffic_cost_s)
-    if option.life_risk:
+    if (option.useful_life_laps is not None and new_laps > option.useful_life_laps) or (
+        stay is not None
+        and stay.usable_life_laps is not None
+        and stay_age is not None
+        and stay_age + stop_in > stay.usable_life_laps
+    ):
         local = (*local, RISK_TYRE_LIFE_EXCEEDED)
     return _Candidate(
         key=key,
         action=action,
         remaining_time_s=before + after + pit_loss_s + (traffic_cost_s or 0.0),
         projected_laps_s=before + after,
-        quality=_worst(quality, model.quality),
+        quality=_worst(quality, model.quality, inventory_quality),
         pit_lap=stop_lap,
         compound=option.compound,
         set_index=option.set_index,
@@ -302,6 +350,7 @@ def _pit(
         rejoin_position=rejoin.position if rejoin is not None else None,
         traffic_risk=bool(rejoin is not None and rejoin.traffic_risk),
         notes=_merge_notes(local, notes),
+        stop_in=stop_in,
     )
 
 
@@ -320,6 +369,8 @@ def evaluate_alternatives(
     inputs: MetricInputs,
     cfg: StrategyConfig,
     perturbation: Perturbation = _NEUTRAL_PERTURBATION,
+    *,
+    baseline_key: str | None = None,
 ) -> tuple[AlternativeResult, ...]:
     """Evalúa las alternativas y las devuelve con la línea base primero.
 
@@ -352,13 +403,16 @@ def evaluate_alternatives(
     pit_loss = (
         None if pit.value_s is None else max(0.0, pit.value_s + perturbation.pit_loss_delta_s)
     )
+    current_fraction = _current_lap_fraction_remaining(inputs)
     if pit_loss is None:
         notes.append(NOTE_PIT_LOSS_UNAVAILABLE)
 
     candidates: list[_Candidate] = []
     if stay is not None and stay_age is not None:
         candidate = (
-            _stay_out(stay, stay_age, laps, tuple(notes)) if options.stay_out_allowed else None
+            _stay_out(stay, stay_age, laps, current_fraction, tuple(notes))
+            if options.stay_out_allowed
+            else None
         )
         if candidate is not None:
             candidates.append(candidate)
@@ -375,7 +429,7 @@ def evaluate_alternatives(
         evaluated = 0
         for stop_in in range(0, _stop_window(inputs, cfg, laps) + 1):
             stop_lap = current_lap + stop_in if current_lap is not None else None
-            for option in options.options:
+            for option_index, option in enumerate(options.options):
                 model = models.get(option.compound)
                 if model is None or not model.available:
                     if option.compound and option.compound not in missing_models:
@@ -384,6 +438,8 @@ def evaluate_alternatives(
                 candidate = _pit(
                     option,
                     _scaled(model, perturbation),
+                    inputs=inputs,
+                    inventory_quality=options.quality,
                     stop_in=stop_in,
                     laps=laps,
                     stay=stay,
@@ -396,6 +452,11 @@ def evaluate_alternatives(
                     # una parada futura sería inventar el estado de la pista.
                     traffic_cost_s=traffic_cost if stop_in == 0 else None,
                     notes=tuple(notes),
+                    option_identity=(
+                        f"set{option.set_index}"
+                        if option.set_index is not None
+                        else f"option{option_index}"
+                    ),
                 )
                 if candidate is not None:
                     candidates.append(candidate)
@@ -406,10 +467,41 @@ def evaluate_alternatives(
     if not candidates:
         return ()
 
-    baseline = next(
-        (item for item in candidates if item.key == BASELINE_STAY_OUT),
-        min(candidates, key=lambda item: (item.remaining_time_s, item.key)),
-    )
+    if baseline_key is not None:
+        baseline = next((item for item in candidates if item.key == baseline_key), None)
+        if baseline is None:
+            return ()
+    else:
+        baseline = next((item for item in candidates if item.key == BASELINE_STAY_OUT), None)
+        if baseline is None:
+            session = inputs.state.session
+            car = inputs.car
+            current_lap = car.current_lap if car is not None else None
+            latest = _stop_window(inputs, cfg, laps)
+            if session.pit_window_ideal_lap is not None and current_lap is not None:
+                target = max(0, min(latest, session.pit_window_ideal_lap - current_lap))
+            elif stay is not None and stay_age is not None and stay.usable_life_laps is not None:
+                safe_laps = stay.usable_life_laps - stay_age
+                target = max(0, min(latest, math.floor(safe_laps)))
+            else:
+                target = latest
+            target_candidates = [item for item in candidates if item.stop_in == target]
+            if not target_candidates:
+                latest_available = max(
+                    (
+                        candidate.stop_in
+                        for candidate in candidates
+                        if candidate.stop_in is not None
+                    ),
+                    default=0,
+                )
+                target_candidates = [
+                    item for item in candidates if item.stop_in == latest_available
+                ]
+            baseline = min(
+                target_candidates or candidates,
+                key=lambda item: (item.remaining_time_s, item.key),
+            )
     ordered = [baseline, *(item for item in candidates if item is not baseline)]
 
     results: list[AlternativeResult] = []

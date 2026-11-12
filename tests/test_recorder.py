@@ -55,6 +55,7 @@ from f1_strategist.store import (
     StoredStrategyEvaluation,
     TyreInventorySnapshot,
 )
+from f1_strategist.strategy.engine import StrategyEngine
 from f1_strategist.strategy.types import (
     STRATEGY_SCHEMA_VERSION,
     StrategyAction,
@@ -512,6 +513,59 @@ def test_record_strategy_persists_each_lap_and_revision_change(tmp_path: Path) -
         assert evaluations[0].projected_lap_times_s == (91.0, 91.2)
         assert session is not None
         assert session.strategy_fingerprint is not None
+
+
+def test_engine_error_recovery_transitions_are_all_recorded(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    actions = iter((StrategyAction.PIT_NOW, RuntimeError("transient"), StrategyAction.NO_CHANGE))
+
+    def evaluate(
+        inputs: Any,
+        _config: StrategyConfig,
+        *,
+        revision: int = 0,
+    ) -> StrategyEvaluation:
+        result = next(actions)
+        if isinstance(result, RuntimeError):
+            raise result
+        evaluation = _strategy_snapshot(
+            inputs.state.current_lap or 1,
+            revision,
+            result,
+        ).evaluation
+        assert evaluation is not None
+        return evaluation
+
+    monkeypatch.setattr("f1_strategist.strategy.engine.evaluate_once", evaluate)
+    with SessionStore.open(tmp_path / "sessions.db") as store:
+        recorder = SessionRecorder(
+            store,
+            RecordingConfig(batch_size=1, flush_interval_s=0.01),
+            strategy_config=StrategyConfig(),
+        )
+        engine = StrategyEngine(StrategyConfig(evaluation_min_interval_s=1.0))
+        state = replace(_snapshot(lap=1), cars=(CarSnapshot(car_index=0),))
+        changed = replace(state, session=replace(state.session, weather="clear"))
+        try:
+            recorder.observe(1.0, 1.0, state, _metrics(), _history())
+            engine.apply(state, None, _history(), None, 1.0)
+            recorder.record_strategy(engine.snapshot())
+            engine.apply(changed, None, _history(), None, 2.0)
+            recorder.record_strategy(engine.snapshot())
+            engine.apply(changed, None, _history(), None, 3.1)
+            recorder.record_strategy(engine.snapshot())
+        finally:
+            recorder.stop()
+
+        evaluations = list(store.iter_strategy_evaluations(_session_id(recorder)))
+        assert [item.action for item in evaluations] == [
+            "PIT_NOW",
+            "INSUFFICIENT_DATA",
+            "NO_CHANGE",
+        ]
+        assert [json.loads(item.evaluation_json)["revision"] for item in evaluations] == [0, 1, 2]
 
 
 def test_record_strategy_drops_without_blocking_when_queue_is_full() -> None:

@@ -25,6 +25,7 @@ _CSV_COLUMNS = (
     "recommended_key",
     "pit_lap",
     "compound",
+    "recommended_set_index",
     "gain_vs_baseline_s",
     "gain_interval_s",
     "confidence",
@@ -50,9 +51,7 @@ def _export_row(item: StoredStrategyEvaluation) -> dict[str, Any]:
         forecast_car_index=item.forecast_car_index,
         forecast_compound=item.forecast_compound,
         projected_lap_times_s=(
-            None
-            if item.projected_lap_times_s is None
-            else list(item.projected_lap_times_s)
+            None if item.projected_lap_times_s is None else list(item.projected_lap_times_s)
         ),
     )
     return payload
@@ -82,15 +81,13 @@ def render_strategy_export(
     writer.writeheader()
     for row in rows:
         recommendation = row["recommendation"]
-        csv_row = {
-            column: row.get(column)
-            for column in _CSV_COLUMNS
-        }
+        csv_row = {column: row.get(column) for column in _CSV_COLUMNS}
         csv_row.update(
             action=recommendation["action"],
             recommended_key=recommendation["key"],
             pit_lap=recommendation["pit_lap"],
             compound=recommendation["compound"],
+            recommended_set_index=recommendation["set_index"],
             gain_vs_baseline_s=recommendation["gain_vs_baseline_s"],
             gain_interval_s=recommendation["gain_interval_s"],
             confidence=recommendation["confidence"],
@@ -100,7 +97,9 @@ def render_strategy_export(
                 column: (
                     json.dumps(csv_row[column], ensure_ascii=False, separators=(",", ":"))
                     if isinstance(csv_row[column], (list, dict))
-                    else "" if csv_row[column] is None else csv_row[column]
+                    else ""
+                    if csv_row[column] is None
+                    else csv_row[column]
                 )
                 for column in _CSV_COLUMNS
             }

@@ -7,6 +7,8 @@ import pytest
 from f1_strategist.config import StrategyConfig
 from f1_strategist.metrics.types import Quality
 from f1_strategist.strategy.decision import (
+    NOTE_ALTERNATIVE_QUALITY,
+    NOTE_MANDATORY_STOP,
     NOTE_NO_ALTERNATIVES,
     NOTE_NO_LAPS_REMAINING,
     NOTE_NOT_A_RACE,
@@ -19,6 +21,9 @@ from f1_strategist.strategy.decision import (
 )
 from f1_strategist.strategy.types import (
     BASELINE_STAY_OUT,
+    RISK_RED_FLAG,
+    RISK_SAFETY_CAR,
+    RISK_WET_CONDITIONS,
     AlternativeResult,
     DataQuality,
     Perturbation,
@@ -43,15 +48,18 @@ def _pit(
     action: StrategyAction = StrategyAction.PIT_NOW,
     pit_lap: int | None = 10,
     compound: str | None = "hard",
+    set_index: int | None = None,
+    quality: Quality = Quality.OK,
 ) -> AlternativeResult:
     return AlternativeResult(
         key=key,
         action=action,
         remaining_time_s=1800.0 - gain,
         gain_vs_baseline_s=gain,
-        quality=Quality.OK,
+        quality=quality,
         pit_lap=pit_lap,
         compound=compound,
+        set_index=set_index,
     )
 
 
@@ -100,6 +108,26 @@ def test_gain_inside_the_noise_makes_no_change() -> None:
     assert decision.gain_vs_baseline_s is None
 
 
+def test_mandatory_stop_is_reported_even_without_robust_gain() -> None:
+    def evaluate(_perturbation: Perturbation) -> tuple[AlternativeResult, ...]:
+        return (
+            _pit(
+                key="pit_in_4:hard:set2",
+                gain=-2.0,
+                action=StrategyAction.PIT_IN,
+                pit_lap=15,
+                set_index=2,
+            ),
+        )
+
+    decision = decide(evaluate, _quality(), StrategyConfig())
+
+    assert decision.action is StrategyAction.PIT_IN
+    assert decision.key == "pit_in_4:hard:set2"
+    assert decision.set_index == 2
+    assert NOTE_MANDATORY_STOP in decision.notes
+
+
 def test_lower_bound_must_exceed_min_gain() -> None:
     def evaluate(perturbation: Perturbation) -> tuple[AlternativeResult, ...]:
         return (_stay_out(), _pit(gain=4.0))
@@ -132,6 +160,49 @@ def test_missing_inputs_yield_insufficient_data(fields: dict[str, object], note:
     assert decision.action is StrategyAction.INSUFFICIENT_DATA
     assert note in decision.notes
     assert decision.confidence == 0.0
+
+
+@pytest.mark.parametrize(
+    "condition",
+    [RISK_WET_CONDITIONS, RISK_SAFETY_CAR, RISK_RED_FLAG],
+)
+def test_unmodeled_conditions_block_stop_recommendations(condition: str) -> None:
+    def evaluate(_perturbation: Perturbation) -> tuple[AlternativeResult, ...]:
+        return (_stay_out(), _pit(gain=20.0))
+
+    decision = decide(
+        evaluate,
+        _quality(unmodeled_conditions=(condition,)),
+        StrategyConfig(),
+    )
+
+    assert decision.action is StrategyAction.INSUFFICIENT_DATA
+    assert condition in decision.notes
+
+
+def test_stale_candidate_is_not_selected_and_mandatory_stale_candidate_is_insufficient() -> None:
+    def with_stay(_perturbation: Perturbation) -> tuple[AlternativeResult, ...]:
+        return (_stay_out(), _pit(gain=20.0, quality=Quality.STALE))
+
+    def mandatory(_perturbation: Perturbation) -> tuple[AlternativeResult, ...]:
+        return (_pit(gain=0.0, quality=Quality.STALE),)
+
+    no_stop = decide(with_stay, _quality(), StrategyConfig())
+    no_data = decide(mandatory, _quality(), StrategyConfig())
+
+    assert no_stop.action is StrategyAction.NO_CHANGE
+    assert no_data.action is StrategyAction.INSUFFICIENT_DATA
+    assert NOTE_ALTERNATIVE_QUALITY in no_data.notes
+
+
+def test_candidate_quality_reduces_confidence() -> None:
+    def evaluate(quality: Quality):
+        return lambda _perturbation: (_stay_out(), _pit(gain=8.0, quality=quality))
+
+    strong = decide(evaluate(Quality.OK), _quality(), StrategyConfig())
+    weak = decide(evaluate(Quality.LOW), _quality(), StrategyConfig())
+
+    assert weak.confidence < strong.confidence
 
 
 def test_without_alternatives_the_decision_is_insufficient() -> None:

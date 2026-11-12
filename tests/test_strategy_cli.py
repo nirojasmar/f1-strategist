@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import csv
+import io
 import json
+from dataclasses import replace
 from pathlib import Path
 
 from f1_strategist.cli import main
 from f1_strategist.metrics.history import LapRecord
 from f1_strategist.metrics.types import Quality
 from f1_strategist.store import SessionInfo, SessionStore, StoredStrategyEvaluation
+from f1_strategist.strategy.export import render_strategy_export
 from f1_strategist.strategy.types import (
     STRATEGY_SCHEMA_VERSION,
     StrategyAction,
@@ -178,3 +181,24 @@ def test_strategy_commands_explain_missing_session_and_empty_evaluations(
 
     assert main(["strategy", "show", "--session", "99", "--db", str(db)]) == 2
     assert "No existe la sesión 99" in capsys.readouterr().err
+
+
+def test_strategy_export_keeps_the_recommended_set_identity() -> None:
+    evaluation = _evaluation()
+    evaluation = replace(
+        evaluation,
+        recommendation=replace(
+            evaluation.recommendation,
+            action=StrategyAction.PIT_NOW,
+            key="pit_now:hard:set2",
+            compound="hard",
+            set_index=2,
+        ),
+    )
+    stored = _stored_evaluation(evaluation)
+
+    exported_json = json.loads(render_strategy_export(1, [stored], "json"))
+    exported_csv = next(csv.DictReader(io.StringIO(render_strategy_export(1, [stored], "csv"))))
+
+    assert exported_json["evaluations"][0]["recommendation"]["set_index"] == 2
+    assert exported_csv["recommended_set_index"] == "2"

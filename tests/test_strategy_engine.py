@@ -6,15 +6,29 @@ from dataclasses import replace
 import pytest
 
 from f1_strategist.config import MetricsConfig, StrategyConfig, StrategyTrackOverride
-from f1_strategist.metrics.history import LapHistorySnapshot, MetricInputs
+from f1_strategist.metrics.history import LapHistorySnapshot, LapRecord, MetricInputs
 from f1_strategist.metrics.types import Quality
-from f1_strategist.race_state import RaceState, RaceStateSnapshot
-from f1_strategist.strategy.engine import StrategyEngine, _projected_lap_forecast
+from f1_strategist.race_state import (
+    PacketFreshness,
+    RaceEvent,
+    RaceState,
+    RaceStateSnapshot,
+    TyreSetSnapshot,
+)
+from f1_strategist.strategy.engine import (
+    StrategyEngine,
+    _projected_lap_forecast,
+    _risks,
+    _unmodeled_conditions,
+)
 from f1_strategist.strategy.pace_model import CompoundModel, CompoundModels
 from f1_strategist.strategy.types import (
+    RISK_TYRE_LIFE_EXCEEDED,
     STRATEGY_SCHEMA_VERSION,
+    AlternativeResult,
     DataQuality,
     StrategyAction,
+    StrategyDecision,
     StrategyEvaluation,
     StrategyRecommendation,
 )
@@ -232,3 +246,200 @@ def test_engine_logs_failure_and_publishes_insufficient_data(
     assert snapshot.evaluation.recommendation.action is StrategyAction.INSUFFICIENT_DATA
     assert snapshot.error == "RuntimeError: model failed"
     assert "Strategy evaluation failed" in caplog.text
+
+
+def test_unmodeled_rain_neutralization_and_red_flag_are_detected() -> None:
+    snapshot = RaceState().snapshot()
+    inputs = MetricInputs(snapshot, LapHistorySnapshot(), MetricsConfig(), 1.0, -1)
+    options = TyreOptions(wet_conditions=True)
+
+    rainy = _unmodeled_conditions(inputs, options)
+    neutralized = _unmodeled_conditions(
+        replace(
+            inputs,
+            state=replace(
+                snapshot, session=replace(snapshot.session, safety_car_status="virtual_safety_car")
+            ),
+        ),
+        TyreOptions(),
+    )
+    red_flag = _unmodeled_conditions(
+        replace(
+            inputs,
+            state=replace(
+                snapshot, session=replace(snapshot.session, safety_car_status="red_flag")
+            ),
+        ),
+        TyreOptions(),
+    )
+
+    assert rainy == ("wet_conditions",)
+    assert neutralized == ("safety_car_conditions",)
+    assert red_flag == ("red_flag_conditions",)
+
+
+def test_red_flag_event_blocks_until_a_normal_post_restart_lap_is_closed() -> None:
+    snapshot = _state(2)
+    event = RaceEvent("red_flag", 5.0, session_uid=123)
+    state = replace(snapshot, events=(event,))
+    options = TyreOptions()
+
+    during = MetricInputs(state, LapHistorySnapshot(), MetricsConfig(), 6.0, 0)
+    restart_lap = MetricInputs(
+        state,
+        LapHistorySnapshot(
+            records={
+                0: (
+                    LapRecord(
+                        car_index=0,
+                        lap_number=2,
+                        ended_at_monotonic=6.0,
+                        track_status_seen=frozenset({"red_flag"}),
+                    ),
+                )
+            }
+        ),
+        MetricsConfig(),
+        6.0,
+        0,
+    )
+    recovered = MetricInputs(
+        state,
+        LapHistorySnapshot(
+            records={
+                0: (
+                    LapRecord(
+                        car_index=0,
+                        lap_number=3,
+                        ended_at_monotonic=7.0,
+                    ),
+                )
+            }
+        ),
+        MetricsConfig(),
+        7.0,
+        0,
+    )
+
+    assert "red_flag_conditions" in _unmodeled_conditions(during, options)
+    assert "red_flag_conditions" in _unmodeled_conditions(restart_lap, options)
+    assert "red_flag_conditions" not in _unmodeled_conditions(recovered, options)
+
+
+def test_evaluation_risks_only_include_the_selected_alternatives_risks() -> None:
+    safe = AlternativeResult(
+        key="stay_out",
+        action=StrategyAction.NO_CHANGE,
+        remaining_time_s=100.0,
+        projected_laps_s=100.0,
+        quality=Quality.OK,
+        gain_vs_baseline_s=0.0,
+    )
+    risky = AlternativeResult(
+        key="pit_now:hard:set2",
+        action=StrategyAction.PIT_NOW,
+        remaining_time_s=99.0,
+        projected_laps_s=79.0,
+        quality=Quality.OK,
+        gain_vs_baseline_s=1.0,
+        notes=(RISK_TYRE_LIFE_EXCEEDED,),
+    )
+
+    assert RISK_TYRE_LIFE_EXCEEDED not in _risks(
+        (safe, risky),
+        StrategyDecision(action=StrategyAction.NO_CHANGE, key="stay_out"),
+        (),
+    )
+    assert RISK_TYRE_LIFE_EXCEEDED in _risks(
+        (safe, risky),
+        StrategyDecision(action=StrategyAction.PIT_NOW, key="pit_now:hard:set2"),
+        (),
+    )
+
+
+def test_engine_rechecks_changed_inputs_and_freshness_transitions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[int] = []
+
+    def evaluate(
+        inputs: MetricInputs,
+        _config: StrategyConfig,
+        *,
+        revision: int = 0,
+    ) -> StrategyEvaluation:
+        calls.append(len(inputs.history.records_for(0)))
+        return _evaluation(revision, inputs.state.current_lap or 1, StrategyAction.NO_CHANGE)
+
+    monkeypatch.setattr("f1_strategist.strategy.engine.evaluate_once", evaluate)
+    base = _state(1)
+    car = replace(base.cars[0], current_lap=1, lap_distance_m=0.0)
+    freshness = PacketFreshness("lap_data", 0.0, 3.0)
+    state = replace(
+        base,
+        player_car_index=0,
+        cars=(car, *base.cars[1:]),
+        freshness=(freshness,),
+    )
+    initial_history = LapHistorySnapshot()
+    updated_history = LapHistorySnapshot(
+        records={0: (LapRecord(car_index=0, lap_number=1, compound="soft"),)}
+    )
+    inventory = TyreSetSnapshot(
+        index=2,
+        actual_tyre_compound="hard",
+        visual_tyre_compound="hard",
+        wear_pct=0.0,
+        available=True,
+        recommended_session="race",
+        lifespan_laps=30,
+        usable_life_laps=25,
+        lap_delta_time_ms=0,
+        fitted=False,
+    )
+    engine = StrategyEngine(StrategyConfig(evaluation_min_interval_s=1.0))
+
+    engine.apply(state, None, initial_history, None, 1.0)
+    engine.apply(state, None, updated_history, None, 1.5)
+    engine.apply(state, None, updated_history, None, 2.0)
+    engine.apply(state, None, updated_history, None, 10.0)
+    engine.apply(replace(state, tyre_inventory=(inventory,)), None, updated_history, None, 11.0)
+
+    assert calls == [0, 1, 1, 1]
+
+
+def test_engine_retries_failure_and_revisions_both_error_transitions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    actions = iter((StrategyAction.PIT_NOW, RuntimeError("transient"), StrategyAction.NO_CHANGE))
+
+    def evaluate(
+        inputs: MetricInputs,
+        _config: StrategyConfig,
+        *,
+        revision: int = 0,
+    ) -> StrategyEvaluation:
+        result = next(actions)
+        if isinstance(result, RuntimeError):
+            raise result
+        return _evaluation(revision, inputs.state.current_lap or 1, result)
+
+    monkeypatch.setattr("f1_strategist.strategy.engine.evaluate_once", evaluate)
+    engine = StrategyEngine(StrategyConfig(evaluation_min_interval_s=1.0))
+    state = _state(1)
+    changed = replace(state, session=replace(state.session, weather="clear"))
+
+    engine.apply(state, None, LapHistorySnapshot(), None, 1.0)
+    first = engine.snapshot().evaluation
+    engine.apply(changed, None, LapHistorySnapshot(), None, 2.0)
+    failed = engine.snapshot().evaluation
+    engine.apply(changed, None, LapHistorySnapshot(), None, 2.5)
+    assert engine.snapshot().error is not None
+    engine.apply(changed, None, LapHistorySnapshot(), None, 3.1)
+    recovered = engine.snapshot().evaluation
+
+    assert first is not None and first.revision == 0
+    assert failed is not None and failed.revision == 1
+    assert recovered is not None and recovered.revision == 2
+    assert recovered.recommendation.action is StrategyAction.NO_CHANGE
+    assert engine.snapshot().error is None

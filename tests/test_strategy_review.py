@@ -77,3 +77,48 @@ def test_review_counts_legacy_evaluations_without_forecasts_as_unused() -> None:
     assert result.evaluations_total == 1
     assert result.evaluations_used == 0
     assert result.horizons == ()
+
+
+def test_review_skips_an_invalid_lap_and_continues_until_a_stint_change() -> None:
+    invalid = LapRecord(
+        car_index=0,
+        lap_number=2,
+        lap_time_s=91.0,
+        valid=False,
+        compound="soft",
+        closed=True,
+    )
+    result = review_strategy_evaluations(
+        (_evaluation(1, 1, (90.0, 90.0, 90.0)),),
+        (invalid, _lap(3, 92.0), _lap(4, 93.0)),
+    )
+
+    assert result.evaluations_used == 1
+    assert [(item.horizon_laps, item.samples) for item in result.horizons] == [(2, 1), (3, 1)]
+    assert [item.mean_absolute_error_s for item in result.horizons] == [2.0, 3.0]
+
+
+def test_review_stops_at_a_compound_change_but_not_at_an_invalid_lap() -> None:
+    changed = LapRecord(
+        car_index=0,
+        lap_number=3,
+        lap_time_s=92.0,
+        valid=True,
+        compound="hard",
+        closed=True,
+    )
+    result = review_strategy_evaluations(
+        (_evaluation(1, 1, (90.0, 90.0, 90.0)),),
+        (_lap(2, 91.0), changed, _lap(4, 93.0)),
+    )
+
+    assert [(item.horizon_laps, item.samples) for item in result.horizons] == [(1, 1)]
+
+
+def test_review_skips_a_missing_lap_when_later_laps_remain_comparable() -> None:
+    result = review_strategy_evaluations(
+        (_evaluation(1, 1, (90.0, 90.0, 90.0)),),
+        (_lap(3, 92.0), _lap(4, 93.0)),
+    )
+
+    assert [(item.horizon_laps, item.samples) for item in result.horizons] == [(2, 1), (3, 1)]
