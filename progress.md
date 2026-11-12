@@ -1,6 +1,6 @@
 # Progreso del proyecto --- F1 Strategist
 
-**Última actualización:** 2026-11-09
+**Última actualización:** 2026-11-11
 **Propósito de este archivo:** llevar trazabilidad del avance importante y dejar el contexto
 necesario para que cualquier persona o agente que llegue al proyecto entienda dónde estamos, qué
 está decidido, qué está verificado y qué falta.
@@ -66,7 +66,8 @@ Documentos de diseño:
 | 2. Métricas e histórico | Implementada; validación parcial | A1--A4, B1--B3, C1--C4/C2b, D1--D9, E1--E4 y F2--F4 implementados. F3 y la documentación se actualizaron según O5; la semántica/tolerancia del MFD sigue abierta aunque la validación local actual pasa. |
 | 3. Grabación y replay | Implementada; validación local completa | G1--G8 implementados sobre SQLite versionado (actualmente v5 tras las migraciones de Fase 3.5), `play`/`replay`, datasets, huella y `verify`, grabador en vivo e `ingest`, inspección con `sessions`, pruebas E2E y benchmarks. Documentación en `docs/almacenamiento_sqlite.md`. Queda repetir CI en Linux y macOS. |
 | 3.5. Perfil del fin de semana | Implementada; validación local Windows | P1--P8 implementadas. Esquema SQLite v5, enlace de sesiones, resúmenes de tandas, inventario, perfil versionado y métricas `profile.*`; la prueba integrada cubre práctica, clasificación, carrera y reingesta con huella estable. Validación Linux por CI pendiente. |
-| 4--10 | No iniciadas | |
+| 4. Motor de estrategia | En curso; ola 0 cerrada | Rama `f4-wave-0-baseline`: H1, H2, S1--S4 y los 13 fixes de `review_fase_4_ola_0.md`, más el esqueleto del motor y los tipos del contrato. Siguiente: S5 (evaluador de alternativas). |
+| 5--10 | No iniciadas | |
 
 ## 5. Qué está verificado y qué no
 
@@ -214,6 +215,15 @@ Documentos de diseño:
 -   Validación Windows de la Fase 3.5: `uv run pytest -q` (662 aprobadas, 4 benchmarks excluidos),
     Ruff (lint y formato, 105 archivos), Pyright (0 errores) y `git diff --check` pasan, con rondas
     intermedias de 625 pruebas en P5, 646 en P6 y 659 en P7.
+-   Fase 4, ola 0 (H1, H2 y S1--S4): los tipos del contrato (`strategy/types.py`) son inmutables y se
+    serializan de forma canónica; `StrategyConfig` valida la sección `[strategy]` del TOML y existe el
+    stub `strategy_snapshot()` en `CaptureSession` y `PlaybackSession`. Los modelos de ritmo, pérdida en
+    boxes y neumáticos son puros, no inventan valores sin datos y declaran sus notas y calidades. Los 13
+    hallazgos de `review_fase_4_ola_0.md` están corregidos con pruebas de regresión (detalle en la
+    bitácora del 2026-11-11).
+-   Validación Windows de la ola 0: `uv run pytest -q` (790 aprobadas, 4 benchmarks excluidos), Ruff
+    (lint y formato, 116 archivos) y Pyright (0 errores) pasan. La suite partió de 768 pruebas antes de
+    los fixes de la revisión.
 
 **No verificado todavía:**
 
@@ -225,6 +235,9 @@ Documentos de diseño:
 -   La Fase 3.5 solo está validada en Windows: CI en Linux y macOS queda pendiente (Docker no tiene
     daemon disponible y WSL solo muestra la distribución interna `docker-desktop`). El perfil del fin de
     semana tampoco se ha probado todavía contra capturas reales de un fin de semana completo.
+-   La Fase 4 solo se ha validado con escenarios sintéticos: los modelos de ritmo, desgaste, pérdida en
+    boxes y reglas de neumáticos aún no se han contrastado contra una captura real con paradas
+    estratégicas. La decisión final (S6--S10) tampoco existe todavía.
 -   Queda volver a ejecutar CI de GitHub Actions después de la Ola 5.
 
 ## 6. Bitácora
@@ -573,6 +586,73 @@ Detalle de las tareas P1--P8 de la Fase 3.5, en el orden en que se cerraron. La 
         formato, 105 archivos), Pyright (0 errores) y `git diff --check` pasan. Linux queda pendiente:
         Docker no tiene daemon disponible y WSL solo muestra la distribución interna `docker-desktop`.
 
+### 2026-11-11
+
+Ola 0 de la Fase 4 (motor de estrategia), cerrada en la rama `f4-wave-0-baseline` con siete commits:
+H1 (`6aceba9`), H2 (`c396cd7`), S1 (`b86cbca`), S2 (`7c49356`), S3 (`b2c9ed0`), S4 (`a473d4d`) y los
+fixes de la revisión (`0b3bd76`).
+
+-   **H1 --- Reconciliar compuesto por vuelta y límites de tanda** (`6aceba9`). Cada vuelta se asigna a
+    su tanda por el compuesto y la edad **observados al cerrar la vuelta**; los límites declarados de
+    `SessionHistory` quedan como respaldo cuando falta el dato observado. Se documentó la causa del
+    desfase de una vuelta observado en el informe de Suzuka (práctica y carrera). Toca
+    `metrics/history_ingest.py` y `metrics/stint_summary.py`, con pruebas del desfase sintético,
+    tandas sin cambio de compuesto, dos paradas y `SessionHistory` tardío.
+-   **H2 --- Primera vuelta rápida tras boxes y `first_lap`** (`c396cd7`). El cruce de la línea de meta
+    al salir de boxes (caída de distancia desde ~la longitud del circuito hasta casi cero con reinicio
+    del tiempo de vuelta) ya no se clasifica como *flashback*: la vuelta rápida de 96,099 s conserva su
+    tiempo oficial y sigue marcada como salida de boxes. El tramo de salida se separa del cronometrado y
+    `first_lap` se limita al inicio de una carrera. Toca `metrics/comparability.py` y
+    `metrics/lap_tracker.py`.
+-   **S1 --- Tipos, configuración y esqueleto del motor** (`b86cbca`). Nuevo `strategy/types.py` con el
+    contrato inmutable de acciones, alternativas, evaluación y snapshot, serialización JSON canónica
+    (`schema_version`, `inputs_hash` estable) y constantes de supuestos y riesgos. `StrategyConfig` en
+    `config.py` con validación, anulaciones por circuito y sección `[strategy]` del TOML de ejemplo;
+    stub `strategy_snapshot()` en `SessionPort`, `CaptureSession` y `PlaybackSession`; grupo
+    `f1-strategist strategy` en la CLI. Decisión D3: `RecordingConfig.enabled` pasa a `True` por
+    defecto y las pruebas que no quieren escribir en disco lo desactivan explícitamente.
+-   **S2 --- Modelo de ritmo y desgaste por compuesto** (`7c49356`). `strategy/pace_model.py` con
+    `build_compound_models` y `project_lap_times`: regresión sobre vueltas limpias del stint actual,
+    mezcla con el prior del fin de semana por número de muestras, compuestos no probados por delta de
+    ritmo del perfil o del juego y juego usado por desgaste inicial. Cada modelo publica `source`,
+    muestras, calidad y notas; sin datos no hay modelo.
+-   **S3 --- Pérdida en boxes y reincorporación** (`b2c9ed0`). `strategy/pit_model.py` con
+    `estimate_pit_loss` (orden de fuentes: anulación de configuración, mediana del campo, prior del fin
+    de semana y carril de boxes; sin fuente queda `none`, nunca 0) y `estimate_rejoin` (posición,
+    coches cercanos, `traffic_risk` y contraste con `pit_rejoin_position` del juego), con dispersión
+    robusta y banda. Declara explícitamente el supuesto de que los rivales no paran.
+-   **S4 --- Inventario y reglas de neumáticos** (`a473d4d`). `strategy/tyre_options.py` con
+    `tyre_options`: juegos elegibles por compuesto y vida útil, compuestos secos ya usados, obligación
+    por la regla de dos compuestos (o pendiente si no puede evaluarse) y aviso de lluvia. Sin inventario
+    devuelve «sin opciones» con nota explícita; intermedios y mojado quedan fuera de alcance.
+-   **Fixes de `review_fase_4_ola_0.md`** (`0b3bd76`), 13 hallazgos sin cambios de contrato:
+    -   H01/H06 (`tyre_options`): solo se ofrecen juegos con disponibilidad confirmada (`is True`); un
+        `None` produce la nota `inventory_availability_unknown` y, si no queda nada, calidad
+        insuficiente. El horizonte del pronóstico se deriva de las vueltas de la ventana de parada y el
+        ritmo del jugador (respaldo de 30 min con `forecast_horizon_assumed`; ritmo sin filtrar con
+        `forecast_lap_time_approximate`).
+    -   H02/H10/H13 (`types`): `set_index` es índice cero-based; el hash de entradas admite cualquier
+        `Mapping` (incluidos los `MappingProxyType` del histórico) y no depende del orden; supuestos,
+        riesgos y sensibilidades se canonizan como conjuntos, las alternativas se ordenan por clave con
+        validación de duplicados y los tipos serializables ganan `from_dict`/`from_json`.
+    -   H03/H04 (`pace_model`): un compuesto sin vueltas de carrera se ancla siempre al ritmo de carrera
+        ancla más el delta (nunca al ritmo absoluto de práctica) y el desgaste se mezcla con el prior
+        (`wear_blended_with_prior`); un modelo solo-prior queda no proyectable en lugar de inventar
+        pendiente.
+    -   H05/H12 (`pit_model`): `did_not_finish`, `disqualified` y `not_classified` excluyen del cálculo
+        de reincorporación; las muestras negativas de pérdida se descartan con nota
+        (`negative_pit_loss_samples_discarded`) y el estimador cae a perfil o carril en lugar de fallar.
+    -   H07/H08/H11 (`lap_tracker`): el cruce de meta exige salida de boxes (sin ella el retroceso es
+        *flashback*, que ya no se descarta); la evidencia de la vuelta de salida se conserva en el
+        registro único por vuelta; `first_lap` cubre `race`, `race_2` y `race_3`, con reconciliación si
+        el tipo de sesión llega tarde.
+    -   H09 (`stint_summary`): sin tandas declaradas se resumen las observaciones (calidad `low`) y una
+        edad de neumático repetida ya no fragmenta la tanda; solo un descenso real de edad abre una
+        nueva.
+-   Validación local Windows del cierre: `uv run pytest -q` (790 aprobadas, 4 benchmarks excluidos),
+    Ruff (lint y formato, 116 archivos) y Pyright (0 errores) pasan. La suite partió de 768 pruebas
+    antes de los fixes (+22 nuevas). `git diff --check` limpio. CI remota no se ejecutó.
+
 ## 7. Hallazgos de la primera captura real
 
 Captura: 68 541 paquetes, ~66 MB, 795,5 s entre el primer y el último paquete. Salida de `inspect`:
@@ -694,6 +774,7 @@ src/f1_strategist/
   console_messages.py  Renderizado en español de los diagnósticos
   cli.py          Comandos run, play, replay, inspect, trim, metrics, verify, datasets, ingest, sessions,
                   weekends y weekend
+  strategy/       Tipos del contrato, modelo de ritmo y desgaste, pérdida en boxes y reglas de neumáticos
   metrics/        Tipos, configuración, histórico, resúmenes de tanda, módulos, motor y exportación
   store/          SQLite versionado, consultas de sesiones y exportación fiel a metrics
 tests/            Pruebas unitarias, de integración y de extremo a extremo
@@ -737,7 +818,8 @@ La Fase 3 está implementada y documentada. El criterio de salida se verificó l
 repetir CI en Linux y macOS. La Fase 2 mantiene abierta la semántica del indicador de combustible del MFD
 y el fixture de Monza acredita solo los escenarios observados localmente. El siguiente trabajo es:
 
-1.  **Fase 4:** motor de estrategia mínimo, empezando por la decisión de mantener el plan o parar.
+1.  **Fase 4:** ola 0 cerrada (tipos, ritmo, boxes y neumáticos). Siguiente: S5 (evaluador de
+    alternativas), S6 (sensibilidad y decisión) y S7--S11 (motor, SQLite v6, consola y validación).
 2.  **CI:** volver a ejecutar GitHub Actions después de la Ola 2.
 3.  **Calibración diferida:** ajustar los parámetros que hoy no tienen valor universal y ampliar la
     validación a capturas con lluvia, safety car y otras condiciones.
