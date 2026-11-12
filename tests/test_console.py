@@ -4,6 +4,7 @@ from dataclasses import replace
 from io import StringIO
 from pathlib import Path
 
+import pytest
 from rich.console import Console
 
 import f1_strategist.console as console_module
@@ -373,6 +374,27 @@ def test_metrics_update_error_renders_in_spanish() -> None:
 
     assert "métricas" in rendered
     assert "boom" in rendered
+
+
+@pytest.mark.parametrize(
+    ("key", "label"),
+    [
+        ("pace_quality_insufficient", "modelo de ritmo"),
+        ("pit_loss_unavailable", "Pérdida en boxes"),
+        ("data_stale", "Datos obsoletos"),
+    ],
+)
+def test_strategy_reason_keys_render_in_spanish(key: str, label: str) -> None:
+    from f1_strategist.console_messages import _render_strategy_keys
+
+    assert label in _render_strategy_keys((key,))
+
+
+def test_strategy_engine_error_renders_its_cause_in_spanish() -> None:
+    rendered = render_diagnostic(message("strategy_engine_error", error="ValueError: boom"))
+
+    assert "estrategia" in rendered
+    assert "ValueError: boom" in rendered
 
 
 def test_metrics_panel_marks_live_rows_stale_when_lap_data_ages(monkeypatch) -> None:

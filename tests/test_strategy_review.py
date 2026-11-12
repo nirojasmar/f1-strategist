@@ -35,6 +35,7 @@ def _lap(
     time_s: float,
     *,
     pit_entry: bool = False,
+    tyre_age_start: int | None = None,
 ) -> LapRecord:
     return LapRecord(
         car_index=0,
@@ -42,6 +43,7 @@ def _lap(
         lap_time_s=time_s,
         valid=True,
         compound="soft",
+        tyre_age_start=tyre_age_start,
         pit_entry=pit_entry,
         closed=True,
     )
@@ -122,3 +124,12 @@ def test_review_skips_a_missing_lap_when_later_laps_remain_comparable() -> None:
     )
 
     assert [(item.horizon_laps, item.samples) for item in result.horizons] == [(2, 1), (3, 1)]
+
+
+def test_review_stops_before_same_compound_new_tyre_set() -> None:
+    result = review_strategy_evaluations(
+        (_evaluation(1, 1, (90.0, 90.0, 90.0)),),
+        (_lap(2, 91.0), _lap(3, 92.0, tyre_age_start=0), _lap(4, 93.0)),
+    )
+
+    assert [(item.horizon_laps, item.samples) for item in result.horizons] == [(1, 1)]

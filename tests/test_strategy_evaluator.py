@@ -16,6 +16,7 @@ from f1_strategist.strategy.evaluator import (
     NOTE_PERTURBATION,
     NOTE_PIT_LOSS_UNAVAILABLE,
     NOTE_STAY_OUT_NOT_VIABLE,
+    NOTE_STAY_OUT_UNAVAILABLE,
     NOTE_TRAFFIC_COST,
     evaluate_alternatives,
 )
@@ -443,6 +444,36 @@ def test_same_compound_sets_have_distinct_alternative_keys() -> None:
     assert len(keys) == len(set(keys))
     assert "pit_now:hard:set2" in keys
     assert "pit_now:hard:set5" in keys
+
+
+def test_delayed_stop_quality_includes_mounted_model_but_immediate_stop_does_not() -> None:
+    results = evaluate_alternatives(
+        _models(
+            _model("soft", 88.0, 0.10, initial_age_laps=10.0, quality=Quality.STALE),
+            _model("hard", 88.3, 0.05),
+        ),
+        _pit(20.0),
+        _options(_option("hard")),
+        _inputs(car=_car(current_lap=11, lap_distance_m=0.0, actual_tyre_compound="soft")),
+        StrategyConfig(max_pit_in_laps=1),
+    )
+    by_key = _by_key(results)
+
+    assert by_key["pit_now:hard:set0"].quality is Quality.OK
+    assert by_key["pit_in_1:hard:set0"].quality is Quality.STALE
+
+
+def test_missing_mounted_model_marks_allowed_stay_out_as_unavailable() -> None:
+    results = evaluate_alternatives(
+        _models(_model("hard", 88.3, 0.05)),
+        _pit(20.0),
+        _options(_option("hard")),
+        _inputs(car=_car(current_lap=11, lap_distance_m=0.0, actual_tyre_compound="soft")),
+        StrategyConfig(max_pit_in_laps=1),
+    )
+
+    assert results
+    assert all(NOTE_STAY_OUT_UNAVAILABLE in item.notes for item in results)
 
 
 def test_life_risk_accounts_for_old_set_until_a_delayed_stop() -> None:

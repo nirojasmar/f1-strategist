@@ -43,7 +43,7 @@ from .store import (
 )
 from .store.sqlite_store import InventoryKind, SessionSource
 from .strategy.engine import StrategyEngine
-from .strategy.types import StrategySnapshot
+from .strategy.types import StrategyRecommendation, StrategySnapshot
 from .weekend_profile import WeekendProfile
 from .weekend_provider import profiles_for_capture
 
@@ -228,6 +228,9 @@ class SessionRecorder:
         self._strategy_seq = 0
         self._last_strategy_lap: int | None = None
         self._last_strategy_revision: int | None = None
+        self._last_strategy_inputs_hash: str | None = None
+        self._last_strategy_forecast: tuple[float, ...] | None = None
+        self._last_strategy_recommendation: StrategyRecommendation | None = None
 
         self._thread = threading.Thread(target=self._run, name="session-recorder", daemon=True)
         self._thread.start()
@@ -380,7 +383,7 @@ class SessionRecorder:
             self._profiles[session_uid] = (profile_json, profile_hash)
 
     def record_strategy(self, snapshot: StrategySnapshot) -> None:
-        """Encola una evaluación por vuelta y por cambio de revisión."""
+        """Encola evaluaciones cuando cambia la entrada, el pronóstico o la recomendación."""
         try:
             evaluation = snapshot.evaluation
             if evaluation is None:
@@ -397,6 +400,9 @@ class SessionRecorder:
                 if (
                     evaluation.lap == self._last_strategy_lap
                     and evaluation.revision == self._last_strategy_revision
+                    and evaluation.inputs_hash == self._last_strategy_inputs_hash
+                    and evaluation.projected_lap_times_s == self._last_strategy_forecast
+                    and evaluation.recommendation == self._last_strategy_recommendation
                 ):
                     return
                 seq = self._strategy_seq + 1
@@ -440,6 +446,9 @@ class SessionRecorder:
                 self._strategy_seq = seq
                 self._last_strategy_lap = evaluation.lap
                 self._last_strategy_revision = evaluation.revision
+                self._last_strategy_inputs_hash = evaluation.inputs_hash
+                self._last_strategy_forecast = evaluation.projected_lap_times_s
+                self._last_strategy_recommendation = evaluation.recommendation
         except Exception as exc:  # noqa: BLE001 - el grabador nunca detiene la captura
             self._remember_error(exc)
 
@@ -637,6 +646,9 @@ class SessionRecorder:
         self._strategy_seq = 0
         self._last_strategy_lap = None
         self._last_strategy_revision = None
+        self._last_strategy_inputs_hash = None
+        self._last_strategy_forecast = None
+        self._last_strategy_recommendation = None
 
     def _build_session_close(
         self,

@@ -46,6 +46,7 @@ NOTE_BASELINE = "baseline_alternative"
 NOTE_NO_MODEL = "alternative_without_compound_model"
 NOTE_PIT_LOSS_UNAVAILABLE = "alternative_without_pit_loss"
 NOTE_STAY_OUT_NOT_VIABLE = "stay_out_not_viable"
+NOTE_STAY_OUT_UNAVAILABLE = "stay_out_unavailable"
 NOTE_TRAFFIC_COST = "traffic_cost_applied"
 NOTE_PERTURBATION = "perturbation_applied"
 
@@ -341,7 +342,12 @@ def _pit(
         action=action,
         remaining_time_s=before + after + pit_loss_s + (traffic_cost_s or 0.0),
         projected_laps_s=before + after,
-        quality=_worst(quality, model.quality, inventory_quality),
+        quality=_worst(
+            quality,
+            model.quality,
+            inventory_quality,
+            *((stay.quality,) if stop_in > 0 and stay is not None else ()),
+        ),
         pit_lap=stop_lap,
         compound=option.compound,
         set_index=option.set_index,
@@ -408,16 +414,20 @@ def evaluate_alternatives(
         notes.append(NOTE_PIT_LOSS_UNAVAILABLE)
 
     candidates: list[_Candidate] = []
-    if stay is not None and stay_age is not None:
+    if options.stay_out_allowed:
         candidate = (
             _stay_out(stay, stay_age, laps, current_fraction, tuple(notes))
-            if options.stay_out_allowed
+            if stay is not None and stay_age is not None
             else None
         )
         if candidate is not None:
             candidates.append(candidate)
         else:
-            notes.append(NOTE_STAY_OUT_NOT_VIABLE)
+            notes.append(NOTE_STAY_OUT_UNAVAILABLE)
+            if stay is not None and stay_age is not None:
+                notes.append(NOTE_STAY_OUT_NOT_VIABLE)
+    else:
+        notes.append(NOTE_STAY_OUT_NOT_VIABLE)
 
     if pit_loss is not None:
         rejoin = estimate_rejoin(inputs, pit_loss, cfg)
@@ -541,6 +551,7 @@ __all__ = [
     "NOTE_PERTURBATION",
     "NOTE_PIT_LOSS_UNAVAILABLE",
     "NOTE_STAY_OUT_NOT_VIABLE",
+    "NOTE_STAY_OUT_UNAVAILABLE",
     "NOTE_TRAFFIC_COST",
     "evaluate_alternatives",
 ]

@@ -358,11 +358,12 @@ def _quality(
 def tyre_options(inputs: MetricInputs, cfg: StrategyConfig) -> TyreOptions:
     """Acota qué paradas son posibles y válidas en la vuelta actual.
 
-    En una carrera normal sin lluvia se exigen dos compuestos secos distintos,
-    uno medio o duro. En fines de semana Sprint se identifica el Sprint por el
-    calendario que incluye una sesión de Sprint Shootout; la carrera principal
-    sigue sujeta a la regla. Las condiciones de lluvia se declaran pero no se
-    modelan (fuera de alcance).
+    En una carrera normal se exigen dos compuestos secos distintos, uno medio
+    o duro, hasta que se haya usado un compuesto intermedio o de lluvia.
+    En fines de semana Sprint se identifica el Sprint por el calendario que
+    incluye una sesión de Sprint Shootout; la carrera principal sigue sujeta a
+    la regla. El clima actual y pronosticado se declara como aviso, pero no
+    modifica la regla ni se modela (fuera de alcance).
     """
     session = inputs.state.session
     current = _current_compound(inputs)
@@ -387,7 +388,7 @@ def tyre_options(inputs: MetricInputs, cfg: StrategyConfig) -> TyreOptions:
         "race_3",
     }
     rule_enabled = cfg.require_two_dry_compounds and race_session and sprint is False
-    rule_waived = wet or wet_tyres_used
+    rule_waived = wet_tyres_used
     mandatory_compound_used = _has_mandatory_dry_compound(inputs)
     requires_mandatory_compound = rule_enabled and not rule_waived and not mandatory_compound_used
     requires_stop = (

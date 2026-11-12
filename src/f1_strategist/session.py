@@ -55,6 +55,8 @@ class CaptureSession:
         self._recorder: SessionRecorder | None = None
         self._reported_recorder_error: Exception | None = None
         self._reported_dropped_batches = 0
+        self._strategy_error_session_uid: int | None = None
+        self._strategy_error_active = False
         self._last_observed_at: float | None = None
         self._last_header: PacketHeader | None = None
         self._profiled_uids: set[int] = set()
@@ -386,8 +388,24 @@ class CaptureSession:
                                 self._weekend_profile,
                                 observed_at,
                             )
+                            strategy_snapshot = self._strategy_engine.snapshot()
+                            session_uid = state_snapshot.session.uid
+                            if session_uid != self._strategy_error_session_uid:
+                                self._strategy_error_session_uid = session_uid
+                                self._strategy_error_active = False
+                            if strategy_snapshot.error is not None:
+                                if not self._strategy_error_active:
+                                    self._record_error(
+                                        message(
+                                            "strategy_engine_error",
+                                            error=strategy_snapshot.error,
+                                        )
+                                    )
+                                self._strategy_error_active = True
+                            else:
+                                self._strategy_error_active = False
                             if recorder is not None:
-                                recorder.record_strategy(self._strategy_engine.snapshot())
+                                recorder.record_strategy(strategy_snapshot)
                         except Exception as exc:
                             _LOGGER.exception("Unexpected error while updating strategy")
                             self._record_error(message("strategy_engine_error", error=str(exc)))

@@ -15,6 +15,7 @@ from f1_strategist.strategy.decision import (
     NOTE_PACE_INSUFFICIENT,
     NOTE_PIT_LOSS_INSUFFICIENT,
     NOTE_STALE_DATA,
+    NOTE_STAY_OUT_UNAVAILABLE,
     SENSITIVE_PIT_LOSS,
     SENSITIVE_WEAR_SLOPE,
     decide,
@@ -126,6 +127,56 @@ def test_mandatory_stop_is_reported_even_without_robust_gain() -> None:
     assert decision.key == "pit_in_4:hard:set2"
     assert decision.set_index == 2
     assert NOTE_MANDATORY_STOP in decision.notes
+
+
+def test_unstable_mandatory_stop_is_not_used_as_a_fallback() -> None:
+    def evaluate(perturbation: Perturbation) -> tuple[AlternativeResult, ...]:
+        if perturbation.pit_loss_delta_s > 0.0:
+            return ()
+        return (_pit(gain=-2.0),)
+
+    decision = decide(evaluate, _quality(), StrategyConfig())
+
+    assert decision.action is StrategyAction.INSUFFICIENT_DATA
+    assert decision.confidence == 0.0
+    assert NOTE_MANDATORY_STOP in decision.notes
+    assert NOTE_ALTERNATIVE_QUALITY not in decision.notes
+
+
+def test_stable_mandatory_stop_is_used_when_baseline_is_unstable() -> None:
+    def evaluate(perturbation: Perturbation) -> tuple[AlternativeResult, ...]:
+        unstable = (_pit(key="pit_now:soft", gain=-1.0),)
+        stable = _pit(key="pit_in_2:hard", gain=-2.0, action=StrategyAction.PIT_IN)
+        if perturbation.slope_scale != 1.0:
+            return (stable,)
+        return (*unstable, stable)
+
+    decision = decide(evaluate, _quality(), StrategyConfig())
+
+    assert decision.action is StrategyAction.PIT_IN
+    assert decision.key == "pit_in_2:hard"
+    assert NOTE_MANDATORY_STOP in decision.notes
+
+
+def test_allowed_but_unavailable_stay_out_is_not_treated_as_mandatory_stop() -> None:
+    def evaluate(_perturbation: Perturbation) -> tuple[AlternativeResult, ...]:
+        return (
+            _pit(gain=-1.0),
+            AlternativeResult(
+                key="pit_in_1:hard",
+                action=StrategyAction.PIT_IN,
+                remaining_time_s=1801.0,
+                gain_vs_baseline_s=-1.0,
+                quality=Quality.OK,
+                notes=(NOTE_STAY_OUT_UNAVAILABLE,),
+            ),
+        )
+
+    decision = decide(evaluate, _quality(), StrategyConfig())
+
+    assert decision.action is StrategyAction.INSUFFICIENT_DATA
+    assert NOTE_STAY_OUT_UNAVAILABLE in decision.notes
+    assert NOTE_MANDATORY_STOP not in decision.notes
 
 
 def test_lower_bound_must_exceed_min_gain() -> None:

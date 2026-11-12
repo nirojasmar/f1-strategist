@@ -280,6 +280,7 @@ def _strategy_snapshot(
     revision: int = 0,
     action: StrategyAction = StrategyAction.NO_CHANGE,
     *,
+    inputs_hash: str = "a" * 64,
     forecast_car_index: int | None = None,
     forecast_compound: str | None = None,
     projected_lap_times_s: tuple[float, ...] | None = None,
@@ -302,7 +303,7 @@ def _strategy_snapshot(
         risks=(),
         sensitive_to=(),
         data_quality=Quality.OK,
-        inputs_hash="a" * 64,
+        inputs_hash=inputs_hash,
         schema_version=STRATEGY_SCHEMA_VERSION,
         forecast_car_index=forecast_car_index,
         forecast_compound=forecast_compound,
@@ -487,6 +488,23 @@ def test_record_strategy_persists_each_lap_and_revision_change(tmp_path: Path) -
                     projected_lap_times_s=(91.0, 91.2),
                 )
             )
+            recorder.record_strategy(
+                _strategy_snapshot(
+                    1,
+                    forecast_car_index=0,
+                    forecast_compound="soft",
+                    projected_lap_times_s=(91.0, 91.3),
+                )
+            )
+            recorder.record_strategy(
+                _strategy_snapshot(
+                    1,
+                    inputs_hash="b" * 64,
+                    forecast_car_index=0,
+                    forecast_compound="soft",
+                    projected_lap_times_s=(91.0, 91.3),
+                )
+            )
             recorder.record_strategy(_strategy_snapshot(1, 1, StrategyAction.PIT_NOW))
             recorder.observe(
                 2.0,
@@ -502,15 +520,19 @@ def test_record_strategy_persists_each_lap_and_revision_change(tmp_path: Path) -
         session_id = _session_id(recorder)
         evaluations = list(store.iter_strategy_evaluations(session_id))
         session = store.get_session(session_id)
-        assert [item.seq for item in evaluations] == [1, 2, 3]
+        assert [item.seq for item in evaluations] == [1, 2, 3, 4, 5]
         assert [(item.lap, item.action) for item in evaluations] == [
+            (1, "NO_CHANGE"),
+            (1, "NO_CHANGE"),
             (1, "NO_CHANGE"),
             (1, "PIT_NOW"),
             (2, "PIT_NOW"),
         ]
-        assert evaluations[1].gain_low_s == 0.5
-        assert evaluations[1].gain_high_s == 2.5
+        assert evaluations[3].gain_low_s == 0.5
+        assert evaluations[3].gain_high_s == 2.5
         assert evaluations[0].projected_lap_times_s == (91.0, 91.2)
+        assert evaluations[1].projected_lap_times_s == (91.0, 91.3)
+        assert evaluations[2].inputs_hash == "b" * 64
         assert session is not None
         assert session.strategy_fingerprint is not None
 

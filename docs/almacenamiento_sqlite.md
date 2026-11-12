@@ -47,7 +47,7 @@ reconstruida desde una captura (`ingest`).
 | `weekend_structure_json` | Orden de tipos de sesión anunciado por el juego. |
 | `weekend_id` | Fin de semana al que pertenece la sesión, automático o manual. |
 | `profile_json`, `profile_hash` | Perfil canónico usado al iniciar una carrera y su SHA-256. |
-| `strategy_fingerprint` | SHA-256 independiente de la configuración de estrategia canónica. |
+| `strategy_fingerprint` | SHA-256 de un objeto con la versión de esquema de estrategia y su configuración canónica. |
 
 ### `weekends`
 
@@ -281,9 +281,14 @@ modificarla.
 - La captura es la fuente de verdad para volver a calcular vueltas, eventos y métricas.
 - `capture_sha256` identifica el archivo; `config_hash` identifica la configuración.
 - `fingerprint` identifica el resultado derivado y permite comparar ejecuciones.
-- `strategy_fingerprint` identifica por separado la configuración de estrategia serializada
-  de forma canónica; no modifica ni invalida la huella de captura existente y no depende del
-  sistema operativo ni del orden de las claves.
+- `strategy_fingerprint` es la huella SHA-256 de un objeto con `schema_version` y la configuración
+  de estrategia serializada de forma canónica; no depende del sistema operativo ni del orden de las
+  claves.
+- Guardar o cambiar `strategy_fingerprint` no modifica el valor de `fingerprint` ya almacenado.
+  En cambio, `compute_capture_fingerprint` recalcula la huella a partir de la configuración completa,
+  incluida la estrategia; al recalcularla tras un cambio de estrategia, el nuevo resultado puede diferir
+  del valor almacenado. Compara los valores almacenados entre sí, o los resultados recalculados bajo la
+  misma configuración, no un valor almacenado con otro recalculado bajo una configuración distinta.
 - `incomplete = 1` indica que faltan datos: truncamiento de captura, pérdida de lotes en la
   cola del grabador, error de escritura o cierre anómalo. La sesión sigue siendo consultable,
   pero no debe usarse como referencia completa.

@@ -357,8 +357,9 @@ def test_wet_weather_sets_the_flag() -> None:
 
     assert options.wet_conditions
     assert NOTE_WET in options.notes
-    assert NOTE_RULE_WET_WAIVED in options.notes
-    assert not options.requires_stop
+    assert NOTE_RULE_WET_WAIVED not in options.notes
+    assert options.requires_stop
+    assert NOTE_RULE_PENDING in options.notes
 
 
 def test_forecast_rain_within_the_window_sets_the_flag() -> None:
@@ -373,8 +374,9 @@ def test_forecast_rain_within_the_window_sets_the_flag() -> None:
 
     assert options.wet_conditions
     assert NOTE_WET in options.notes
-    assert NOTE_RULE_WET_WAIVED in options.notes
-    assert not options.requires_stop
+    assert NOTE_RULE_WET_WAIVED not in options.notes
+    assert options.requires_stop
+    assert NOTE_RULE_PENDING in options.notes
 
 
 def test_forecast_rain_outside_the_window_is_ignored() -> None:

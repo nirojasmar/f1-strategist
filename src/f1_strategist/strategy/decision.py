@@ -49,6 +49,7 @@ NOTE_ALTERNATIVE_UNSTABLE = "alternative_unstable"
 NOTE_ALTERNATIVE_QUALITY = "alternative_quality_insufficient"
 NOTE_MANDATORY_STOP = "mandatory_stop"
 NOTE_UNMODELED_CONDITION = "unmodeled_condition"
+NOTE_STAY_OUT_UNAVAILABLE = "stay_out_unavailable"
 
 #: Claves de ``sensitive_to``: supuesto que, dentro de su banda, cambia la decisión.
 SENSITIVE_WEAR_SLOPE = "wear_slope"
@@ -276,13 +277,28 @@ def decide(
     chosen = _best_stop(neutral, lower, unstable, cfg)
 
     if chosen is None:
-        no_stay_out = BASELINE_STAY_OUT not in {item.key for item in neutral}
-        forced_stop = neutral[0] if no_stay_out else None
-        if (
-            forced_stop is not None
-            and forced_stop.action in {StrategyAction.PIT_NOW, StrategyAction.PIT_IN}
-            and forced_stop.quality not in _UNSELECTABLE_QUALITIES
-        ):
+        has_stay_out = BASELINE_STAY_OUT in {item.key for item in neutral}
+        notes_from_alternatives = {note for item in neutral for note in item.notes}
+        stay_out_unavailable = (
+            not has_stay_out and NOTE_STAY_OUT_UNAVAILABLE in notes_from_alternatives
+        )
+        mandatory_stop = not has_stay_out and not stay_out_unavailable
+        if stay_out_unavailable:
+            return StrategyDecision(
+                action=StrategyAction.INSUFFICIENT_DATA,
+                confidence=0.0,
+                notes=(NOTE_STAY_OUT_UNAVAILABLE,),
+            )
+
+        stable_stops = [
+            item
+            for item in neutral
+            if item.action in {StrategyAction.PIT_NOW, StrategyAction.PIT_IN}
+            and item.key not in unstable
+            and item.quality not in _UNSELECTABLE_QUALITIES
+        ]
+        forced_stop = stable_stops[0] if mandatory_stop and stable_stops else None
+        if forced_stop is not None:
             width = upper.get(forced_stop.key, forced_stop.gain_vs_baseline_s) - lower.get(
                 forced_stop.key, forced_stop.gain_vs_baseline_s
             )
@@ -306,8 +322,22 @@ def decide(
         # ganó: si su intervalo es ancho, la confianza debe bajar.
         width = max((upper[item] - lower[item] for item in upper), default=0.0)
         notes = [NOTE_DEFAULT_NO_CHANGE]
-        if no_stay_out:
+        if mandatory_stop:
             notes.append(NOTE_ALTERNATIVE_UNSTABLE)
+            notes.append(NOTE_MANDATORY_STOP)
+            if not stable_stops:
+                if all(
+                    item.quality in _UNSELECTABLE_QUALITIES
+                    for item in neutral
+                    if item.action in {StrategyAction.PIT_NOW, StrategyAction.PIT_IN}
+                ):
+                    notes.append(NOTE_ALTERNATIVE_QUALITY)
+                return StrategyDecision(
+                    action=StrategyAction.INSUFFICIENT_DATA,
+                    key=key,
+                    confidence=0.0,
+                    notes=tuple(notes),
+                )
             if all(item.quality in _UNSELECTABLE_QUALITIES for item in neutral):
                 notes.append(NOTE_ALTERNATIVE_QUALITY)
                 return StrategyDecision(
@@ -353,6 +383,7 @@ __all__ = [
     "NOTE_PACE_INSUFFICIENT",
     "NOTE_PIT_LOSS_INSUFFICIENT",
     "NOTE_STALE_DATA",
+    "NOTE_STAY_OUT_UNAVAILABLE",
     "SENSITIVE_PIT_LOSS",
     "SENSITIVE_WEAR_SLOPE",
     "decide",

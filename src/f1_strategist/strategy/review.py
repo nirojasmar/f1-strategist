@@ -79,6 +79,7 @@ def review_strategy_evaluations(
                 )
                 or actual_lap.pit_entry
                 or actual_lap.pit_exit
+                or actual_lap.tyre_age_start == 0
             ):
                 break
             if not _comparable_lap(actual_lap, compound):
