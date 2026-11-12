@@ -61,12 +61,12 @@ Documentos de diseño:
 
 | Fase | Estado | Notas |
 | --- | --- | --- |
-| 0. Definición y entorno | Parcial | Repo, CI definido, config, receptor y guía de firewall listos. Falta validar la recepción desde otro PC de la red local y en Linux real. |
+| 0. Definición y entorno | Parcial | Repo, CI definido, config, receptor y guía de firewall listos. Validada la recepción desde otro PC de la red local y en Linux real. |
 | 1. Receptor, parser y estado | Implementada; CI verde | Snapshots inmutables de sesión y coches, daños, frescura por grupo, eventos y resumen de consola. |
 | 2. Métricas e histórico | Implementada; validación parcial | A1--A4, B1--B3, C1--C4/C2b, D1--D9, E1--E4 y F2--F4 implementados. F3 y la documentación se actualizaron según O5; la semántica/tolerancia del MFD sigue abierta aunque la validación local actual pasa. |
-| 3. Grabación y replay | Implementada; validación local completa | G1--G8 implementados sobre SQLite versionado (actualmente v5 tras las migraciones de Fase 3.5), `play`/`replay`, datasets, huella y `verify`, grabador en vivo e `ingest`, inspección con `sessions`, pruebas E2E y benchmarks. Documentación en `docs/almacenamiento_sqlite.md`. Queda repetir CI en Linux y macOS. |
+| 3. Grabación y replay | Implementada; validación local completa | G1--G8 implementados sobre SQLite versionado (v7 tras las migraciones de Fase 4), `play`/`replay`, datasets, huella y `verify`, grabador en vivo e `ingest`, inspección con `sessions`, pruebas E2E y benchmarks. Documentación en `docs/almacenamiento_sqlite.md`. Queda repetir CI en Linux y macOS. |
 | 3.5. Perfil del fin de semana | Implementada; validación local Windows | P1--P8 implementadas. Esquema SQLite v5, enlace de sesiones, resúmenes de tandas, inventario, perfil versionado y métricas `profile.*`; la prueba integrada cubre práctica, clasificación, carrera y reingesta con huella estable. Validación Linux por CI pendiente. |
-| 4. Motor de estrategia | En curso; S1--S8 implementadas | Ola 0 cerrada; S5--S8 cubren evaluación, decisión, motor integrado y registro de evaluaciones en SQLite v6. Siguiente: S9 (consola y comandos `strategy`). |
+| 4. Motor de estrategia | En curso; S1--S9 implementadas | Ola 0 cerrada; S5--S8 cubren evaluación, decisión, motor integrado y registro SQLite; S9 añade panel, comandos de consulta y revisión de proyecciones en SQLite v7. Siguiente: S10 (validación E2E y rendimiento). |
 | 5--10 | No iniciadas | |
 
 ## 5. Qué está verificado y qué no
@@ -227,6 +227,10 @@ Documentos de diseño:
 -   S8: SQLite v6 migra desde v5 sin perder sesiones, guarda evaluaciones por vuelta y cambio de revisión
     en vivo y en `ingest`, y conserva una huella canónica de estrategia separada de `fingerprint`.
     La suite completa actual pasa (859 pruebas; 4 benchmarks excluidos), Ruff y Pyright (0 errores).
+-   S9: SQLite v7 guarda el coche, compuesto y pronóstico de tiempos por vuelta. El panel de estrategia y
+    `strategy show`, `export` (JSON/CSV) y `review` usan la lectura de sesiones; `review` compara el error
+    absoluto medio por horizonte y omite datos históricos sin proyección. La lectura v6 permanece disponible.
+    Verificación Windows: 878 pruebas aprobadas, 4 benchmarks excluidos; Ruff y Pyright (0 errores).
 
 **No verificado todavía:**
 
@@ -238,9 +242,8 @@ Documentos de diseño:
 -   La Fase 3.5 solo está validada en Windows: CI en Linux y macOS queda pendiente (Docker no tiene
     daemon disponible y WSL solo muestra la distribución interna `docker-desktop`). El perfil del fin de
     semana tampoco se ha probado todavía contra capturas reales de un fin de semana completo.
--   La Fase 4 aún requiere validación con capturas reales de estrategia y condiciones variadas. El panel
-    y los comandos de consulta (S9), además de la validación y rendimiento de extremo a extremo (S10),
-    siguen pendientes.
+-   La Fase 4 aún requiere validación con capturas reales de estrategia y condiciones variadas. La
+    validación y rendimiento de extremo a extremo de S10 siguen pendientes.
 -   Queda volver a ejecutar CI de GitHub Actions después de la Ola 5.
 
 ## 6. Bitácora
@@ -681,6 +684,15 @@ fixes de la revisión (`0b3bd76`).
 -   Validación: 866 pruebas aprobadas, 4 benchmarks excluidos; pruebas de neumáticos (31), Ruff y Pyright
     pasan.
 
+**S9 --- Panel de consola y comandos `strategy`, esquema v7.**
+
+-   El panel y `strategy show` presentan la recomendación, confianza, ganancia, supuestos, riesgos y calidad;
+    `strategy export` admite JSON/CSV y `strategy review` calcula el error absoluto medio por horizonte.
+-   SQLite v7 conserva el coche, compuesto y tiempos proyectados por vuelta para comparar contra vueltas
+    reales válidas posteriores. Las bases v6 siguen siendo consultables, pero sus evaluaciones sin pronóstico
+    no contribuyen a `review`.
+-   Verificación Windows: 878 pruebas aprobadas, 4 benchmarks excluidos; Ruff y Pyright (0 errores).
+
 ## 7. Hallazgos de la primera captura real
 
 Captura: 68 541 paquetes, ~66 MB, 795,5 s entre el primer y el último paquete. Salida de `inspect`:
@@ -846,8 +858,8 @@ La Fase 3 está implementada y documentada. El criterio de salida se verificó l
 repetir CI en Linux y macOS. La Fase 2 mantiene abierta la semántica del indicador de combustible del MFD
 y el fixture de Monza acredita solo los escenarios observados localmente. El siguiente trabajo es:
 
-1.  **Fase 4:** S1--S8 implementadas (motor y registro SQLite v6). Siguiente: S9 (panel de consola y
-    comandos `strategy`) y S10 (validación E2E y rendimiento).
+1.  **Fase 4:** S1--S9 implementadas (panel, comandos y registro SQLite v7). Siguiente: S10 (validación
+    E2E y rendimiento).
 2.  **CI:** volver a ejecutar GitHub Actions después de la Ola 2.
 3.  **Calibración diferida:** ajustar los parámetros que hoy no tienen valor universal y ampliar la
     validación a capturas con lluvia, safety car y otras condiciones.

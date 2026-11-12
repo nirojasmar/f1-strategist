@@ -418,6 +418,9 @@ class SessionRecorder:
                 inputs_hash=evaluation.inputs_hash,
                 profile_hash=evaluation.profile_hash,
                 evaluation_json=evaluation.to_json(),
+                forecast_car_index=evaluation.forecast_car_index,
+                forecast_compound=evaluation.forecast_compound,
+                projected_lap_times_s=evaluation.projected_lap_times_s,
             )
             enqueued = self._enqueue(
                 _Batch(

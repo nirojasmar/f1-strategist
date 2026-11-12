@@ -23,6 +23,14 @@ from f1_strategist.parser import (
 )
 from f1_strategist.race_state import CarSnapshot, RaceEvent
 from f1_strategist.session import CaptureSession
+from f1_strategist.strategy.types import (
+    STRATEGY_SCHEMA_VERSION,
+    StrategyAction,
+    StrategyAlternative,
+    StrategyEvaluation,
+    StrategyRecommendation,
+    StrategySnapshot,
+)
 
 
 def test_console_renders_race_summary_fields() -> None:
@@ -219,6 +227,101 @@ def test_console_metrics_panel_renders_empty_snapshot_with_dashes() -> None:
     ):
         line = next(line for line in text.splitlines() if label in line)
         assert "—" in line
+
+
+def test_console_strategy_panel_renders_recommendation_and_assumptions(
+    monkeypatch,
+) -> None:
+    config = AppConfig()
+    session = CaptureSession(config)
+    evaluation = StrategyEvaluation(
+        revision=1,
+        session_uid="123",
+        lap=5,
+        laps_remaining=10.0,
+        baseline="stay_out",
+        recommendation=StrategyRecommendation(
+            action=StrategyAction.PIT_IN,
+            key="pit_in:hard",
+            pit_lap=8,
+            compound="hard",
+            gain_vs_baseline_s=2.0,
+            gain_interval_s=(1.0, 3.0),
+            confidence=0.75,
+        ),
+        alternatives=(
+            StrategyAlternative(
+                key="pit_in:hard",
+                remaining_time_s=900.0,
+                gain_vs_baseline_s=2.0,
+                rejoin_position=4,
+            ),
+        ),
+        assumptions=("fuel_effect_not_separated",),
+        risks=("damage_not_modelled",),
+        sensitive_to=("pit_loss_s",),
+        data_quality=Quality.OK,
+        inputs_hash="a" * 64,
+        schema_version=STRATEGY_SCHEMA_VERSION,
+    )
+    monkeypatch.setattr(
+        session,
+        "strategy_snapshot",
+        lambda: StrategySnapshot(evaluation=evaluation),
+    )
+
+    output = StringIO()
+    Console(file=output, width=180, no_color=True).print(render(config, session, now=2.0))
+    text = output.getvalue()
+
+    assert "Estrategia" in text
+    assert "Parar más adelante" in text
+    assert "Vuelta 8" in text
+    assert "2.00 s" in text
+    assert "1.00 a 3.00 s" in text
+    assert "75%" in text
+    assert "Posición 4" in text
+    assert "Efecto del combustible no separado" in text
+    assert "Daños del coche no modelados" in text
+    assert "Pérdida en boxes" in text
+
+
+def test_console_strategy_panel_explains_insufficient_data_and_disabled_recording(
+    monkeypatch,
+) -> None:
+    config = AppConfig.model_validate({"recording": {"enabled": False}})
+    session = CaptureSession(config)
+    evaluation = StrategyEvaluation(
+        revision=0,
+        session_uid="123",
+        lap=5,
+        laps_remaining=None,
+        baseline="stay_out",
+        recommendation=StrategyRecommendation(
+            action=StrategyAction.INSUFFICIENT_DATA,
+            key="stay_out",
+        ),
+        alternatives=(),
+        assumptions=(),
+        risks=(),
+        sensitive_to=(),
+        data_quality=Quality.INSUFFICIENT,
+        inputs_hash="a" * 64,
+        schema_version=STRATEGY_SCHEMA_VERSION,
+    )
+    monkeypatch.setattr(
+        session,
+        "strategy_snapshot",
+        lambda: StrategySnapshot(evaluation=evaluation),
+    )
+
+    output = StringIO()
+    Console(file=output, width=180, no_color=True).print(render(config, session, now=2.0))
+    text = output.getvalue()
+
+    assert "Datos insuficientes" in text
+    assert "No se pudieron evaluar alternativas" in text
+    assert "La estrategia está activa, pero el registro está desactivado" in text
 
 
 def test_console_explains_required_samples_for_insufficient_metrics(monkeypatch) -> None:

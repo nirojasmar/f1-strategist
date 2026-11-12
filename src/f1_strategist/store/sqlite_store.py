@@ -256,6 +256,9 @@ class StoredStrategyEvaluation:
     inputs_hash: str
     profile_hash: str | None
     evaluation_json: str
+    forecast_car_index: int | None = None
+    forecast_compound: str | None = None
+    projected_lap_times_s: tuple[float, ...] | None = None
 
     def __post_init__(self) -> None:
         if self.seq < 1:
@@ -274,6 +277,18 @@ class StoredStrategyEvaluation:
                 raise ValueError(f"{name} debe ser finito")
         if self.confidence is not None and not 0 <= self.confidence <= 1:
             raise ValueError("confidence debe estar entre 0 y 1")
+        if self.forecast_car_index is not None and self.forecast_car_index < 0:
+            raise ValueError("forecast_car_index no puede ser negativo")
+        if self.forecast_compound is not None and not self.forecast_compound:
+            raise ValueError("forecast_compound no puede estar vacío")
+        if self.projected_lap_times_s is not None:
+            projected_lap_times = tuple(self.projected_lap_times_s)
+            for value in projected_lap_times:
+                if not math.isfinite(value) or value <= 0.0:
+                    raise ValueError("projected_lap_times_s debe contener tiempos positivos")
+            if self.forecast_car_index is None or self.forecast_compound is None:
+                raise ValueError("La proyección requiere coche y compuesto")
+            object.__setattr__(self, "projected_lap_times_s", projected_lap_times)
         for name in (
             "action",
             "recommended_key",
@@ -735,6 +750,18 @@ class SessionStore:
                 item.inputs_hash,
                 item.profile_hash,
                 item.evaluation_json,
+                item.forecast_car_index,
+                item.forecast_compound,
+                (
+                    None
+                    if item.projected_lap_times_s is None
+                    else json.dumps(
+                        item.projected_lap_times_s,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                        allow_nan=False,
+                    )
+                ),
             )
             for item in evaluations
         ]
@@ -745,8 +772,9 @@ class SessionStore:
                 "INSERT INTO strategy_evaluations "
                 "(session_id, seq, t_sim_s, lap, action, recommended_key, "
                 "gain_vs_baseline_s, gain_low_s, gain_high_s, confidence, data_quality, "
-                "inputs_hash, profile_hash, evaluation_json) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "inputs_hash, profile_hash, evaluation_json, forecast_car_index, "
+                "forecast_compound, projected_lap_times_json) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(session_id, seq) DO UPDATE SET "
                 "t_sim_s = excluded.t_sim_s, lap = excluded.lap, action = excluded.action, "
                 "recommended_key = excluded.recommended_key, "
@@ -754,7 +782,10 @@ class SessionStore:
                 "gain_low_s = excluded.gain_low_s, gain_high_s = excluded.gain_high_s, "
                 "confidence = excluded.confidence, data_quality = excluded.data_quality, "
                 "inputs_hash = excluded.inputs_hash, profile_hash = excluded.profile_hash, "
-                "evaluation_json = excluded.evaluation_json",
+                "evaluation_json = excluded.evaluation_json, "
+                "forecast_car_index = excluded.forecast_car_index, "
+                "forecast_compound = excluded.forecast_compound, "
+                "projected_lap_times_json = excluded.projected_lap_times_json",
                 rows,
             )
 
@@ -763,10 +794,27 @@ class SessionStore:
         session_id: int,
     ) -> Iterator[StoredStrategyEvaluation]:
         """Itera las evaluaciones de estrategia en orden de secuencia."""
+        columns = {
+            str(row["name"])
+            for row in self._connection.execute("PRAGMA table_info(strategy_evaluations)")
+        }
+        forecast_car_index = (
+            "forecast_car_index" if "forecast_car_index" in columns else "NULL"
+        )
+        forecast_compound = "forecast_compound" if "forecast_compound" in columns else "NULL"
+        projected_lap_times = (
+            "projected_lap_times_json"
+            if "projected_lap_times_json" in columns
+            else "NULL"
+        )
         cursor = self._connection.execute(
             "SELECT seq, t_sim_s, lap, action, recommended_key, gain_vs_baseline_s, "
             "gain_low_s, gain_high_s, confidence, data_quality, inputs_hash, profile_hash, "
-            "evaluation_json FROM strategy_evaluations WHERE session_id = ? ORDER BY seq",
+            "evaluation_json, "
+            f"{forecast_car_index} AS forecast_car_index, "
+            f"{forecast_compound} AS forecast_compound, "
+            f"{projected_lap_times} AS projected_lap_times_json "
+            "FROM strategy_evaluations WHERE session_id = ? ORDER BY seq",
             (session_id,),
         )
         for row in cursor:
@@ -784,6 +832,11 @@ class SessionStore:
                 inputs_hash=str(row["inputs_hash"]),
                 profile_hash=_optional_str(row["profile_hash"]),
                 evaluation_json=str(row["evaluation_json"]),
+                forecast_car_index=_optional_int(row["forecast_car_index"]),
+                forecast_compound=_optional_str(row["forecast_compound"]),
+                projected_lap_times_s=_optional_float_tuple_from_json(
+                    row["projected_lap_times_json"]
+                ),
             )
 
     # ------------------------------------------------------------------
@@ -1303,6 +1356,24 @@ def _optional_int(value: Any) -> int | None:
 
 def _optional_float(value: Any) -> float | None:
     return None if value is None else float(value)
+
+
+def _optional_float_tuple_from_json(value: Any) -> tuple[float, ...] | None:
+    if value is None:
+        return None
+    try:
+        parsed = json.loads(str(value))
+    except json.JSONDecodeError as exc:
+        raise StoreError("La proyección de vueltas guardada no es JSON válido.") from exc
+    if not isinstance(parsed, list) or any(
+        isinstance(item, bool)
+        or not isinstance(item, (int, float))
+        or not math.isfinite(item)
+        or item <= 0.0
+        for item in parsed
+    ):
+        raise StoreError("La proyección de vueltas guardada contiene valores no válidos.")
+    return tuple(float(item) for item in parsed)
 
 
 def _optional_str(value: Any) -> str | None:

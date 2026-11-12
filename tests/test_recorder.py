@@ -278,6 +278,10 @@ def _strategy_snapshot(
     lap: int,
     revision: int = 0,
     action: StrategyAction = StrategyAction.NO_CHANGE,
+    *,
+    forecast_car_index: int | None = None,
+    forecast_compound: str | None = None,
+    projected_lap_times_s: tuple[float, ...] | None = None,
 ) -> StrategySnapshot:
     evaluation = StrategyEvaluation(
         revision=revision,
@@ -299,6 +303,9 @@ def _strategy_snapshot(
         data_quality=Quality.OK,
         inputs_hash="a" * 64,
         schema_version=STRATEGY_SCHEMA_VERSION,
+        forecast_car_index=forecast_car_index,
+        forecast_compound=forecast_compound,
+        projected_lap_times_s=projected_lap_times_s,
     )
     return StrategySnapshot(evaluation=evaluation, updated_at_monotonic=float(lap + revision))
 
@@ -463,8 +470,22 @@ def test_record_strategy_persists_each_lap_and_revision_change(tmp_path: Path) -
         )
         try:
             recorder.observe(1.0, 1.0, _snapshot(lap=1), _metrics(), _history())
-            recorder.record_strategy(_strategy_snapshot(1))
-            recorder.record_strategy(_strategy_snapshot(1))
+            recorder.record_strategy(
+                _strategy_snapshot(
+                    1,
+                    forecast_car_index=0,
+                    forecast_compound="soft",
+                    projected_lap_times_s=(91.0, 91.2),
+                )
+            )
+            recorder.record_strategy(
+                _strategy_snapshot(
+                    1,
+                    forecast_car_index=0,
+                    forecast_compound="soft",
+                    projected_lap_times_s=(91.0, 91.2),
+                )
+            )
             recorder.record_strategy(_strategy_snapshot(1, 1, StrategyAction.PIT_NOW))
             recorder.observe(
                 2.0,
@@ -488,6 +509,7 @@ def test_record_strategy_persists_each_lap_and_revision_change(tmp_path: Path) -
         ]
         assert evaluations[1].gain_low_s == 0.5
         assert evaluations[1].gain_high_s == 2.5
+        assert evaluations[0].projected_lap_times_s == (91.0, 91.2)
         assert session is not None
         assert session.strategy_fingerprint is not None
 

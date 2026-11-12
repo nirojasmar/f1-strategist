@@ -437,7 +437,7 @@ def test_readonly_open_rejects_a_database_without_a_schema(tmp_path: Path) -> No
     path = tmp_path / "empty.db"
     sqlite3.connect(path).close()
 
-    with pytest.raises(StoreError, match="se requiere v"):
+    with pytest.raises(StoreError, match="se requiere al menos v"):
         SessionStore.open(path, readonly=True)
 
 
@@ -495,6 +495,9 @@ def test_strategy_evaluations_roundtrip_and_upsert_by_sequence(tmp_path: Path) -
         inputs_hash="a" * 64,
         profile_hash="b" * 64,
         evaluation_json='{"lap":3}',
+        forecast_car_index=0,
+        forecast_compound="soft",
+        projected_lap_times_s=(92.1, 92.4),
     )
     earlier = StoredStrategyEvaluation(
         seq=1,
@@ -524,7 +527,7 @@ def test_schema_v5_migrates_without_losing_session_data(tmp_path: Path) -> None:
     path = tmp_path / "sessions.db"
     connection = sqlite3.connect(path)
     try:
-        apply_migrations(connection, MIGRATIONS[:-1])
+        apply_migrations(connection, MIGRATIONS[:-2])
         connection.execute(
             "INSERT INTO sessions (session_uid, source, started_at_utc, fingerprint) "
             "VALUES ('123', 'live', '2026-11-05T10:00:00Z', ?)",
@@ -542,6 +545,39 @@ def test_schema_v5_migrates_without_losing_session_data(tmp_path: Path) -> None:
         assert session.fingerprint == "f" * 64
         assert session.strategy_fingerprint is None
         assert list(store.iter_strategy_evaluations(1)) == []
+
+
+def test_schema_v6_evaluations_remain_readable_before_and_after_v7_migration(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "sessions.db"
+    connection = sqlite3.connect(path)
+    try:
+        apply_migrations(connection, MIGRATIONS[:-1])
+        connection.execute(
+            "INSERT INTO sessions (session_uid, source, started_at_utc) "
+            "VALUES ('123', 'ingest', '2026-11-12T10:00:00Z')"
+        )
+        connection.execute(
+            "INSERT INTO strategy_evaluations "
+            "(session_id, seq, t_sim_s, lap, action, recommended_key, data_quality, "
+            "inputs_hash, evaluation_json) "
+            "VALUES (1, 1, 5.0, 2, 'NO_CHANGE', 'stay_out', 'low', ?, ?)",
+            ("a" * 64, '{"schema_version":1,"lap":2}'),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    with SessionStore.open(path, readonly=True) as store:
+        legacy = list(store.iter_strategy_evaluations(1))
+        assert len(legacy) == 1
+        assert legacy[0].projected_lap_times_s is None
+
+    with SessionStore.open(path) as store:
+        migrated = list(store.iter_strategy_evaluations(1))
+        assert migrated == legacy
+        assert store.connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
 
 
 def test_update_session_completes_metadata_without_erasing_it(tmp_path: Path) -> None:

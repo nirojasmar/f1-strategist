@@ -26,7 +26,13 @@ from ..race_state import CarSnapshot, RaceStateSnapshot
 from ..weekend_profile import WeekendProfile
 from .decision import decide
 from .evaluator import evaluate_alternatives
-from .pace_model import CompoundModel, CompoundModels, build_compound_models, canonical_compound
+from .pace_model import (
+    CompoundModel,
+    CompoundModels,
+    build_compound_models,
+    canonical_compound,
+    project_lap_times,
+)
 from .pit_model import PitLossEstimate, estimate_pit_loss
 from .types import (
     ASSUMPTION_FUEL_EFFECT_NOT_SEPARATED,
@@ -178,6 +184,34 @@ def _data_quality(
     )
 
 
+def _projected_lap_forecast(
+    inputs: MetricInputs,
+    models: CompoundModels,
+    options: TyreOptions,
+    quality: DataQuality,
+) -> tuple[float, ...] | None:
+    """Proyecta vueltas completas después de la vuelta evaluada."""
+    state = inputs.state
+    total_laps = state.session.total_laps
+    lap = _lap(state)
+    if (
+        not quality.session_is_race
+        or inputs.car_index < 0
+        or total_laps is None
+        or total_laps <= lap
+    ):
+        return None
+    compound = options.current_compound
+    model = models.get(compound) if compound is not None else None
+    if model is None or not model.available or model.initial_age_laps is None:
+        return None
+    return project_lap_times(
+        model,
+        model.initial_age_laps + 1.0,
+        float(total_laps - lap),
+    )
+
+
 def _assumptions(
     models: CompoundModels,
     pit: PitLossEstimate,
@@ -262,6 +296,7 @@ def evaluate_once(
     pit = estimate_pit_loss(inputs, cfg)
     options = tyre_options(inputs, cfg)
     quality = _data_quality(inputs, models, pit, cfg)
+    projected_lap_times = _projected_lap_forecast(inputs, models, options, quality)
 
     def evaluate(perturbation: Perturbation) -> tuple[AlternativeResult, ...]:
         return evaluate_alternatives(models, pit, options, inputs, cfg, perturbation)
@@ -313,6 +348,9 @@ def evaluate_once(
         ),
         profile_hash=inputs.profile.hash if inputs.profile is not None else None,
         schema_version=STRATEGY_SCHEMA_VERSION,
+        forecast_car_index=inputs.car_index if projected_lap_times is not None else None,
+        forecast_compound=options.current_compound if projected_lap_times is not None else None,
+        projected_lap_times_s=projected_lap_times,
     )
 
 

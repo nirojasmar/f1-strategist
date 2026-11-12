@@ -123,6 +123,33 @@ def test_evaluation_round_trips_through_the_typed_contract() -> None:
     assert restored.to_json() == evaluation.to_json()
 
 
+def test_evaluation_round_trips_projected_laps_and_player_identity() -> None:
+    evaluation = _evaluation(
+        forecast_car_index=2,
+        forecast_compound="soft",
+        projected_lap_times_s=(91.25, 91.5),
+    )
+
+    restored = StrategyEvaluation.from_json(evaluation.to_json())
+
+    assert restored.forecast_car_index == 2
+    assert restored.forecast_compound == "soft"
+    assert restored.projected_lap_times_s == (91.25, 91.5)
+
+
+def test_evaluation_reads_legacy_schema_v1_without_forecasts() -> None:
+    payload = _evaluation().to_dict()
+    payload["schema_version"] = 1
+    payload.pop("forecast_car_index")
+    payload.pop("forecast_compound")
+    payload.pop("projected_lap_times_s")
+
+    restored = StrategyEvaluation.from_dict(payload)
+
+    assert restored.schema_version == 1
+    assert restored.projected_lap_times_s is None
+
+
 def test_evaluation_rejects_duplicate_alternative_keys() -> None:
     with pytest.raises(ValueError, match="duplicadas"):
         _evaluation(
@@ -219,7 +246,7 @@ def test_evaluation_rejects_inconsistent_data() -> None:
         )
 
 
-@pytest.mark.parametrize("version", [None, True, 1.0, 1.5, 0, 99])
+@pytest.mark.parametrize("version", [None, True, 1.0, 1.5, 0, 3, 99])
 def test_deserialization_rejects_invalid_schema_versions(version: object) -> None:
     payload = _evaluation().to_dict()
     payload["schema_version"] = version

@@ -9,8 +9,10 @@ from .packets import packet_name
 from .parser import ParseIssue
 from .race_state import CarSnapshot, RaceEvent, RaceStateSnapshot
 from .receiver import PacketSequenceStats
+from .strategy.types import StrategyAction, StrategyEvaluation
 
 METRICS_PANEL_TITLE = "Métricas"
+STRATEGY_PANEL_TITLE = "Estrategia"
 
 _METRIC_ROWS = (
     ("progress.laps_remaining", "Vueltas restantes"),
@@ -45,6 +47,26 @@ _LIVE_METRIC_KEYS = frozenset(
         "gap.behind_s",
     }
 )
+
+_STRATEGY_ACTION_LABELS = {
+    StrategyAction.NO_CHANGE: "Mantener",
+    StrategyAction.PIT_NOW: "Parar ahora",
+    StrategyAction.PIT_IN: "Parar más adelante",
+    StrategyAction.INSUFFICIENT_DATA: "Datos insuficientes",
+}
+
+_STRATEGY_KEY_LABELS = {
+    "fuel_effect_not_separated": "Efecto del combustible no separado",
+    "rivals_do_not_pit": "Se supone que los rivales no paran",
+    "profile_prior_used": "Se usó el perfil del fin de semana como prior",
+    "damage_not_modelled": "Daños del coche no modelados",
+    "tyre_damage_not_modelled": "Daño de neumáticos no modelado",
+    "traffic_not_priced": "Coste del tráfico no cuantificado",
+    "tyre_life_exceeded": "La vida útil de un juego puede ser insuficiente",
+    "wet_conditions": "Condiciones de lluvia fuera del modelo",
+    "wear_slope": "Pendiente de desgaste",
+    "pit_loss_s": "Pérdida en boxes",
+}
 
 
 def _number(item: DiagnosticMessage, name: str) -> float:
@@ -141,6 +163,99 @@ def render_metrics_rows(
     return tuple(rows)
 
 
+def render_strategy_rows(
+    evaluation: StrategyEvaluation,
+) -> tuple[tuple[str, str], ...]:
+    """Devuelve las etiquetas y explicaciones del panel de estrategia."""
+    recommendation = evaluation.recommendation
+    action = recommendation.action
+    if action is StrategyAction.NO_CHANGE:
+        explanation = (
+            "Ninguna parada superó el mínimo de ganancia considerando la incertidumbre."
+        )
+    elif action is StrategyAction.INSUFFICIENT_DATA:
+        explanation = (
+            "No se puede recomendar con los datos críticos disponibles."
+            if evaluation.alternatives
+            else "No se pudieron evaluar alternativas."
+        )
+    elif action is StrategyAction.PIT_NOW:
+        explanation = "La parada recomendada es ahora."
+    else:
+        explanation = "La parada recomendada es en la vuelta indicada."
+
+    interval = recommendation.gain_interval_s
+    alternative = next(
+        (item for item in evaluation.alternatives if item.key == recommendation.key),
+        None,
+    )
+    return (
+        ("Recomendación", _STRATEGY_ACTION_LABELS[action]),
+        ("Explicación", explanation),
+        ("Compuesto", recommendation.compound or "—"),
+        (
+            "Vuelta de parada",
+            (
+                "Ahora"
+                if action is StrategyAction.PIT_NOW
+                else f"Vuelta {recommendation.pit_lap}"
+                if recommendation.pit_lap is not None
+                else "—"
+            ),
+        ),
+        (
+            "Ganancia vs. línea base",
+            (
+                "—"
+                if recommendation.gain_vs_baseline_s is None
+                else f"{recommendation.gain_vs_baseline_s:.2f} s"
+            ),
+        ),
+        (
+            "Intervalo de ganancia",
+            "—" if interval is None else f"{interval[0]:.2f} a {interval[1]:.2f} s",
+        ),
+        (
+            "Confianza",
+            "—" if recommendation.confidence is None else f"{recommendation.confidence:.0%}",
+        ),
+        (
+            "Reincorporación",
+            (
+                "—"
+                if alternative is None or alternative.rejoin_position is None
+                else f"Posición {alternative.rejoin_position}"
+            ),
+        ),
+        ("Calidad de datos", _QUALITY_LABELS[evaluation.data_quality]),
+        (
+            "Vueltas restantes",
+            "—"
+            if evaluation.laps_remaining is None
+            else f"{evaluation.laps_remaining:.1f}",
+        ),
+        (
+            "Supuestos",
+            _render_strategy_keys(evaluation.assumptions),
+        ),
+        ("Riesgos", _render_strategy_keys(evaluation.risks)),
+        ("Sensibilidad", _render_strategy_keys(evaluation.sensitive_to)),
+    )
+
+
+def render_strategy_recording_warning() -> str:
+    return (
+        "La estrategia está activa, pero el registro está desactivado; "
+        "las evaluaciones no se guardarán."
+    )
+
+
+def _render_strategy_keys(keys: tuple[str, ...]) -> str:
+    if not keys:
+        return "—"
+    return "; ".join(_STRATEGY_KEY_LABELS.get(key, key.replace("_", " ")) for key in keys)
+
+
 def _live_metrics_are_stale(race: RaceStateSnapshot | None, now: float | None) -> bool:
     if race is None or now is None:
         return False
@@ -217,6 +332,8 @@ def render_race_event(event: RaceEvent, cars: tuple[CarSnapshot, ...]) -> str:
 
 def render_diagnostic(item: DiagnosticMessage) -> str:
     key = item.key
+    if key == "strategy_recording_disabled":
+        return render_strategy_recording_warning()
     if key == "rejected_sources":
         ips = item.get("ips")
         if not isinstance(ips, tuple) or not all(isinstance(ip, str) for ip in ips):

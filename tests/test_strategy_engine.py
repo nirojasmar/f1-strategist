@@ -5,17 +5,20 @@ from dataclasses import replace
 
 import pytest
 
-from f1_strategist.config import StrategyConfig, StrategyTrackOverride
+from f1_strategist.config import MetricsConfig, StrategyConfig, StrategyTrackOverride
 from f1_strategist.metrics.history import LapHistorySnapshot, MetricInputs
 from f1_strategist.metrics.types import Quality
 from f1_strategist.race_state import RaceState, RaceStateSnapshot
-from f1_strategist.strategy.engine import StrategyEngine
+from f1_strategist.strategy.engine import StrategyEngine, _projected_lap_forecast
+from f1_strategist.strategy.pace_model import CompoundModel, CompoundModels
 from f1_strategist.strategy.types import (
     STRATEGY_SCHEMA_VERSION,
+    DataQuality,
     StrategyAction,
     StrategyEvaluation,
     StrategyRecommendation,
 )
+from f1_strategist.strategy.tyre_options import TyreOptions
 
 
 def _state(lap: int) -> RaceStateSnapshot:
@@ -29,6 +32,93 @@ def _state(lap: int) -> RaceStateSnapshot:
         track_length_m=5_000.0,
     )
     return replace(snapshot, session=session, current_lap=lap)
+
+
+def test_forecast_contains_full_laps_after_the_evaluation_lap() -> None:
+    snapshot = RaceState().snapshot()
+    session = replace(snapshot.session, session_type="race", total_laps=10)
+    car = replace(snapshot.cars[0], current_lap=4)
+    state = replace(
+        snapshot,
+        session=session,
+        player_car_index=0,
+        cars=(car, *snapshot.cars[1:]),
+    )
+    inputs = MetricInputs(
+        state=state,
+        history=LapHistorySnapshot(),
+        config=MetricsConfig(),
+        now=1.0,
+        car_index=0,
+    )
+    models = CompoundModels(
+        models=(
+            CompoundModel(
+                compound="soft",
+                base_lap_s=90.0,
+                slope_s_per_lap=0.5,
+                wear_rate_pct_per_lap=None,
+                n_race_laps=4,
+                source="race",
+                quality=Quality.OK,
+                initial_age_laps=5.0,
+            ),
+        )
+    )
+
+    projected = _projected_lap_forecast(
+        inputs,
+        models,
+        TyreOptions(current_compound="soft"),
+        DataQuality(session_is_race=True),
+    )
+
+    assert projected == (93.0, 93.5, 94.0, 94.5, 95.0, 95.5)
+
+
+def test_evaluate_once_attaches_forecast_to_the_serialized_evaluation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from f1_strategist.strategy.engine import evaluate_once
+
+    snapshot = RaceState().snapshot()
+    session = replace(
+        snapshot.session,
+        uid=123,
+        session_type="race",
+        track="monza",
+        total_laps=10,
+        track_length_m=5_000.0,
+    )
+    car = replace(
+        snapshot.cars[0],
+        current_lap=4,
+        actual_tyre_compound="soft",
+    )
+    state = replace(
+        snapshot,
+        session=session,
+        player_car_index=0,
+        cars=(car, *snapshot.cars[1:]),
+    )
+    inputs = MetricInputs(
+        state=state,
+        history=LapHistorySnapshot(),
+        config=MetricsConfig(),
+        now=1.0,
+        car_index=0,
+    )
+    forecast = (93.0, 93.5, 94.0)
+    monkeypatch.setattr(
+        "f1_strategist.strategy.engine._projected_lap_forecast",
+        lambda *_args: forecast,
+    )
+
+    evaluation = evaluate_once(inputs, StrategyConfig())
+
+    assert evaluation.forecast_car_index == 0
+    assert evaluation.forecast_compound == "soft"
+    assert evaluation.projected_lap_times_s == forecast
 
 
 def _evaluation(

@@ -23,7 +23,7 @@ from typing import Any
 
 from ..metrics.types import Quality
 
-STRATEGY_SCHEMA_VERSION = 1
+STRATEGY_SCHEMA_VERSION = 2
 """Versión del contrato serializado; se incrementa ante cambios incompatibles."""
 
 BASELINE_STAY_OUT = "stay_out"
@@ -355,14 +355,17 @@ class StrategyEvaluation:
     inputs_hash: str
     schema_version: int
     profile_hash: str | None = None
+    forecast_car_index: int | None = None
+    forecast_compound: str | None = None
+    projected_lap_times_s: tuple[float, ...] | None = None
 
     def __post_init__(self) -> None:
         if type(self.schema_version) is not int:
             raise ValueError("schema_version debe ser un entero")
-        if self.schema_version != STRATEGY_SCHEMA_VERSION:
+        if self.schema_version not in {1, STRATEGY_SCHEMA_VERSION}:
             raise ValueError(
                 f"schema_version no soportada: {self.schema_version}; "
-                f"esperada {STRATEGY_SCHEMA_VERSION}"
+                f"esperada 1 o {STRATEGY_SCHEMA_VERSION}"
             )
         if self.revision < 0:
             raise ValueError("revision no puede ser negativa")
@@ -378,6 +381,19 @@ class StrategyEvaluation:
             raise ValueError("baseline no puede estar vacía")
         if not self.inputs_hash:
             raise ValueError("inputs_hash no puede estar vacío")
+        if self.forecast_car_index is not None and self.forecast_car_index < 0:
+            raise ValueError("forecast_car_index no puede ser negativo")
+        if self.forecast_compound is not None and not self.forecast_compound:
+            raise ValueError("forecast_compound no puede estar vacío")
+        if self.projected_lap_times_s is not None:
+            projected_lap_times = tuple(self.projected_lap_times_s)
+            for value in projected_lap_times:
+                _check_finite("projected_lap_times_s", value)
+                if value <= 0.0:
+                    raise ValueError("projected_lap_times_s debe contener tiempos positivos")
+            if self.forecast_car_index is None or self.forecast_compound is None:
+                raise ValueError("La proyección requiere coche y compuesto")
+            object.__setattr__(self, "projected_lap_times_s", projected_lap_times)
         alternatives = tuple(self.alternatives)
         keys = [item.key for item in alternatives]
         if len(set(keys)) != len(keys):
@@ -410,6 +426,13 @@ class StrategyEvaluation:
             "data_quality": self.data_quality.value,
             "inputs_hash": self.inputs_hash,
             "profile_hash": self.profile_hash,
+            "forecast_car_index": self.forecast_car_index,
+            "forecast_compound": self.forecast_compound,
+            "projected_lap_times_s": (
+                None
+                if self.projected_lap_times_s is None
+                else [_round(value) for value in self.projected_lap_times_s]
+            ),
         }
 
     def to_json(self) -> str:
@@ -421,9 +444,10 @@ class StrategyEvaluation:
         schema_version = data.get("schema_version")
         if type(schema_version) is not int:
             raise ValueError("schema_version debe estar presente y ser un entero")
-        if schema_version != STRATEGY_SCHEMA_VERSION:
+        if schema_version not in {1, STRATEGY_SCHEMA_VERSION}:
             raise ValueError(
-                f"schema_version no soportada: {schema_version}; esperada {STRATEGY_SCHEMA_VERSION}"
+                f"schema_version no soportada: {schema_version}; "
+                f"esperada 1 o {STRATEGY_SCHEMA_VERSION}"
             )
         revision = data.get("revision")
         if type(revision) is not int:
@@ -431,6 +455,23 @@ class StrategyEvaluation:
         session_uid = data.get("session_uid")
         if not isinstance(session_uid, str):
             raise ValueError("session_uid debe ser una cadena")
+        forecast_car_index = data.get("forecast_car_index")
+        if forecast_car_index is not None and (
+            type(forecast_car_index) is not int or forecast_car_index < 0
+        ):
+            raise ValueError("forecast_car_index debe ser un entero no negativo o None")
+        forecast_compound = data.get("forecast_compound")
+        if forecast_compound is not None and not isinstance(forecast_compound, str):
+            raise ValueError("forecast_compound debe ser una cadena o None")
+        projected_lap_times = data.get("projected_lap_times_s")
+        if projected_lap_times is not None and (
+            not isinstance(projected_lap_times, (list, tuple))
+            or any(
+                isinstance(value, bool) or not isinstance(value, (int, float))
+                for value in projected_lap_times
+            )
+        ):
+            raise ValueError("projected_lap_times_s debe ser una lista de números o None")
         return cls(
             revision=revision,
             session_uid=session_uid,
@@ -448,6 +489,13 @@ class StrategyEvaluation:
             inputs_hash=str(data["inputs_hash"]),
             profile_hash=data.get("profile_hash"),
             schema_version=schema_version,
+            forecast_car_index=forecast_car_index,
+            forecast_compound=forecast_compound,
+            projected_lap_times_s=(
+                None
+                if projected_lap_times is None
+                else tuple(float(value) for value in projected_lap_times)
+            ),
         )
 
     @classmethod

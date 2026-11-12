@@ -15,11 +15,12 @@ registros de forma permanente; conviene conservar copias de `sessions.db` junto 
 capturas.
 
 El esquema vive en [`src/f1_strategist/store/schema.py`](../src/f1_strategist/store/schema.py)
-y la versión actual es `SCHEMA_VERSION = 6`. La versión se guarda en `PRAGMA user_version`.
+y la versión actual es `SCHEMA_VERSION = 7`. La versión se guarda en `PRAGMA user_version`.
 Al abrir la base en modo escritura se aplican las migraciones pendientes. Los comandos
-`sessions` la abren en solo lectura: ante una base con un esquema anterior la rechazan sin
-migrarla y piden abrirla antes en modo escritura; una base creada por una versión más nueva
-de la herramienta también se rechaza.
+de consulta la abren en solo lectura y admiten v6 y v7 sin migrarlas; una base v6 no contiene
+proyecciones por vuelta y sus evaluaciones no se pueden incluir en `strategy review`. Al abrir
+una base compatible en modo escritura se aplican las migraciones hasta v7. La apertura de solo
+lectura rechaza bases anteriores a v6 o creadas por una versión más nueva de la herramienta.
 
 ## Tablas
 
@@ -126,7 +127,11 @@ Evaluaciones publicadas por el motor de estrategia, en orden por sesión y secue
 guarda una evaluación por vuelta y otra cada vez que cambia la revisión de la recomendación.
 La fila conserva la acción y alternativa recomendadas, la ganancia estimada y su intervalo,
 la confianza, calidad de datos, huellas de entradas y perfil, y el JSON completo de la
-evaluación. La clave `(session_id, seq)` permite reescribir una secuencia sin duplicar filas.
+evaluación. Desde v7 también conserva el índice del coche, compuesto y tiempos de vuelta
+proyectados desde la siguiente vuelta completa; estas columnas permiten comparar cada
+horizonte con vueltas reales válidas posteriores sin reconstruir el modelo. Las filas v6
+conservan `NULL` en esos campos. La clave `(session_id, seq)` permite reescribir una secuencia
+sin duplicar filas.
 
 ### Perfil del fin de semana
 
