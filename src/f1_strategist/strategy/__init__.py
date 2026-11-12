@@ -2,6 +2,15 @@
 
 from __future__ import annotations
 
+from .evaluator import (
+    NOTE_BASELINE,
+    NOTE_NO_MODEL,
+    NOTE_PERTURBATION,
+    NOTE_PIT_LOSS_UNAVAILABLE,
+    NOTE_STAY_OUT_NOT_VIABLE,
+    NOTE_TRAFFIC_COST,
+    evaluate_alternatives,
+)
 from .pace_model import (
     CompoundModel,
     CompoundModels,
@@ -46,6 +55,12 @@ __all__ = [
     "ASSUMPTION_PROFILE_PRIOR_USED",
     "ASSUMPTION_RIVALS_DO_NOT_PIT",
     "BASELINE_STAY_OUT",
+    "NOTE_BASELINE",
+    "NOTE_NO_MODEL",
+    "NOTE_PERTURBATION",
+    "NOTE_PIT_LOSS_UNAVAILABLE",
+    "NOTE_STAY_OUT_NOT_VIABLE",
+    "NOTE_TRAFFIC_COST",
     "RISK_DAMAGE_NOT_MODELLED",
     "RISK_TRAFFIC_NOT_PRICED",
     "RISK_TYRE_DAMAGE_NOT_MODELLED",
@@ -60,6 +75,7 @@ __all__ = [
     "StrategyRecommendation",
     "StrategySnapshot",
     "compute_inputs_hash",
+    "evaluate_alternatives",
     "CompoundModel",
     "CompoundModels",
     "build_compound_models",
