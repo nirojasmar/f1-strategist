@@ -66,7 +66,7 @@ Documentos de diseño:
 | 2. Métricas e histórico | Implementada; validación parcial | A1--A4, B1--B3, C1--C4/C2b, D1--D9, E1--E4 y F2--F4 implementados. F3 y la documentación se actualizaron según O5; la semántica/tolerancia del MFD sigue abierta aunque la validación local actual pasa. |
 | 3. Grabación y replay | Implementada; validación local completa | G1--G8 implementados sobre SQLite versionado (v7 tras las migraciones de Fase 4), `play`/`replay`, datasets, huella y `verify`, grabador en vivo e `ingest`, inspección con `sessions`, pruebas E2E y benchmarks. Documentación en `docs/almacenamiento_sqlite.md`. Queda repetir CI en Linux y macOS. |
 | 3.5. Perfil del fin de semana | Implementada; validación local Windows | P1--P8 implementadas. Esquema SQLite v5, enlace de sesiones, resúmenes de tandas, inventario, perfil versionado y métricas `profile.*`; la prueba integrada cubre práctica, clasificación, carrera y reingesta con huella estable. Validación Linux por CI pendiente. |
-| 4. Motor de estrategia | En curso; S1--S9 implementadas | Ola 0 cerrada; S5--S8 cubren evaluación, decisión, motor integrado y registro SQLite; S9 añade panel, comandos de consulta y revisión de proyecciones en SQLite v7. Siguiente: S10 (validación E2E y rendimiento). |
+| 4. Motor de estrategia | En curso; S1--S9 implementadas | Ola 0 cerrada; S5--S8 cubren evaluación, decisión, motor integrado y registro SQLite; S9 añade panel, comandos de consulta y revisión de proyecciones en SQLite v7. Hay escenarios reales de alta degradación y safety car en el manifiesto; S10 E2E y rendimiento sigue pendiente. |
 | 5--10 | No iniciadas | |
 
 ## 5. Qué está verificado y qué no
@@ -248,9 +248,10 @@ Documentos de diseño:
 -   La Fase 3.5 solo está validada en Windows: CI en Linux y macOS queda pendiente (Docker no tiene
     daemon disponible y WSL solo muestra la distribución interna `docker-desktop`). El perfil del fin de
     semana tampoco se ha probado todavía contra capturas reales de un fin de semana completo.
--   La Fase 4 aún requiere validación con capturas reales de estrategia y condiciones variadas. La
-    bandera roja no se ha probado con una captura real; tampoco se ha medido el requisito de rendimiento
-    de S7 (<1 ms medio). La validación E2E y rendimiento de S10 siguen pendientes.
+-   La Fase 4 aún requiere validar el motor con capturas reales y completar E2E/rendimiento de S10. La nueva
+    captura de Sakhir contiene alta degradación y safety car, pero las observaciones del HUD no identifican
+    por sí solas la causa de los datos faltantes ni validan las decisiones del motor; tampoco se ha medido
+    el requisito de rendimiento de S7 (<1 ms medio).
 -   Queda volver a ejecutar CI de GitHub Actions después de la Ola 5.
 
 ## 6. Bitácora
@@ -716,6 +717,22 @@ fixes de la revisión (`0b3bd76`).
 -   H9--H10: `review` omite vueltas inválidas/ausentes sin truncar horizontes posteriores, pero se detiene ante
     paradas o cambio de compuesto; el formato completo exigido por CI pasa.
 -   Validación Windows: 899 pruebas aprobadas, 4 benchmarks excluidos; Ruff lint/formato y Pyright (0 errores).
+
+**UE2 parcial --- captura real de Sakhir.**
+
+-   La captura `captures/session-20261112-162235.f1cap` incluye práctica 1, clasificación corta y carrera de
+    20 vueltas. Se añadieron al manifiesto los recortes anonimizados de práctica y carrera; la carrera conserva
+    el evento de safety car y señales de alta degradación. Informe: `docs/example/informe_sakhir_20261112.md`.
+-   El piloto inició con C3 blando, paró en la vuelta 9 y montó C1 duro; el desgaste medio registrado al
+    cierre de la vuelta 8 fue 46,25 %. El juego mostró dos planes (blando→medio, parada en 10; blando→duro,
+    parada en 9). Falta grabar el caso opuesto donde mantener sea claramente mejor.
+-   Observaciones del HUD: predominó «datos insuficientes», «mantener» apareció unas cuatro vueltas desde
+    aproximadamente la 10 y luego volvió la falta de datos; la reincorporación desapareció cerca de dos vueltas
+    tras las paradas. Compuesto, juego, vuelta, ganancia contra la línea base e intervalo de ganancia quedaron
+    como «—». Causa no determinada; no se atribuye al motor sin registro de la evaluación mostrada.
+-   El safety car se desplegó en la vuelta 17 y se retiró en la 18; su modelado sigue fuera del MVP y debe
+    priorizarse después. Se registra también investigar un prior externo de posición de reincorporación cuando
+    aún nadie haya parado, refinable a cálculo con huecos/posiciones en vivo.
 
 ## 7. Hallazgos de la primera captura real
 

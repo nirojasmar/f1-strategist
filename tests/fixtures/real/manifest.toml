@@ -87,3 +87,37 @@ cars = 22
 pit_stops_total = 22
 best_lap_ms = 81608
 game_version = "1.26"
+
+[[scenario]]
+id = "sakhir-practice"
+file = "sakhir-practice-12-laps.f1cap.gz"
+sha256 = "cc6e071a0ac4e44f8a026131debd4267af8661324efabba54ea45b2cdedcbbaa"
+bytes = 8803751
+description = "Práctica 1 de Sakhir, 12 vueltas registradas, recortada y anonimizada."
+tags = ["practice", "sakhir", "real_capture", "strategy"]
+
+[scenario.expected]
+track = "sakhir"
+session_type = "practice_1"
+total_laps = 12
+cars = 22
+pit_stops_total = 2
+best_lap_ms = 90291
+game_version = "1.26"
+
+[[scenario]]
+id = "sakhir-20-laps-high-wear"
+file = "sakhir-race-20-laps-high-wear.f1cap.gz"
+sha256 = "81881672dc8f0179454aa1efb7ae2ac10d89ea2b05a8020cadc6e96cae80d4c1"
+bytes = 25132303
+description = "Carrera de Sakhir de 20 vueltas con alta degradación y safety car, recortada y anonimizada."
+tags = ["race", "sakhir", "real_capture", "strategy", "high_wear", "safety_car", "pit_stops"]
+
+[scenario.expected]
+track = "sakhir"
+session_type = "race"
+total_laps = 20
+cars = 22
+pit_stops_total = 22
+best_lap_ms = 91699
+game_version = "1.26"
