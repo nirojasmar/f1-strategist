@@ -366,6 +366,11 @@ def _build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="base de datos SQLite (por defecto, la de la configuración)",
     )
+
+    sub.add_parser(
+        "strategy",
+        help="motor de estrategia (sin subcomandos en esta versión)",
+    )
     return parser
 
 
@@ -1372,6 +1377,13 @@ def _cmd_trim(args: argparse.Namespace, console: Console, err: Console) -> int:
     return 0
 
 
+def _cmd_strategy(args: argparse.Namespace, console: Console, err: Console) -> int:
+    """Grupo del motor de estrategia; aún no tiene subcomandos."""
+    console.print("El motor de estrategia todavía no tiene subcomandos.")
+    console.print("[dim]Disponible en próximas versiones de la Fase 4.[/]")
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     console = Console()
@@ -1389,6 +1401,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "sessions": _cmd_sessions,
         "weekends": _cmd_weekends,
         "weekend": _cmd_weekend,
+        "strategy": _cmd_strategy,
     }
     try:
         return handlers[args.command](args, console, err)

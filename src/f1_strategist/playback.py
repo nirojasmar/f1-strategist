@@ -22,6 +22,7 @@ from .packets import parse_header
 from .parser import PacketParseError, is_ignored_by_design, parse_packet
 from .race_state import RaceState, RaceStateSnapshot
 from .receiver import Stats, StatsSnapshot
+from .strategy.types import StrategySnapshot
 from .weekend_profile import WeekendProfile
 
 _STOP = "stop"
@@ -210,6 +211,10 @@ class PlaybackSession:
     def history_snapshot(self) -> LapHistorySnapshot:
         """Histórico de vueltas procesado hasta el momento."""
         return self._metrics_engine.history.snapshot()
+
+    def strategy_snapshot(self) -> StrategySnapshot:
+        """Stub del motor de estrategia; S7 sustituye este método."""
+        return StrategySnapshot()
 
     # ------------------------------------------------------------------
     # Hilo de reproducción

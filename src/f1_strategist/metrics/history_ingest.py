@@ -1,4 +1,10 @@
-"""Ingesta de tiempos oficiales y stints desde paquetes SessionHistory."""
+"""Ingesta de tiempos oficiales y stints desde paquetes SessionHistory.
+
+Los límites de tanda del juego pueden adelantar el cierre de la tanda a la
+vuelta anterior a la entrada a boxes. Se conservan tal cual como respaldo; el
+resumen de tandas prioriza el compuesto y la edad observados al cerrar cada
+vuelta y solo usa estos límites cuando falta ese dato.
+"""
 
 from __future__ import annotations
 

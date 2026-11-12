@@ -78,6 +78,8 @@ def _snapshot_with_car(
     ended: bool = False,
     red_flag_periods: int | None = 0,
     track_temperature_c: float | None = None,
+    session_type: str | None = None,
+    track_length_m: float | None = None,
     freshness_updates: Mapping[str, float] | None = None,
 ) -> RaceStateSnapshot:
     snapshot = RaceState().snapshot()
@@ -97,6 +99,8 @@ def _snapshot_with_car(
             ended=ended,
             red_flag_periods=red_flag_periods,
             track_temperature_c=track_temperature_c,
+            session_type=session_type,
+            track_length_m=track_length_m,
         ),
         cars=tuple(cars),
         freshness=freshness,
@@ -586,6 +590,231 @@ def test_in_lap_flashback_marks_lap_and_resets_traffic_damage_and_ers() -> None:
     assert record.damage_max_delta_pct == 0.0
 
 
+@pytest.mark.parametrize(
+    ("session_type", "expected"),
+    [
+        ("practice", frozenset()),
+        ("race", frozenset({"first_lap"})),
+    ],
+)
+def test_first_lap_only_marks_the_start_of_a_race(
+    session_type: str,
+    expected: frozenset[str],
+) -> None:
+    tracker = LapTracker(config=MetricsConfig())
+    car = CarSnapshot(
+        car_index=0,
+        current_lap=1,
+        current_lap_time_ms=10_000,
+        lap_distance_m=1_000.0,
+    )
+    tracker.observe(
+        _snapshot_with_car(
+            car,
+            session_type=session_type,
+            freshness_updates={"lap_data": 1.0},
+        ),
+        1.0,
+    )
+    tracker.observe(
+        _snapshot_with_car(
+            replace(
+                car,
+                current_lap=2,
+                current_lap_time_ms=None,
+                last_lap_time_ms=90_000,
+                lap_distance_m=10.0,
+            ),
+            session_type=session_type,
+            freshness_updates={"lap_data": 2.0},
+        ),
+        2.0,
+    )
+
+    record = tracker.history.get(0, 1)
+    assert record is not None
+    assert record.flags == expected
+
+
+def test_start_line_crossing_keeps_the_out_lap_without_flashback() -> None:
+    tracker = LapTracker(config=MetricsConfig())
+    tracker.observe(
+        _snapshot_with_car(
+            CarSnapshot(
+                car_index=0,
+                current_lap=6,
+                current_lap_time_ms=60_000,
+                lap_distance_m=5_000.0,
+                pit_status="in_pit_area",
+                tyre_age_laps=5,
+                actual_tyre_compound="soft",
+            ),
+            session_type="practice",
+            track_length_m=5_809.0,
+            freshness_updates={"lap_data": 1.0, "car_status": 1.0},
+        ),
+        1.0,
+    )
+    tracker.observe(
+        _snapshot_with_car(
+            CarSnapshot(
+                car_index=0,
+                current_lap=7,
+                lap_distance_m=3.0,
+                tyre_age_laps=0,
+                actual_tyre_compound="hard",
+            ),
+            session_type="practice",
+            track_length_m=5_809.0,
+            freshness_updates={"lap_data": 2.0, "car_status": 2.0},
+        ),
+        2.0,
+    )
+    out_lap = tracker._open_laps[0]
+    assert out_lap.pit_exit is True
+
+    tracker.observe(
+        _snapshot_with_car(
+            CarSnapshot(
+                car_index=0,
+                current_lap=7,
+                current_lap_time_ms=40_000,
+                sector1_time_ms=10_000,
+                lap_distance_m=5_809.0,
+                pit_lane_time_ms=25_000,
+                pit_stop_timer_ms=2_500,
+                tyre_age_laps=0,
+                actual_tyre_compound="hard",
+            ),
+            session_type="practice",
+            track_length_m=5_809.0,
+            freshness_updates={"lap_data": 3.0, "car_status": 3.0},
+        ),
+        3.0,
+    )
+    tracker.observe(
+        _snapshot_with_car(
+            CarSnapshot(
+                car_index=0,
+                current_lap=7,
+                lap_distance_m=3.0,
+                tyre_age_laps=0,
+                actual_tyre_compound="hard",
+            ),
+            session_type="practice",
+            track_length_m=5_809.0,
+            freshness_updates={"lap_data": 4.0, "car_status": 4.0},
+        ),
+        4.0,
+    )
+    timed_lap = tracker._open_laps[0]
+    assert timed_lap.pit_exit is True
+    assert "flashback" not in timed_lap.flags
+
+    tracker.observe(
+        _snapshot_with_car(
+            CarSnapshot(
+                car_index=0,
+                current_lap=7,
+                current_lap_time_ms=80_000,
+                sector1_time_ms=30_000,
+                lap_distance_m=4_000.0,
+                tyre_age_laps=0,
+                actual_tyre_compound="hard",
+            ),
+            session_type="practice",
+            track_length_m=5_809.0,
+            freshness_updates={"lap_data": 5.0, "car_status": 5.0},
+        ),
+        5.0,
+    )
+    tracker.observe(
+        _snapshot_with_car(
+            CarSnapshot(
+                car_index=0,
+                current_lap=8,
+                lap_distance_m=10.0,
+                last_lap_time_ms=96_099,
+                tyre_age_laps=1,
+                actual_tyre_compound="hard",
+            ),
+            session_type="practice",
+            track_length_m=5_809.0,
+            freshness_updates={"lap_data": 6.0, "car_status": 6.0},
+        ),
+        6.0,
+    )
+
+    record = tracker.history.get(0, 7)
+    assert record is not None
+    assert record.lap_time_s == 96.099
+    assert record.pit_exit is True
+    assert record.pit_entry is False
+    assert record.pit_lane_time_s == 25.0
+    assert record.pit_stop_time_s == 2.5
+    assert "flashback" not in record.flags
+    assert "first_lap" not in record.flags
+    assert "out_lap" in classify_lap(record, MetricsConfig())
+
+
+def test_normal_out_lap_with_a_new_lap_number_keeps_out_lap() -> None:
+    tracker = LapTracker(config=MetricsConfig())
+    tracker.observe(
+        _snapshot_with_car(
+            CarSnapshot(
+                car_index=0,
+                current_lap=6,
+                current_lap_time_ms=60_000,
+                lap_distance_m=5_000.0,
+                pit_status="in_pit_area",
+                tyre_age_laps=5,
+                actual_tyre_compound="soft",
+            ),
+            session_type="practice",
+            track_length_m=5_809.0,
+            freshness_updates={"lap_data": 1.0, "car_status": 1.0},
+        ),
+        1.0,
+    )
+    tracker.observe(
+        _snapshot_with_car(
+            CarSnapshot(
+                car_index=0,
+                current_lap=7,
+                current_lap_time_ms=10_000,
+                lap_distance_m=100.0,
+                tyre_age_laps=0,
+                actual_tyre_compound="hard",
+            ),
+            session_type="practice",
+            track_length_m=5_809.0,
+            freshness_updates={"lap_data": 2.0, "car_status": 2.0},
+        ),
+        2.0,
+    )
+    tracker.observe(
+        _snapshot_with_car(
+            CarSnapshot(
+                car_index=0,
+                current_lap=8,
+                lap_distance_m=10.0,
+                last_lap_time_ms=90_000,
+                tyre_age_laps=1,
+                actual_tyre_compound="hard",
+            ),
+            session_type="practice",
+            track_length_m=5_809.0,
+            freshness_updates={"lap_data": 3.0, "car_status": 3.0},
+        ),
+        3.0,
+    )
+
+    record = tracker.history.get(0, 7)
+    assert record is not None
+    assert record.pit_exit is True
+    assert "out_lap" in classify_lap(record, MetricsConfig())
+
+
 def test_red_flag_restart_lap_is_marked() -> None:
     tracker = LapTracker(config=MetricsConfig())
     car = CarSnapshot(car_index=0, current_lap=2, current_lap_time_ms=20_000, lap_distance_m=1_000)
@@ -756,3 +985,121 @@ def test_stale_session_temperature_is_not_added_to_lap_history() -> None:
 
     assert record is not None
     assert record.track_temperature_c is None
+
+
+def test_rewind_without_a_pit_exit_is_a_flashback() -> None:
+    tracker = LapTracker(config=MetricsConfig())
+    tracker.observe(
+        _snapshot_with_car(
+            CarSnapshot(
+                car_index=0,
+                current_lap=6,
+                current_lap_time_ms=85_000,
+                lap_distance_m=5_700.0,
+                tyre_age_laps=5,
+                actual_tyre_compound="soft",
+            ),
+            session_type="race",
+            track_length_m=5_809.0,
+            freshness_updates={"lap_data": 1.0, "car_status": 1.0},
+        ),
+        1.0,
+    )
+    tracker.observe(
+        _snapshot_with_car(
+            CarSnapshot(
+                car_index=0,
+                current_lap=6,
+                current_lap_time_ms=1_000,
+                lap_distance_m=20.0,
+                tyre_age_laps=5,
+                actual_tyre_compound="soft",
+            ),
+            session_type="race",
+            track_length_m=5_809.0,
+            freshness_updates={"lap_data": 2.0, "car_status": 2.0},
+        ),
+        2.0,
+    )
+
+    open_lap = tracker._open_laps[0]
+    assert open_lap.pit_exit is False
+    assert "flashback" in open_lap.flags
+
+
+@pytest.mark.parametrize("race_type", ["race", "race_2", "race_3"])
+def test_first_lap_is_marked_for_every_race_type(race_type: str) -> None:
+    tracker = LapTracker(config=MetricsConfig())
+    tracker.observe(
+        _snapshot_with_car(
+            CarSnapshot(car_index=0, current_lap=1, lap_distance_m=10.0, tyre_age_laps=0),
+            session_type=race_type,
+            track_length_m=5_809.0,
+            freshness_updates={"lap_data": 1.0, "car_status": 1.0},
+        ),
+        1.0,
+    )
+
+    assert "first_lap" in tracker._open_laps[0].flags
+
+
+def test_first_lap_is_reconciled_when_the_session_type_arrives_late() -> None:
+    tracker = LapTracker(config=MetricsConfig())
+    tracker.observe(
+        _snapshot_with_car(
+            CarSnapshot(car_index=0, current_lap=1, lap_distance_m=10.0, tyre_age_laps=0),
+            session_type=None,
+            track_length_m=5_809.0,
+            freshness_updates={"lap_data": 1.0, "car_status": 1.0},
+        ),
+        1.0,
+    )
+    tracker.observe(
+        _snapshot_with_car(
+            CarSnapshot(car_index=0, current_lap=1, lap_distance_m=800.0, tyre_age_laps=0),
+            session_type="race",
+            track_length_m=5_809.0,
+            freshness_updates={"lap_data": 2.0, "car_status": 2.0},
+        ),
+        2.0,
+    )
+
+    assert "first_lap" in tracker._open_laps[0].flags
+
+
+def test_lap_one_is_marked_before_closing_when_race_type_arrives_on_lap_two() -> None:
+    tracker = LapTracker(config=MetricsConfig())
+    tracker.observe(
+        _snapshot_with_car(
+            CarSnapshot(
+                car_index=0,
+                current_lap=1,
+                lap_distance_m=10.0,
+                current_lap_time_ms=10_000,
+                tyre_age_laps=0,
+            ),
+            session_type=None,
+            track_length_m=5_809.0,
+            freshness_updates={"lap_data": 1.0, "car_status": 1.0},
+        ),
+        1.0,
+    )
+    tracker.observe(
+        _snapshot_with_car(
+            CarSnapshot(
+                car_index=0,
+                current_lap=2,
+                lap_distance_m=10.0,
+                last_lap_time_ms=90_000,
+                tyre_age_laps=1,
+            ),
+            session_type="race",
+            track_length_m=5_809.0,
+            freshness_updates={"lap_data": 2.0, "car_status": 2.0},
+        ),
+        2.0,
+    )
+
+    record = tracker.history.get(0, 1)
+    assert record is not None
+    assert "first_lap" in record.flags

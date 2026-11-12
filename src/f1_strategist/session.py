@@ -22,6 +22,7 @@ from .race_state import RaceState, RaceStateSnapshot
 from .receiver import Stats, StatsSnapshot, UdpReceiver
 from .recorder import _RACE_SESSION_TYPES, SessionRecorder, serialize_config
 from .store import SessionInfo, SessionStore
+from .strategy.types import StrategySnapshot
 from .weekend_profile import WeekendProfile
 from .weekend_provider import resolve_weekend_profile
 
@@ -276,6 +277,10 @@ class CaptureSession:
 
     def metrics_snapshot(self) -> MetricsSnapshot:
         return self._metrics_engine.snapshot()
+
+    def strategy_snapshot(self) -> StrategySnapshot:
+        """Stub del motor de estrategia; S7 sustituye este método."""
+        return StrategySnapshot()
 
     def _consume(self) -> None:
         while not (self._stop_consumer.is_set() and self._queue.empty()):

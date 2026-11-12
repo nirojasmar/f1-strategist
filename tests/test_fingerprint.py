@@ -12,7 +12,11 @@ import pytest
 
 from f1_strategist.capture import CapturedPacket, CaptureWriter
 from f1_strategist.cli import main
-from f1_strategist.config import AppConfig, MetricsConfig, RecordingConfig
+from f1_strategist.config import (
+    AppConfig,
+    CaptureConfig,
+    MetricsConfig,
+)
 from f1_strategist.fingerprint import (
     _FingerprintCollector,
     build_run_info,
@@ -138,7 +142,7 @@ def test_non_metric_config_change_changes_hash_and_fingerprint(
     default = fingerprint_capture(path)
     changed = fingerprint_capture(
         path,
-        AppConfig(recording=RecordingConfig(enabled=True)),
+        AppConfig(capture=CaptureConfig(enabled=False)),
     )
 
     assert default.run_info.config_hash != changed.run_info.config_hash

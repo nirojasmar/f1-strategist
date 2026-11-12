@@ -538,7 +538,7 @@ def test_session_info_validation() -> None:
 def test_recording_config_defaults_and_toml(tmp_path: Path) -> None:
     cfg = AppConfig()
     assert cfg.recording == RecordingConfig()
-    assert not cfg.recording.enabled
+    assert cfg.recording.enabled
     assert cfg.recording.database == Path("captures/sessions.db")
     assert cfg.recording.metrics_interval_s == 1.0
     assert cfg.recording.queue_size == 1000

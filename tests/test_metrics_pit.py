@@ -46,6 +46,7 @@ def _event_records(
             lap_time_s=90.0,
             valid=True,
             closed=True,
+            flags=frozenset({"first_lap"}),
         ),
         LapRecord(
             car_index,
