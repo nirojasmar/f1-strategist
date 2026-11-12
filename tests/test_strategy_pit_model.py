@@ -350,3 +350,26 @@ def test_estimates_are_deterministic() -> None:
         inputs, 20.0, StrategyConfig()
     )
     assert loss.to_dict()["source"] == "field"
+
+
+@pytest.mark.parametrize("status", ["did_not_finish", "disqualified", "not_classified"])
+def test_rejoin_ignores_terminal_result_statuses(status: str) -> None:
+    inputs = _rejoin_inputs(
+        rivals=(
+            _rival(2, 2, 12.0, result_status=status),
+            _rival(3, 3, 15.0),
+        )
+    )
+    estimate = estimate_rejoin(inputs, 20.0, StrategyConfig())
+
+    assert estimate.position == 2
+    assert estimate.car_ahead_index == 3
+
+
+def test_negative_field_samples_fall_back_instead_of_raising() -> None:
+    records = {0: _stop_laps(0, loss_s=-40.0)}
+    estimate = estimate_pit_loss(_inputs(records), StrategyConfig())
+
+    assert estimate.available
+    assert estimate.source == "lane"
+    assert estimate.value_s == pytest.approx(25.0)

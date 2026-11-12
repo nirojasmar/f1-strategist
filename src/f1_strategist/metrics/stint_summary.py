@@ -102,7 +102,7 @@ def summarize_stints(
     """
     records = tuple(sorted(laps, key=lambda record: record.lap_number))
     ordered = tuple(sorted(stints, key=lambda stint: stint.start_lap))
-    if not records or not ordered:
+    if not records:
         return ()
     car_indexes = sorted({record.car_index for record in records})
     if len(car_indexes) > 1:
@@ -122,6 +122,7 @@ def summarize_stints(
             _summary_stint(period, ordered, last_covered_lap),
             period,
             config,
+            declared=bool(ordered),
         )
         for index, period in enumerate(periods)
     )
@@ -132,13 +133,19 @@ def _stint_periods(
     stints: Sequence[TyreStint],
 ) -> tuple[tuple[LapRecord, ...], ...]:
     """Agrupa vueltas por compuesto y edad observados, con respaldo declarado."""
-    first_lap = stints[0].start_lap
-    last_lap = stints[-1].end_lap
-    covered = tuple(
-        record
-        for record in records
-        if record.lap_number >= first_lap and (last_lap is None or record.lap_number <= last_lap)
-    )
+    if stints:
+        first_lap = stints[0].start_lap
+        last_lap = stints[-1].end_lap
+        covered = tuple(
+            record
+            for record in records
+            if record.lap_number >= first_lap
+            and (last_lap is None or record.lap_number <= last_lap)
+        )
+    else:
+        # Sin tandas declaradas las observaciones son la fuente primaria: se
+        # cubren todas las vueltas recibidas.
+        covered = tuple(records)
     if not covered:
         return ()
     declared_starts = {stint.start_lap for stint in stints}
@@ -175,7 +182,7 @@ def _starts_observed_stint(record: LapRecord, previous: LapRecord) -> bool:
     return (
         record.tyre_age_end is not None
         and previous.tyre_age_end is not None
-        and record.tyre_age_end <= previous.tyre_age_end
+        and record.tyre_age_end < previous.tyre_age_end
     )
 
 
@@ -203,7 +210,9 @@ def _summary_stint(
     if compound is None and declared is not None:
         compound = declared.compound
     visual = declared.visual_compound if declared is not None else None
-    open_tail = stints[-1].end_lap is None and period[-1].lap_number == last_covered_lap
+    open_tail = (not stints or stints[-1].end_lap is None) and (
+        period[-1].lap_number == last_covered_lap
+    )
     end_lap = None if open_tail else period[-1].lap_number
     return TyreStint(
         compound=compound,
@@ -239,6 +248,8 @@ def _summarize(
     stint: TyreStint,
     records: Sequence[LapRecord],
     config: MetricsConfig,
+    *,
+    declared: bool = True,
 ) -> StintSummary:
     clean = tuple(record for record in records if _is_clean(record, config))
     return StintSummary(
@@ -264,7 +275,7 @@ def _summarize(
         track_temperature_mean_c=_mean_optional(record.track_temperature_c for record in records),
         weather=tuple(sorted({weather for record in records for weather in record.weather_seen})),
         representative=len(clean) >= config.min_representative_laps,
-        quality=_quality(len(clean), config),
+        quality=_quality(len(clean), config, declared=declared),
     )
 
 
@@ -276,12 +287,15 @@ def _is_clean(record: LapRecord, config: MetricsConfig) -> bool:
     return is_clean(classify_lap(record, config))
 
 
-def _quality(clean_laps: int, config: MetricsConfig) -> Quality:
+def _quality(clean_laps: int, config: MetricsConfig, *, declared: bool = True) -> Quality:
     if clean_laps == 0:
         return Quality.INSUFFICIENT
-    if clean_laps >= config.min_representative_laps:
-        return Quality.OK
-    return Quality.LOW
+    quality = Quality.OK if clean_laps >= config.min_representative_laps else Quality.LOW
+    if not declared and quality is Quality.OK:
+        # Sin tandas declaradas la delimitación depende solo de las
+        # observaciones, así que no se alcanza la calidad plena.
+        return Quality.LOW
+    return quality
 
 
 def _first_value[ValueT](values: Iterable[ValueT | None]) -> ValueT | None:

@@ -39,6 +39,7 @@ NOTE_SLOPE_UNAVAILABLE = "slope_unavailable"
 NOTE_INVENTORY_UNAVAILABLE = "inventory_unavailable"
 NOTE_NO_COMPOUNDS = "no_compounds"
 NOTE_USED_SET = "used_set_initial_age_from_wear"
+NOTE_WEAR_BLENDED = "wear_blended_with_prior"
 
 _MIN_RACE_LAPS = 3
 
@@ -251,7 +252,8 @@ def _fit_compound(
     return _Fit(regression.intercept, regression.slope, len(points))
 
 
-def _wear_rate_from_laps(records: tuple[LapRecord, ...]) -> float | None:
+def _wear_rate_from_laps(records: tuple[LapRecord, ...]) -> tuple[float, int] | None:
+    """Tasa de desgaste por vuelta y número de muestras usadas."""
     points: list[tuple[float, float]] = []
     for record in records:
         if record.tyre_age_end is None or not record.tyre_wear_end_pct:
@@ -265,7 +267,7 @@ def _wear_rate_from_laps(records: tuple[LapRecord, ...]) -> float | None:
     ).slope
     if not math.isfinite(slope) or slope <= 0:
         return None
-    return slope
+    return slope, len(points)
 
 
 def _profile_compound(profile: WeekendProfile | None, compound: str) -> CompoundProfile | None:
@@ -298,7 +300,7 @@ def _inventory_set(inputs: MetricInputs, compound: str) -> TyreSetSnapshot | Non
     candidates = [
         item
         for item in inputs.state.tyre_inventory
-        if canonical_compound(item.actual_tyre_compound) == compound and item.available is not False
+        if canonical_compound(item.actual_tyre_compound) == compound and item.available is True
     ]
     candidates.sort(key=lambda item: item.index)
     return candidates[0] if candidates else None
@@ -465,22 +467,40 @@ def _build_model(
             slope_note = NOTE_SLOPE_FROM_REFERENCE if slope is not None else None
         n_race_laps = 0
         delta = _relative_delta(profile, compound, reference)
-        if prior_base is not None:
-            base = prior_base
-            source = "profile"
-        elif delta is not None and reference_base is not None:
+        anchored = False
+        # El ritmo del compuesto sin vueltas de carrera se ancla siempre al
+        # modelo de carrera más el delta, no al ritmo absoluto de práctica.
+        # Mezclar medias de sesiones distintas introduciría un sesgo de varios
+        # segundos por vuelta.
+        if delta is not None and reference_base is not None:
             base = reference_base + delta
             source = "profile"
-        elif inventory is not None and reference_base is not None and compound != reference:
-            base = reference_base + inventory.lap_delta_time_ms / 1000.0
-            source = "game_delta"
+            anchored = True
+        elif prior_base is not None:
+            base = prior_base
+            source = "profile"
         elif compound == reference and reference_base is not None:
             base = reference_base
             source = "profile"
+            anchored = True
+        elif inventory is not None and reference_base is not None and compound != reference:
+            base = reference_base + inventory.lap_delta_time_ms / 1000.0
+            source = "game_delta"
+            anchored = True
         else:
             base = None
-            source = "profile"
-        if source == "game_delta":
+            source = "none"
+        if anchored:
+            low, ok = inputs.config.thresholds("pace")
+            quality = assess_quality(
+                reference_fit.n_laps if reference_fit is not None else 0,
+                ok,
+                low,
+                stale,
+            )
+            if prior_quality is not Quality.UNAVAILABLE:
+                quality = _worst_quality(quality, prior_quality)
+        elif source == "game_delta":
             quality = _worst_quality(
                 prior_quality if prior_quality is not Quality.UNAVAILABLE else Quality.LOW,
                 Quality.LOW,
@@ -497,15 +517,21 @@ def _build_model(
     elif slope_note is not None:
         notes.append(slope_note)
 
-    wear_rate = _wear_rate_from_laps(
+    wear_fit = _wear_rate_from_laps(
         _clean_laps(
             inputs,
             compound,
             current_stint_bounds(inputs, inputs.car_index) if compound == fitted else None,
         )
     )
-    if wear_rate is None and profile_entry is not None:
-        wear_rate = profile_entry.wear_rate_pct_per_lap.value
+    prior_wear = profile_entry.wear_rate_pct_per_lap.value if profile_entry is not None else None
+    if wear_fit is not None:
+        race_wear, wear_samples = wear_fit
+        wear_rate = blend_with_prior(prior_wear, race_wear, wear_samples, cfg.prior_strength_k)
+        if prior_wear is not None:
+            notes.append(NOTE_WEAR_BLENDED)
+    else:
+        wear_rate = prior_wear
 
     initial_age, age_notes = _initial_age(inputs, compound, fitted, wear_rate, inventory)
     notes.extend(age_notes)
@@ -622,6 +648,7 @@ __all__ = [
     "NOTE_SLOPE_SCALED",
     "NOTE_SLOPE_UNAVAILABLE",
     "NOTE_USED_SET",
+    "NOTE_WEAR_BLENDED",
     "SOURCES",
     "WET_COMPOUNDS",
     "CompoundModel",

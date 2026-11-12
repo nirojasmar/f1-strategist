@@ -21,6 +21,7 @@ from f1_strategist.strategy.pace_model import (
     NOTE_SLOPE_SCALED,
     NOTE_SLOPE_UNAVAILABLE,
     NOTE_USED_SET,
+    NOTE_WEAR_BLENDED,
     CompoundModel,
     build_compound_models,
     canonical_compound,
@@ -570,3 +571,67 @@ def test_tyre_stints_are_not_required() -> None:
     assert soft is not None
     assert soft.available
     assert soft.n_race_laps == 5
+
+
+def test_untried_compound_is_anchored_to_the_race_base() -> None:
+    # El ritmo absoluto de práctica (101 s) no debe sustituir al anclaje en
+    # carrera (base 90 s) más el delta del compuesto (+1 s).
+    records = _degrading_laps(count=3, base=90.0, slope=0.10)
+    profile = _weekend_profile(
+        (
+            _compound_profile("soft", pace=90.0, delta=0.0, wear=0.5),
+            _compound_profile("hard", pace=101.0, delta=1.0, wear=0.5),
+        ),
+        reference="soft",
+    )
+    inventory = (
+        TyreSetSnapshot(
+            index=1,
+            actual_tyre_compound="hard",
+            visual_tyre_compound="c1",
+            wear_pct=0.0,
+            available=True,
+            recommended_session="race",
+            lifespan_laps=40,
+            usable_life_laps=30,
+            lap_delta_time_ms=800,
+            fitted=False,
+        ),
+    )
+
+    hard = build_compound_models(
+        _inputs(records=records, profile=profile, spare=inventory),
+        StrategyConfig(),
+    ).get("hard")
+
+    assert hard is not None
+    assert hard.source == "profile"
+    assert hard.base_lap_s == pytest.approx(91.0)
+
+
+def test_wear_rate_is_blended_with_the_profile_prior() -> None:
+    # Carrera 2 %/vuelta con 5 muestras y prior 10 %/vuelta: (3·10 + 5·2)/8 = 5.
+    records = _degrading_laps(count=5, base=90.0, slope=0.10, wear_slope=2.0)
+    profile = _weekend_profile((_compound_profile("soft", pace=90.0, delta=0.0, wear=10.0),))
+
+    soft = build_compound_models(
+        _inputs(records=records, profile=profile),
+        StrategyConfig(prior_strength_k=3.0),
+    ).get("soft")
+
+    assert soft is not None
+    assert soft.wear_rate_pct_per_lap == pytest.approx(5.0)
+    assert NOTE_WEAR_BLENDED in soft.notes
+
+
+def test_prior_only_model_is_not_projectable_without_a_traceable_slope() -> None:
+    car = CarSnapshot(car_index=0, current_lap=1, actual_tyre_compound="soft", tyre_age_laps=0)
+    profile = _weekend_profile((_compound_profile("soft", pace=91.25, delta=0.0, wear=0.42),))
+
+    soft = build_compound_models(_inputs(car=car, profile=profile), StrategyConfig()).get("soft")
+
+    assert soft is not None
+    assert soft.base_lap_s == pytest.approx(91.25)
+    assert soft.slope_s_per_lap is None
+    assert not soft.available
+    assert NOTE_SLOPE_UNAVAILABLE in soft.notes

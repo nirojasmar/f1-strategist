@@ -15,6 +15,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+from collections.abc import Mapping
 from dataclasses import dataclass, fields, is_dataclass
 from enum import Enum, StrEnum
 from pathlib import Path
@@ -90,8 +91,8 @@ class AlternativeResult:
         _check_finite("gain_vs_baseline_s", self.gain_vs_baseline_s)
         if self.pit_lap is not None and self.pit_lap < 1:
             raise ValueError("pit_lap debe ser positivo")
-        if self.set_index is not None and self.set_index < 1:
-            raise ValueError("set_index debe ser positivo")
+        if self.set_index is not None and self.set_index < 0:
+            raise ValueError("set_index no puede ser negativo")
         if self.rejoin_position is not None and self.rejoin_position < 1:
             raise ValueError("rejoin_position debe ser positivo")
         for name in ("projected_laps_s", "pit_loss_s", "traffic_cost_s"):
@@ -165,6 +166,22 @@ class StrategyRecommendation:
             "confidence": _round(self.confidence),
         }
 
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> StrategyRecommendation:
+        """Reconstruye la recomendación desde su representación JSON validada."""
+        interval = data.get("gain_interval_s")
+        return cls(
+            action=StrategyAction(data["action"]),
+            key=str(data["key"]),
+            pit_lap=data.get("pit_lap"),
+            compound=data.get("compound"),
+            gain_vs_baseline_s=data.get("gain_vs_baseline_s"),
+            gain_interval_s=(
+                None if interval is None else (float(interval[0]), float(interval[1]))
+            ),
+            confidence=data.get("confidence"),
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class StrategyAlternative:
@@ -192,6 +209,17 @@ class StrategyAlternative:
             "rejoin_position": self.rejoin_position,
             "traffic_risk": self.traffic_risk,
         }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> StrategyAlternative:
+        """Reconstruye la alternativa desde su representación JSON validada."""
+        return cls(
+            key=str(data["key"]),
+            remaining_time_s=float(data["remaining_time_s"]),
+            gain_vs_baseline_s=float(data["gain_vs_baseline_s"]),
+            rejoin_position=data.get("rejoin_position"),
+            traffic_risk=data.get("traffic_risk"),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -233,10 +261,21 @@ class StrategyEvaluation:
             raise ValueError("baseline no puede estar vacía")
         if not self.inputs_hash:
             raise ValueError("inputs_hash no puede estar vacío")
-        object.__setattr__(self, "alternatives", tuple(self.alternatives))
-        object.__setattr__(self, "assumptions", tuple(self.assumptions))
-        object.__setattr__(self, "risks", tuple(self.risks))
-        object.__setattr__(self, "sensitive_to", tuple(self.sensitive_to))
+        alternatives = tuple(self.alternatives)
+        keys = [item.key for item in alternatives]
+        if len(set(keys)) != len(keys):
+            raise ValueError("Hay alternativas duplicadas en la evaluación")
+        # Las alternativas se publican ordenadas por clave: así dos evaluaciones
+        # equivalentes se serializan igual. Los supuestos, riesgos y
+        # sensibilidades son conjuntos y se canonizan alfabéticamente.
+        object.__setattr__(
+            self,
+            "alternatives",
+            tuple(sorted(alternatives, key=lambda item: item.key)),
+        )
+        object.__setattr__(self, "assumptions", tuple(sorted(set(self.assumptions))))
+        object.__setattr__(self, "risks", tuple(sorted(set(self.risks))))
+        object.__setattr__(self, "sensitive_to", tuple(sorted(set(self.sensitive_to))))
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -258,6 +297,36 @@ class StrategyEvaluation:
 
     def to_json(self) -> str:
         return _canonical_json(self.to_dict())
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> StrategyEvaluation:
+        """Reconstruye la evaluación desde su representación JSON validada."""
+        return cls(
+            revision=int(data["revision"]),
+            session_uid=str(data["session_uid"]),
+            lap=int(data["lap"]),
+            laps_remaining=data.get("laps_remaining"),
+            baseline=str(data["baseline"]),
+            recommendation=StrategyRecommendation.from_dict(data["recommendation"]),
+            alternatives=tuple(
+                StrategyAlternative.from_dict(item) for item in data["alternatives"]
+            ),
+            assumptions=tuple(data["assumptions"]),
+            risks=tuple(data["risks"]),
+            sensitive_to=tuple(data["sensitive_to"]),
+            data_quality=Quality(data["data_quality"]),
+            inputs_hash=str(data["inputs_hash"]),
+            profile_hash=data.get("profile_hash"),
+            schema_version=int(data.get("schema_version", STRATEGY_SCHEMA_VERSION)),
+        )
+
+    @classmethod
+    def from_json(cls, text: str) -> StrategyEvaluation:
+        """Reconstruye la evaluación desde su JSON canónico."""
+        payload = json.loads(text)
+        if not isinstance(payload, Mapping):
+            raise ValueError("La evaluación debe ser un objeto JSON")
+        return cls.from_dict(payload)
 
 
 @dataclass(frozen=True, slots=True)
@@ -300,7 +369,9 @@ def _normalize(value: object) -> Any:
         return _normalize(value.value)
     if is_dataclass(value) and not isinstance(value, type):
         return {field.name: _normalize(getattr(value, field.name)) for field in fields(value)}
-    if isinstance(value, dict):
+    if isinstance(value, Mapping):
+        # ``Mapping`` cubre también los ``MappingProxyType`` del histórico; sin
+        # esto caerían al ``str(value)`` y el orden de inserción alteraría el hash.
         return {str(key): _normalize(item) for key, item in value.items()}
     if isinstance(value, (frozenset, set)):
         return sorted((_normalize(item) for item in value), key=_canonical_json)

@@ -16,6 +16,7 @@ from f1_strategist.config import (
     StrategyTrackOverride,
     load_config,
 )
+from f1_strategist.metrics.history import LapHistorySnapshot
 from f1_strategist.metrics.types import Quality
 from f1_strategist.playback import PlaybackSession
 from f1_strategist.session import CaptureSession
@@ -91,22 +92,48 @@ def test_evaluation_round_trips_through_json() -> None:
     assert restored["recommendation"]["key"] == "pit_now:hard"
     assert restored["recommendation"]["gain_interval_s"] == [1.5, 5.5]
     assert restored["recommendation"]["confidence"] == 0.7
-    assert [item["key"] for item in restored["alternatives"]] == ["stay_out", "pit_now:hard"]
+    assert [item["key"] for item in restored["alternatives"]] == ["pit_now:hard", "stay_out"]
     assert restored["data_quality"] == "ok"
     assert restored["profile_hash"] == "abc123"
 
 
-def test_serialization_is_stable_and_preserves_list_order() -> None:
+def test_serialization_is_order_independent_and_canonical() -> None:
     first = _evaluation()
     second = _evaluation(
         alternatives=tuple(reversed(first.alternatives)),
         assumptions=tuple(reversed(first.assumptions)),
         risks=tuple(reversed(first.risks)),
+        sensitive_to=tuple(reversed(first.sensitive_to)),
     )
 
     assert first.to_json() == first.to_json()
-    assert first.to_json() != second.to_json()
-    assert first.to_dict()["alternatives"][0]["key"] == "stay_out"
+    assert first.to_json() == second.to_json()
+    assert first.to_dict()["alternatives"][0]["key"] == "pit_now:hard"
+    assert list(first.assumptions) == sorted(first.assumptions)
+    assert list(first.risks) == sorted(first.risks)
+
+
+def test_evaluation_round_trips_through_the_typed_contract() -> None:
+    evaluation = _evaluation()
+
+    restored = StrategyEvaluation.from_json(evaluation.to_json())
+
+    assert restored == evaluation
+    assert restored.to_json() == evaluation.to_json()
+
+
+def test_evaluation_rejects_duplicate_alternative_keys() -> None:
+    with pytest.raises(ValueError, match="duplicadas"):
+        _evaluation(
+            alternatives=(
+                StrategyAlternative(
+                    key="stay_out", remaining_time_s=1795.5, gain_vs_baseline_s=0.0
+                ),
+                StrategyAlternative(
+                    key="stay_out", remaining_time_s=1795.5, gain_vs_baseline_s=1.0
+                ),
+            )
+        )
 
 
 def test_inputs_hash_is_order_independent_and_type_sensitive() -> None:
@@ -319,3 +346,31 @@ def test_playback_session_exposes_an_empty_strategy_snapshot(tmp_path: Path) -> 
 def test_cli_strategy_group_runs_without_subcommands(capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["strategy"]) == 0
     assert "subcomandos" in capsys.readouterr().out
+
+
+def test_alternative_result_accepts_the_zero_set_index() -> None:
+    result = AlternativeResult(
+        key="pit_now:soft",
+        action=StrategyAction.PIT_NOW,
+        remaining_time_s=100.0,
+        gain_vs_baseline_s=1.0,
+        quality=Quality.OK,
+        set_index=0,
+    )
+
+    assert result.set_index == 0
+    with pytest.raises(ValueError, match="negativo"):
+        replace(result, set_index=-1)
+
+
+def test_inputs_hash_is_order_independent_for_read_only_mappings() -> None:
+    from types import MappingProxyType
+
+    first = LapHistorySnapshot(records={0: (), 1: ()})
+    second = LapHistorySnapshot(records={1: (), 0: ()})
+
+    assert first == second
+    assert compute_inputs_hash(first) == compute_inputs_hash(second)
+    assert compute_inputs_hash({"m": MappingProxyType({"b": 1, "a": 2})}) == compute_inputs_hash(
+        {"m": MappingProxyType({"a": 2, "b": 1})}
+    )

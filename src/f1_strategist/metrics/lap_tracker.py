@@ -14,6 +14,7 @@ _TERMINAL_RESULT_STATUSES = frozenset(
     {"finished", "did_not_finish", "disqualified", "not_classified", "retired"}
 )
 _PIT_STATUSES = frozenset({"pitting", "in_pit_area"})
+_RACE_SESSION_TYPES = frozenset({"race", "race_2", "race_3"})
 _TRACKED_FRESHNESS_GROUPS = ("lap_data", "car_status", "car_damage", "tyre_sets", "session")
 PARTIAL_LAP_MIN_TIME_S = 3.0
 PARTIAL_LAP_MIN_DISTANCE_M = 50.0
@@ -293,7 +294,7 @@ class LapTracker:
             ),
             start_compound=_compound(car),
         )
-        if state.session.session_type == "race" and open_lap.lap_number == 1:
+        if state.session.session_type in _RACE_SESSION_TYPES and open_lap.lap_number == 1:
             open_lap.flags.add("first_lap")
         if self._pending_flashback_laps.pop(car_index, None) == open_lap.lap_number:
             open_lap.flags.add("flashback")
@@ -349,7 +350,21 @@ class LapTracker:
         if open_lap.start_compound is None:
             open_lap.start_compound = _compound(car)
 
-        crossing = self._is_start_line_crossing(car, previous, state)
+        # El tipo de sesión puede llegar después del primer paquete: la marca
+        # de primera vuelta se reconcilia antes de cerrar la vuelta 1.
+        if (
+            open_lap.lap_number == 1
+            and state.session.session_type in _RACE_SESSION_TYPES
+            and "first_lap" not in open_lap.flags
+        ):
+            open_lap.flags.add("first_lap")
+
+        crossing = self._is_start_line_crossing(
+            car,
+            previous,
+            state,
+            pit_exit=open_lap.pit_exit,
+        )
         if crossing:
             self._reset_timed_lap_after_crossing(open_lap, car, now)
         elif self._is_in_lap_flashback(car, previous):
@@ -389,13 +404,19 @@ class LapTracker:
         car: CarSnapshot,
         previous: CarSnapshot | None,
         state: RaceStateSnapshot,
+        *,
+        pit_exit: bool,
     ) -> bool:
         """Detecta el cruce de meta durante una vuelta de salida de boxes.
 
         El juego puede conservar el número de vuelta al cruzar la línea: la
         distancia cae desde cerca del final del circuito hasta cerca de cero y
         se reinician el tiempo de vuelta o el primer sector. No es un flashback.
+        Solo se considera cruce si la vuelta abierta es de salida de boxes: un
+        retroceso de estado sin esa evidencia es un flashback.
         """
+        if not pit_exit:
+            return False
         track_length = state.session.track_length_m
         if (
             previous is None
@@ -428,11 +449,15 @@ class LapTracker:
         car: CarSnapshot,
         now: float,
     ) -> None:
-        """Separa el tramo cronometrado del tramo de salida de boxes."""
-        open_lap.flags.discard("flashback")
+        """Separa el tramo cronometrado del tramo de salida de boxes.
+
+        El tramo de salida se conserva en la propia vuelta cronometrada: la
+        marca ``pit_exit`` y la bandera ``out_lap`` no se descartan, de modo que
+        el histórico mantiene la evidencia de la parada y la comparabilidad
+        sigue tratando la vuelta como salida. Un ``flashback`` confirmado
+        tampoco se elimina.
+        """
         open_lap.flags.discard("partial_lap")
-        open_lap.flags.discard("out_lap")
-        open_lap.pit_exit = False
         open_lap.pit_lane_time_s = None
         open_lap.pit_stop_time_s = None
         open_lap.started_at_monotonic = now

@@ -7,7 +7,12 @@ from dataclasses import replace
 import pytest
 
 from f1_strategist.config import MetricsConfig, StrategyConfig
-from f1_strategist.metrics.history import LapHistorySnapshot, MetricInputs, TyreStint
+from f1_strategist.metrics.history import (
+    LapHistorySnapshot,
+    LapRecord,
+    MetricInputs,
+    TyreStint,
+)
 from f1_strategist.metrics.types import Quality
 from f1_strategist.race_state import (
     CarSnapshot,
@@ -16,6 +21,7 @@ from f1_strategist.race_state import (
     WeatherForecastSnapshot,
 )
 from f1_strategist.strategy.tyre_options import (
+    NOTE_AVAILABILITY_UNKNOWN,
     NOTE_LIFE_RISK,
     NOTE_NO_INVENTORY,
     NOTE_NO_OPTIONS,
@@ -62,6 +68,7 @@ def _inputs(
     *,
     inventory: tuple[TyreSetSnapshot, ...] = (),
     stints: tuple[TyreStint, ...] = (),
+    records: tuple[LapRecord, ...] = (),
     car: CarSnapshot | None = None,
     config: MetricsConfig | None = None,
     session_fields: dict[str, object] | None = None,
@@ -72,7 +79,10 @@ def _inputs(
         cars[car.car_index] = car
     session = replace(state.session, **(session_fields or {}))
     state = replace(state, cars=tuple(cars), session=session, tyre_inventory=inventory)
-    history = LapHistorySnapshot(records={}, tyre_stints={0: stints})
+    history = LapHistorySnapshot(
+        records={0: records} if records else {},
+        tyre_stints={0: stints},
+    )
     return MetricInputs(state, history, config or MetricsConfig(), 10.0, 0)
 
 
@@ -111,7 +121,7 @@ def test_available_sets_become_options_with_real_and_visual_compound() -> None:
     assert options.quality is Quality.OK
 
 
-def test_unavailable_sets_are_excluded() -> None:
+def test_sets_without_confirmed_availability_are_excluded() -> None:
     inventory = (
         _tyre_set(1, "soft", available=False),
         _tyre_set(2, "hard", available=None),
@@ -121,7 +131,24 @@ def test_unavailable_sets_are_excluded() -> None:
         StrategyConfig(),
     )
 
-    assert options.compounds == ("hard",)
+    assert options.compounds == ()
+    assert NOTE_AVAILABILITY_UNKNOWN in options.notes
+    assert options.quality is Quality.INSUFFICIENT
+
+
+def test_only_confirmed_availability_is_offered() -> None:
+    inventory = (
+        _tyre_set(1, "soft", available=True),
+        _tyre_set(2, "hard", available=None),
+        _tyre_set(3, "medium", available=False),
+    )
+    options = tyre_options(
+        _inputs(inventory=inventory, car=_car(current_lap=5, actual_tyre_compound="hard")),
+        StrategyConfig(),
+    )
+
+    assert options.compounds == ("soft",)
+    assert NOTE_AVAILABILITY_UNKNOWN in options.notes
 
 
 def test_rule_pending_makes_the_stop_mandatory_and_excludes_the_current_compound() -> None:
@@ -374,3 +401,43 @@ def test_tyre_option_rejects_invalid_values() -> None:
         TyreOption(compound="soft", initial_wear_pct=120.0)
     with pytest.raises(ValueError, match="useful_life_laps"):
         TyreOption(compound="soft", useful_life_laps=-1.0)
+
+
+def _closed_lap(lap: int, lap_time_s: float = 100.0) -> LapRecord:
+    return LapRecord(
+        car_index=0,
+        lap_number=lap,
+        lap_time_s=lap_time_s,
+        lap_time_source="lap_data",
+        closed=True,
+    )
+
+
+def test_forecast_horizon_follows_the_stop_window() -> None:
+    # 30 vueltas de 100 s son 50 minutos: el aviso a los 31 minutos está dentro.
+    records = tuple(_closed_lap(lap) for lap in range(1, 4))
+    options = tyre_options(
+        _inputs(
+            records=records,
+            car=_car(current_lap=1, actual_tyre_compound="medium"),
+            session_fields={"forecast": (_forecast(31, 80),), "total_laps": 60},
+        ),
+        StrategyConfig(max_pit_in_laps=30),
+    )
+
+    assert options.wet_conditions
+    assert NOTE_WET in options.notes
+
+
+def test_forecast_outside_the_stop_window_is_ignored() -> None:
+    records = tuple(_closed_lap(lap) for lap in range(1, 4))
+    options = tyre_options(
+        _inputs(
+            records=records,
+            car=_car(current_lap=1, actual_tyre_compound="medium"),
+            session_fields={"forecast": (_forecast(60, 80),), "total_laps": 60},
+        ),
+        StrategyConfig(max_pit_in_laps=30),
+    )
+
+    assert not options.wet_conditions

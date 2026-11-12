@@ -260,7 +260,11 @@ def test_empty_inputs_return_an_empty_tuple() -> None:
     assert summarize_stints((), (), MetricsConfig()) == ()
     assert summarize_stints((), (TyreStint(compound="soft", start_lap=1),), MetricsConfig()) == ()
     laps = _green_stint(1, 3, compound="soft")
-    assert summarize_stints(laps, (), MetricsConfig()) == ()
+    observed = summarize_stints(laps, (), MetricsConfig())
+    assert len(observed) == 1
+    assert observed[0].laps == 3
+    assert observed[0].compound == "soft"
+    assert observed[0].quality is Quality.LOW
 
 
 def test_laps_outside_any_stint_are_ignored() -> None:
@@ -460,3 +464,40 @@ def test_declared_boundary_splits_same_compound_without_observed_age() -> None:
     summaries = summarize_stints(laps, stints, MetricsConfig())
 
     assert [(item.start_lap, item.end_lap) for item in summaries] == [(1, 2), (3, None)]
+
+
+def test_repeated_tyre_age_does_not_fragment_the_stint() -> None:
+    laps = tuple(
+        _lap(lap, compound="c1", tyre_age_start=1, lap_time_s=90.0 + lap * 0.1)
+        for lap in range(1, 6)
+    )
+
+    summaries = summarize_stints(laps, (), MetricsConfig())
+
+    assert len(summaries) == 1
+    assert summaries[0].laps == 5
+
+
+def test_a_real_age_decrease_opens_a_new_stint() -> None:
+    laps = (
+        _lap(1, compound="c1", tyre_age_start=5),
+        _lap(2, compound="c1", tyre_age_start=0),
+    )
+
+    summaries = summarize_stints(laps, (), MetricsConfig())
+
+    assert len(summaries) == 2
+
+
+def test_declared_stints_keep_full_quality() -> None:
+    laps = tuple(
+        _lap(lap, compound="soft", tyre_age_start=lap - 1, lap_time_s=90.0) for lap in range(1, 6)
+    )
+
+    declared = summarize_stints(
+        laps, (TyreStint(compound="soft", start_lap=1, end_lap=5),), MetricsConfig()
+    )
+    observed = summarize_stints(laps, (), MetricsConfig())
+
+    assert declared[0].quality is Quality.OK
+    assert observed[0].quality is Quality.LOW

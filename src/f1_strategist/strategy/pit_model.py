@@ -42,9 +42,19 @@ NOTE_RIVAL_GAP_UNAVAILABLE = "rival_gap_unavailable"
 NOTE_LEADER_GAP_UNAVAILABLE = "leader_gap_unavailable"
 NOTE_GAME_REJOIN_MISMATCH = "game_rejoin_mismatch"
 NOTE_PLAYER_UNAVAILABLE = "player_car_unavailable"
+NOTE_NEGATIVE_SAMPLES_DISCARDED = "negative_pit_loss_samples_discarded"
 
-#: Estados que excluyen a un coche del cálculo de reincorporación.
-_RETIRED_STATUSES = frozenset({"retired", "inactive", "invalid"})
+#: Estados de resultado que excluyen a un coche del cálculo de reincorporación.
+_RETIRED_STATUSES = frozenset(
+    {
+        "retired",
+        "inactive",
+        "invalid",
+        "did_not_finish",
+        "disqualified",
+        "not_classified",
+    }
+)
 
 #: Vueltas de referencia a cada lado de una parada para estimar su pérdida.
 _REFERENCE_WINDOW = 3
@@ -210,8 +220,13 @@ def _stop_pairs(inputs: MetricInputs) -> tuple[tuple[LapRecord, LapRecord], ...]
     return tuple(pairs)
 
 
-def _loss_samples(inputs: MetricInputs) -> tuple[float, ...]:
-    """Pérdida observada de cada parada: entrada + salida − 2 · ritmo de referencia."""
+def _loss_samples(inputs: MetricInputs) -> tuple[tuple[float, ...], int]:
+    """Muestras válidas de pérdida y cuántas se descartaron por ser negativas.
+
+    Una muestra negativa indica que las vueltas de referencia no son
+    comparables (por ejemplo, tras un coche de seguridad); se descarta en lugar
+    de convertirla en cero o dejar que rompa la validación del resultado.
+    """
     losses: list[float] = []
     for entry, exit_record in _stop_pairs(inputs):
         records = inputs.history.records_for(entry.car_index)
@@ -230,7 +245,8 @@ def _loss_samples(inputs: MetricInputs) -> tuple[float, ...]:
         if not reference or entry.lap_time_s is None or exit_record.lap_time_s is None:
             continue
         losses.append(entry.lap_time_s + exit_record.lap_time_s - 2 * median(reference))
-    return tuple(losses)
+    valid = tuple(sample for sample in losses if sample >= 0.0)
+    return valid, len(losses) - len(valid)
 
 
 def _robust_dispersion(samples: tuple[float, ...]) -> float | None:
@@ -242,7 +258,7 @@ def _robust_dispersion(samples: tuple[float, ...]) -> float | None:
 
 
 def _field_loss(inputs: MetricInputs, cfg: StrategyConfig, stale: bool) -> PitLossEstimate | None:
-    samples = _loss_samples(inputs)
+    samples, discarded = _loss_samples(inputs)
     if not samples:
         return None
     value = median(samples)
@@ -253,6 +269,8 @@ def _field_loss(inputs: MetricInputs, cfg: StrategyConfig, stale: bool) -> PitLo
     else:
         band = cfg.pit_loss_band_s
         notes = (NOTE_FIXED_BAND,)
+    if discarded:
+        notes = (*notes, NOTE_NEGATIVE_SAMPLES_DISCARDED)
     _, ok = inputs.config.thresholds("pit")
     enough = len(samples) >= ok and len(samples) >= _MIN_FIELD_STOPS
     quality = Quality.OK if enough else Quality.LOW
@@ -460,6 +478,7 @@ __all__ = [
     "NOTE_NO_PIT_LOSS",
     "NOTE_OVERRIDE",
     "NOTE_PLAYER_UNAVAILABLE",
+    "NOTE_NEGATIVE_SAMPLES_DISCARDED",
     "NOTE_PROFILE_PRIOR",
     "NOTE_RIVALS_DO_NOT_PIT",
     "NOTE_RIVAL_GAP_UNAVAILABLE",

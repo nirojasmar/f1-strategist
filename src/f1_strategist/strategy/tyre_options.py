@@ -15,8 +15,10 @@ from __future__ import annotations
 import math
 from collections.abc import Iterator
 from dataclasses import dataclass
+from statistics import median
 
 from ..config import StrategyConfig
+from ..metrics.comparability import classify_lap, is_clean
 from ..metrics.history import MetricInputs
 from ..metrics.types import Quality
 from ..race_state import TyreSetSnapshot
@@ -28,15 +30,22 @@ WET_COMPOUNDS: frozenset[str] = frozenset({"intermediate", "wet"})
 #: Estados de clima que ya implican pista mojada.
 WET_WEATHER: frozenset[str] = frozenset({"light_rain", "heavy_rain", "wet", "storm"})
 
-#: Probabilidad de lluvia (porcentaje) a partir de la cual se avisa.
+#: Probabilidad de lluvia (porcentaje) declarada por el juego para el intervalo.
 RAIN_PROBABILITY_THRESHOLD = 50
 
-#: Ventana del pronóstico que se considera relevante, en minutos.
+#: Ventana del pronóstico que se considera relevante cuando no puede deducirse
+#: del estado de la sesión, en minutos.
 FORECAST_HORIZON_MINUTES = 30
 
+#: Tiempo de vuelta supuesto cuando el histórico no permite estimarlo, en segundos.
+DEFAULT_LAP_TIME_S = 100.0
+
 NOTE_NO_INVENTORY = "inventory_unavailable"
+NOTE_AVAILABILITY_UNKNOWN = "inventory_availability_unknown"
 NOTE_WET = "wet_conditions"
 NOTE_FORECAST_RAIN = "forecast_rain"
+NOTE_FORECAST_HORIZON_ASSUMED = "forecast_horizon_assumed"
+NOTE_FORECAST_LAP_TIME_APPROXIMATE = "forecast_lap_time_approximate"
 NOTE_RULE_PENDING = "two_compounds_pending"
 NOTE_RULE_DISABLED = "two_compounds_disabled"
 NOTE_RULE_SATISFIED = "two_compounds_satisfied"
@@ -175,14 +184,65 @@ def _stale(inputs: MetricInputs) -> bool:
     return freshness.is_stale(inputs.now)
 
 
-def _rain_expected(inputs: MetricInputs) -> bool:
-    """True si el pronóstico relevante anuncia lluvia probable."""
+def _window_laps(inputs: MetricInputs, cfg: StrategyConfig) -> int | None:
+    """Vueltas que abarca la ventana de parada relevante para el pronóstico."""
+    session = inputs.state.session
+    car = inputs.car
+    current_lap = car.current_lap if car is not None else None
+    if session.pit_window_latest_lap is not None and current_lap is not None:
+        return max(0, session.pit_window_latest_lap - current_lap)
+    if cfg.max_pit_in_laps > 0:
+        return cfg.max_pit_in_laps
+    return None
+
+
+def _lap_time_s(inputs: MetricInputs) -> tuple[float | None, bool]:
+    """Mediana del tiempo de vuelta del jugador y si hubo que relajar el filtro."""
+    records = inputs.history.records_for(inputs.car_index)
+    clean = [
+        record.lap_time_s
+        for record in records
+        if record.closed
+        and record.lap_time_s is not None
+        and is_clean(classify_lap(record, inputs.config))
+    ]
+    if clean:
+        return median(clean), False
+    any_closed = [
+        record.lap_time_s for record in records if record.closed and record.lap_time_s is not None
+    ]
+    if any_closed:
+        return median(any_closed), True
+    return None, True
+
+
+def _forecast_horizon_minutes(
+    inputs: MetricInputs,
+    cfg: StrategyConfig,
+) -> tuple[float, tuple[str, ...]]:
+    """Horizonte del pronóstico en minutos, derivado de la ventana de parada.
+
+    La ventana se mide en vueltas y se convierte con el ritmo del jugador; si
+    falta la ventana o el ritmo se usa el valor provisional y se declara.
+    """
+    laps = _window_laps(inputs, cfg)
+    lap_time, approximate = _lap_time_s(inputs)
+    if laps is None or lap_time is None:
+        return float(FORECAST_HORIZON_MINUTES), (NOTE_FORECAST_HORIZON_ASSUMED,)
+    notes: list[str] = []
+    if approximate:
+        notes.append(NOTE_FORECAST_LAP_TIME_APPROXIMATE)
+    return laps * lap_time / 60.0, tuple(notes)
+
+
+def _rain_expected(inputs: MetricInputs, horizon_minutes: float) -> bool:
+    """True si el pronóstico relevante anuncia lluvia probable en el horizonte."""
     session = inputs.state.session
     current_type = session.session_type
     for sample in session.forecast:
         if current_type is not None and sample.session_type not in {None, current_type}:
             continue
-        if sample.offset_minutes > FORECAST_HORIZON_MINUTES:
+        if sample.offset_minutes > horizon_minutes:
             continue
         if sample.rain_percentage >= RAIN_PROBABILITY_THRESHOLD:
             return True
@@ -267,17 +327,24 @@ def tyre_options(inputs: MetricInputs, cfg: StrategyConfig) -> TyreOptions:
     wet = session.weather in WET_WEATHER
     if wet:
         notes.append(NOTE_WET)
-    elif _rain_expected(inputs):
-        wet = True
-        notes.append(NOTE_FORECAST_RAIN)
-        notes.append(NOTE_WET)
+    else:
+        horizon, horizon_notes = _forecast_horizon_minutes(inputs, cfg)
+        notes.extend(horizon_notes)
+        if _rain_expected(inputs, horizon):
+            wet = True
+            notes.append(NOTE_FORECAST_RAIN)
+            notes.append(NOTE_WET)
 
     inventory = inputs.state.tyre_inventory
     remaining = _remaining_laps(inputs)
     options: list[TyreOption] = []
     skipped_wet = False
+    unknown_availability = False
     for item in inventory:
-        if item.available is False:
+        # Solo se ofrece un juego con disponibilidad confirmada; un ``None``
+        # significa que el juego no lo ha publicado y no se puede suponer.
+        if item.available is not True:
+            unknown_availability = unknown_availability or item.available is None
             continue
         compound = canonical_compound(item.actual_tyre_compound)
         if compound is None:
@@ -290,6 +357,8 @@ def tyre_options(inputs: MetricInputs, cfg: StrategyConfig) -> TyreOptions:
         options.append(_option(item, compound, remaining))
     if skipped_wet:
         notes.append(NOTE_WET_SETS_SKIPPED)
+    if unknown_availability:
+        notes.append(NOTE_AVAILABILITY_UNKNOWN)
 
     options.sort(key=lambda option: (option.compound, option.set_index or -1))
     ordered = tuple(options)
@@ -314,7 +383,11 @@ def tyre_options(inputs: MetricInputs, cfg: StrategyConfig) -> TyreOptions:
 
 
 __all__ = [
+    "DEFAULT_LAP_TIME_S",
     "FORECAST_HORIZON_MINUTES",
+    "NOTE_AVAILABILITY_UNKNOWN",
+    "NOTE_FORECAST_HORIZON_ASSUMED",
+    "NOTE_FORECAST_LAP_TIME_APPROXIMATE",
     "NOTE_FORECAST_RAIN",
     "NOTE_LIFE_RISK",
     "NOTE_LIFE_SCALED",
