@@ -7,6 +7,7 @@ from .pace_model import (
     CompoundModels,
     build_compound_models,
     project_lap_times,
+    project_tyre_option_lap_times,
 )
 from .pit_model import (
     PitLossEstimate,
@@ -63,6 +64,7 @@ __all__ = [
     "CompoundModels",
     "build_compound_models",
     "project_lap_times",
+    "project_tyre_option_lap_times",
     "PitLossEstimate",
     "RejoinEstimate",
     "estimate_pit_loss",

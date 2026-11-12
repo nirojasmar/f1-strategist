@@ -216,6 +216,8 @@ class LapTracker:
                     if sequential and car.last_lap_time_ms is not None
                     else None
                 )
+                if open_lap.lap_number == 1 and state.session.session_type in _RACE_SESSION_TYPES:
+                    open_lap.flags.add("first_lap")
                 new_open = self._open_lap(index, car, previous, state, now)
                 self._finish_lap(
                     open_lap,
@@ -458,8 +460,6 @@ class LapTracker:
         tampoco se elimina.
         """
         open_lap.flags.discard("partial_lap")
-        open_lap.pit_lane_time_s = None
-        open_lap.pit_stop_time_s = None
         open_lap.started_at_monotonic = now
         open_lap.start_fuel_kg = car.fuel_kg
         open_lap.start_wear = _wear(car)

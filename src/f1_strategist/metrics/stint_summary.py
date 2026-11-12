@@ -134,13 +134,14 @@ def _stint_periods(
 ) -> tuple[tuple[LapRecord, ...], ...]:
     """Agrupa vueltas por compuesto y edad observados, con respaldo declarado."""
     if stints:
-        first_lap = stints[0].start_lap
-        last_lap = stints[-1].end_lap
         covered = tuple(
             record
             for record in records
-            if record.lap_number >= first_lap
-            and (last_lap is None or record.lap_number <= last_lap)
+            if any(
+                record.lap_number >= stint.start_lap
+                and (stint.end_lap is None or record.lap_number <= stint.end_lap)
+                for stint in stints
+            )
         )
     else:
         # Sin tandas declaradas las observaciones son la fuente primaria: se
@@ -152,12 +153,18 @@ def _stint_periods(
     periods: list[list[LapRecord]] = []
     for record in covered:
         previous = periods[-1][-1] if periods else None
-        starts = previous is None or _starts_observed_stint(record, previous)
+        previous_compound = (
+            _last_value(item.compound for item in periods[-1]) if previous is not None else None
+        )
+        starts = previous is None or _starts_observed_stint(record, previous, previous_compound)
         if (
             not starts
             and previous is not None
             and record.lap_number in declared_starts
-            and not _observed_continuation(previous, record)
+            and (
+                record.lap_number > previous.lap_number + 1
+                or not _observed_continuation(previous, record)
+            )
         ):
             starts = True
         if starts:
@@ -167,14 +174,18 @@ def _stint_periods(
     return tuple(tuple(period) for period in periods)
 
 
-def _starts_observed_stint(record: LapRecord, previous: LapRecord) -> bool:
+def _starts_observed_stint(
+    record: LapRecord,
+    previous: LapRecord,
+    previous_compound: str | None,
+) -> bool:
     """Indica si la vuelta abre una tanda según el estado observado."""
     if record.pit_exit:
         return True
     if (
         record.compound is not None
-        and previous.compound is not None
-        and record.compound != previous.compound
+        and previous_compound is not None
+        and record.compound != previous_compound
     ):
         return True
     if record.tyre_age_start == 0:
@@ -209,10 +220,20 @@ def _summary_stint(
     compound = _first_value(record.compound for record in period)
     if compound is None and declared is not None:
         compound = declared.compound
-    visual = declared.visual_compound if declared is not None else None
-    open_tail = (not stints or stints[-1].end_lap is None) and (
-        period[-1].lap_number == last_covered_lap
+    visual = (
+        declared.visual_compound if declared is not None and declared.compound == compound else None
     )
+    final_stint_observed = bool(
+        stints
+        and any(
+            record.lap_number >= stints[-1].start_lap
+            and (stints[-1].end_lap is None or record.lap_number <= stints[-1].end_lap)
+            for record in period
+        )
+    )
+    open_tail = (not stints or (stints[-1].end_lap is None and final_stint_observed)) and period[
+        -1
+    ].lap_number == last_covered_lap
     end_lap = None if open_tail else period[-1].lap_number
     return TyreStint(
         compound=compound,

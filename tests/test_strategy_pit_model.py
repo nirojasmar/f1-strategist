@@ -150,6 +150,25 @@ def test_profile_prior_is_used_without_field_stops() -> None:
     assert NOTE_PROFILE_PRIOR in estimate.notes
 
 
+def test_negative_profile_prior_falls_back_to_lane_time() -> None:
+    lane_only = (
+        LapRecord(
+            0,
+            4,
+            lap_time_s=115.0,
+            valid=True,
+            pit_entry=True,
+            pit_lane_time_s=24.0,
+            closed=True,
+        ),
+    )
+    profile = _profile(ProfileValue(value=-1.0, samples=2, quality=Quality.LOW))
+    estimate = estimate_pit_loss(_inputs({0: lane_only}, profile=profile), StrategyConfig())
+
+    assert estimate.source == "lane"
+    assert estimate.value_s == pytest.approx(24.0)
+
+
 def test_lane_time_is_the_last_resort() -> None:
     lane_only = (
         LapRecord(
@@ -299,13 +318,17 @@ def test_rejoin_marks_missing_rival_gaps() -> None:
     inputs = _rejoin_inputs(
         rivals=(
             _rival(2, 2, 5.0),
-            _car(3, position=4, current_lap=20),
+            _rival(3, 4, 10.0),
+            _rival(4, 5, 15.0),
+            _rival(5, 6, 20.0),
+            _car(6, position=7, current_lap=20),
         )
     )
     estimate = estimate_rejoin(inputs, 20.0, StrategyConfig())
 
-    assert estimate.position == 2
+    assert estimate.position == 5
     assert NOTE_RIVAL_GAP_UNAVAILABLE in estimate.notes
+    assert estimate.quality is Quality.LOW
 
 
 def test_rejoin_without_leader_gap_is_insufficient() -> None:

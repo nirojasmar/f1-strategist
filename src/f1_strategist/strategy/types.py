@@ -238,10 +238,12 @@ class StrategyEvaluation:
     sensitive_to: tuple[str, ...]
     data_quality: Quality
     inputs_hash: str
+    schema_version: int
     profile_hash: str | None = None
-    schema_version: int = STRATEGY_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
+        if type(self.schema_version) is not int:
+            raise ValueError("schema_version debe ser un entero")
         if self.schema_version != STRATEGY_SCHEMA_VERSION:
             raise ValueError(
                 f"schema_version no soportada: {self.schema_version}; "
@@ -301,9 +303,22 @@ class StrategyEvaluation:
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> StrategyEvaluation:
         """Reconstruye la evaluación desde su representación JSON validada."""
+        schema_version = data.get("schema_version")
+        if type(schema_version) is not int:
+            raise ValueError("schema_version debe estar presente y ser un entero")
+        if schema_version != STRATEGY_SCHEMA_VERSION:
+            raise ValueError(
+                f"schema_version no soportada: {schema_version}; esperada {STRATEGY_SCHEMA_VERSION}"
+            )
+        revision = data.get("revision")
+        if type(revision) is not int:
+            raise ValueError("revision debe ser un entero")
+        session_uid = data.get("session_uid")
+        if not isinstance(session_uid, str):
+            raise ValueError("session_uid debe ser una cadena")
         return cls(
-            revision=int(data["revision"]),
-            session_uid=str(data["session_uid"]),
+            revision=revision,
+            session_uid=session_uid,
             lap=int(data["lap"]),
             laps_remaining=data.get("laps_remaining"),
             baseline=str(data["baseline"]),
@@ -317,7 +332,7 @@ class StrategyEvaluation:
             data_quality=Quality(data["data_quality"]),
             inputs_hash=str(data["inputs_hash"]),
             profile_hash=data.get("profile_hash"),
-            schema_version=int(data.get("schema_version", STRATEGY_SCHEMA_VERSION)),
+            schema_version=schema_version,
         )
 
     @classmethod

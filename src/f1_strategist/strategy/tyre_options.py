@@ -176,6 +176,15 @@ def _used_dry_compounds(inputs: MetricInputs, current: str | None) -> tuple[str,
     return tuple(sorted(used))
 
 
+def _used_wet_compounds(inputs: MetricInputs, current: str | None) -> bool:
+    if current in WET_COMPOUNDS:
+        return True
+    return any(
+        canonical_compound(stint.compound) in WET_COMPOUNDS
+        for stint in inputs.history.stints_for(inputs.car_index)
+    )
+
+
 def _stale(inputs: MetricInputs) -> bool:
     try:
         freshness = inputs.state.freshness_for("tyre_sets")
@@ -272,6 +281,9 @@ def _option(
         if wear > 0.0:
             useful *= max(0.0, 1.0 - wear / 100.0)
             notes.append(NOTE_LIFE_SCALED)
+        if item.lifespan_laps > 0:
+            # Wear scales the estimate; the game's lifespan is a separate cap.
+            useful = min(useful, float(item.lifespan_laps))
     else:
         notes.append(NOTE_LIFE_UNKNOWN)
     life_risk = remaining_laps is not None and useful is not None and useful < remaining_laps
@@ -313,10 +325,11 @@ def tyre_options(inputs: MetricInputs, cfg: StrategyConfig) -> TyreOptions:
     session = inputs.state.session
     current = _current_compound(inputs)
     used = _used_dry_compounds(inputs, current)
+    wet_tyres_used = _used_wet_compounds(inputs, current)
 
     notes: list[str] = []
     rule_enabled = cfg.require_two_dry_compounds
-    requires_stop = rule_enabled and len(used) < 2
+    requires_stop = rule_enabled and not wet_tyres_used and len(used) < 2
     if not rule_enabled:
         notes.append(NOTE_RULE_DISABLED)
     elif requires_stop:

@@ -14,19 +14,24 @@ from f1_strategist.metrics.history import (
     TyreStint,
 )
 from f1_strategist.metrics.types import Quality
-from f1_strategist.race_state import CarSnapshot, RaceState, TyreSetSnapshot
+from f1_strategist.race_state import (
+    CarSnapshot,
+    FittedTyreSnapshot,
+    RaceState,
+    TyreSetSnapshot,
+)
 from f1_strategist.strategy.pace_model import (
     NOTE_INVENTORY_UNAVAILABLE,
     NOTE_SLOPE_FROM_REFERENCE,
     NOTE_SLOPE_SCALED,
-    NOTE_SLOPE_UNAVAILABLE,
-    NOTE_USED_SET,
     NOTE_WEAR_BLENDED,
     CompoundModel,
     build_compound_models,
     canonical_compound,
     project_lap_times,
+    project_tyre_option_lap_times,
 )
+from f1_strategist.strategy.tyre_options import tyre_options
 from f1_strategist.weekend_profile import (
     CompoundProfile,
     ProfileValue,
@@ -198,7 +203,7 @@ def test_fewer_than_three_laps_produce_no_fit() -> None:
     assert models.notes == ("no_compounds",)
 
 
-def test_blend_shifts_towards_the_prior_as_k_grows() -> None:
+def test_blend_uses_the_race_aligned_relative_prior() -> None:
     records = _degrading_laps(count=4, base=90.0, slope=0.10)
     profile = _weekend_profile((_compound_profile("soft", pace=95.0, delta=0.0, wear=0.5),))
 
@@ -213,25 +218,18 @@ def test_blend_shifts_towards_the_prior_as_k_grows() -> None:
 
     assert weak is not None and strong is not None
     assert weak.source == strong.source == "blend"
-    assert weak.base_lap_s == pytest.approx((1 * 95.0 + 4 * 90.0) / 5)
-    assert strong.base_lap_s == pytest.approx((100 * 95.0 + 4 * 90.0) / 104)
-    assert strong.base_lap_s is not None and weak.base_lap_s is not None
-    assert abs(strong.base_lap_s - 95.0) < abs(weak.base_lap_s - 95.0)
+    assert weak.base_lap_s == pytest.approx(90.0)
+    assert strong.base_lap_s == pytest.approx(90.0)
 
 
-def test_zero_race_laps_uses_the_prior_only() -> None:
+def test_zero_race_laps_without_race_alignment_produce_no_model() -> None:
     profile = _weekend_profile((_compound_profile("soft", pace=91.25, delta=0.0, wear=0.42),))
     car = CarSnapshot(car_index=0, current_lap=1, actual_tyre_compound="soft", tyre_age_laps=0)
 
     models = build_compound_models(_inputs(car=car, profile=profile), StrategyConfig())
     soft = models.get("soft")
 
-    assert soft is not None
-    assert soft.source == "profile"
-    assert soft.n_race_laps == 0
-    assert soft.base_lap_s == pytest.approx(91.25)
-    assert soft.wear_rate_pct_per_lap == pytest.approx(0.42)
-    assert soft.quality is Quality.OK
+    assert soft is None
 
 
 def test_unavailable_compound_without_any_source_is_not_modelled() -> None:
@@ -262,6 +260,18 @@ def test_untried_compound_uses_profile_pace_delta() -> None:
             recommended_session="race",
             lifespan_laps=40,
             usable_life_laps=30,
+            lap_delta_time_ms=800,
+            fitted=False,
+        ),
+        TyreSetSnapshot(
+            index=3,
+            actual_tyre_compound="hard",
+            visual_tyre_compound="c1",
+            wear_pct=0.0,
+            available=True,
+            recommended_session="race",
+            lifespan_laps=40,
+            usable_life_laps=20,
             lap_delta_time_ms=800,
             fitted=False,
         ),
@@ -299,7 +309,16 @@ def test_untried_compound_falls_back_to_game_lap_delta() -> None:
     )
 
     models = build_compound_models(
-        _inputs(records=records, spare=inventory),
+        _inputs(
+            records=records,
+            spare=inventory,
+            car=CarSnapshot(
+                car_index=0,
+                current_lap=5,
+                actual_tyre_compound="soft",
+                tyre_age_laps=4,
+            ),
+        ),
         StrategyConfig(),
     )
     hard = models.get("hard")
@@ -312,7 +331,7 @@ def test_untried_compound_falls_back_to_game_lap_delta() -> None:
     assert NOTE_SLOPE_FROM_REFERENCE in hard.notes
 
 
-def test_used_set_derives_initial_age_from_wear() -> None:
+def test_unmounted_set_does_not_leak_its_age_into_the_compound_model() -> None:
     records = _degrading_laps(count=5, base=90.0, slope=0.10, wear_base=0.0, wear_slope=0.5)
     inventory = (
         TyreSetSnapshot(
@@ -342,11 +361,10 @@ def test_used_set_derives_initial_age_from_wear() -> None:
     ).get("hard")
 
     assert hard is not None
-    assert hard.initial_age_laps == pytest.approx(6.0)
-    assert NOTE_USED_SET in hard.notes
+    assert hard.initial_age_laps is None
 
 
-def test_usable_life_comes_from_inventory_and_wear_limit() -> None:
+def test_unmounted_set_life_is_taken_from_each_tyre_option() -> None:
     records = _degrading_laps(count=5, base=90.0, slope=0.10, wear_slope=0.5)
     inventory = (
         TyreSetSnapshot(
@@ -377,17 +395,113 @@ def test_usable_life_comes_from_inventory_and_wear_limit() -> None:
     ).get("hard")
 
     assert hard is not None
-    assert hard.usable_life_laps == pytest.approx(30.0)
+    assert hard.usable_life_laps is None
+
+
+def test_fitted_tyre_life_is_bounded_by_its_reported_lifespan() -> None:
+    car = CarSnapshot(
+        car_index=0,
+        current_lap=5,
+        actual_tyre_compound="soft",
+        tyre_age_laps=4,
+        fitted_tyre=FittedTyreSnapshot(
+            actual_tyre_compound="soft",
+            visual_tyre_compound="c5",
+            wear_pct=50.0,
+            lifespan_laps=8,
+            usable_life_laps=12,
+        ),
+    )
+    soft = build_compound_models(
+        _inputs(records=_degrading_laps(count=5), car=car),
+        StrategyConfig(),
+    ).get("soft")
+
+    assert soft is not None
+    assert soft.usable_life_laps == pytest.approx(8.0)
+
+
+def test_each_tyre_option_projects_with_its_own_age_and_remaining_life() -> None:
+    inventory = (
+        TyreSetSnapshot(
+            index=1,
+            actual_tyre_compound="hard",
+            visual_tyre_compound="c1",
+            wear_pct=0.0,
+            available=True,
+            recommended_session="race",
+            lifespan_laps=40,
+            usable_life_laps=5,
+            lap_delta_time_ms=800,
+            fitted=False,
+        ),
+        TyreSetSnapshot(
+            index=2,
+            actual_tyre_compound="hard",
+            visual_tyre_compound="c1",
+            wear_pct=3.0,
+            available=True,
+            recommended_session="race",
+            lifespan_laps=40,
+            usable_life_laps=20,
+            lap_delta_time_ms=800,
+            fitted=False,
+        ),
+        TyreSetSnapshot(
+            index=3,
+            actual_tyre_compound="hard",
+            visual_tyre_compound="c1",
+            wear_pct=0.0,
+            available=True,
+            recommended_session="race",
+            lifespan_laps=40,
+            usable_life_laps=20,
+            lap_delta_time_ms=800,
+            fitted=False,
+        ),
+    )
+    records = _degrading_laps(count=5)
+    profile = _weekend_profile(
+        (
+            _compound_profile("soft", pace=90.0, delta=0.0, wear=0.5),
+            _compound_profile("hard", pace=90.8, delta=0.8, wear=0.5),
+        ),
+        reference="soft",
+    )
+    inputs = _inputs(records=records, profile=profile, spare=inventory)
+    model = build_compound_models(
+        inputs,
+        StrategyConfig(cliff_penalty_s_per_lap=0.5),
+    ).get("hard")
+    options = tyre_options(inputs, StrategyConfig())
+
+    assert model is not None
+    fresh = next(option for option in options.options if option.set_index == 1)
+    worn = next(option for option in options.options if option.set_index == 2)
+    long_life = next(option for option in options.options if option.set_index == 3)
+    fresh_projection = project_tyre_option_lap_times(model, fresh, 7)
+    worn_projection = project_tyre_option_lap_times(model, worn, 7)
+    long_life_projection = project_tyre_option_lap_times(model, long_life, 7)
+
+    assert fresh_projection[0] == pytest.approx(model.base_lap_s)
+    assert model.base_lap_s is not None
+    assert worn_projection[0] == pytest.approx(model.base_lap_s + 0.6)
+    assert fresh_projection[-1] > long_life_projection[-1]
 
 
 def test_missing_inventory_is_reported_in_notes() -> None:
-    car = CarSnapshot(car_index=0, current_lap=1, actual_tyre_compound="soft", tyre_age_laps=0)
+    car = CarSnapshot(car_index=0, current_lap=4, actual_tyre_compound="soft", tyre_age_laps=3)
     profile = _weekend_profile((_compound_profile("soft", pace=91.0, delta=0.0, wear=0.5),))
 
-    soft = build_compound_models(_inputs(car=car, profile=profile), StrategyConfig()).get("soft")
+    soft = build_compound_models(
+        _inputs(records=_degrading_laps(count=3), car=car, profile=profile),
+        StrategyConfig(),
+    ).get("soft")
 
     assert soft is not None
     assert NOTE_INVENTORY_UNAVAILABLE in soft.notes
+    assert soft.base_lap_s is not None
+    assert soft.base_lap_s == pytest.approx(90.0)
 
 
 def test_project_lap_times_matches_the_analytic_example() -> None:
@@ -544,7 +658,7 @@ def test_models_are_deterministic() -> None:
     assert first == second
 
 
-def test_profile_slope_is_used_when_race_fit_is_missing() -> None:
+def test_profile_prior_is_omitted_when_race_alignment_is_unavailable() -> None:
     car = CarSnapshot(car_index=0, current_lap=1, actual_tyre_compound="soft", tyre_age_laps=0)
     profile = _weekend_profile((_compound_profile("soft", pace=91.0, delta=0.0, wear=0.4),))
     soft = build_compound_models(
@@ -552,11 +666,7 @@ def test_profile_slope_is_used_when_race_fit_is_missing() -> None:
         StrategyConfig(),
     ).get("soft")
 
-    assert soft is not None
-    assert soft.source == "profile"
-    assert soft.base_lap_s == pytest.approx(91.0)
-    assert soft.slope_s_per_lap is None
-    assert NOTE_SLOPE_UNAVAILABLE in soft.notes
+    assert soft is None
 
 
 def test_tyre_stints_are_not_required() -> None:
@@ -609,6 +719,71 @@ def test_untried_compound_is_anchored_to_the_race_base() -> None:
     assert hard.base_lap_s == pytest.approx(91.0)
 
 
+def test_unaligned_absolute_profile_pace_is_not_blended_into_race_fit() -> None:
+    records = _degrading_laps(count=5, base=90.0, slope=0.10)
+    profile_entry = replace(
+        _compound_profile("soft", pace=101.0, delta=0.0, wear=0.5),
+        pace_delta_vs_reference_s=ProfileValue(value=None),
+    )
+    profile = _weekend_profile(
+        (profile_entry,),
+        reference="soft",
+    )
+
+    soft = build_compound_models(
+        _inputs(records=records, profile=profile),
+        StrategyConfig(),
+    ).get("soft")
+
+    assert soft is not None
+    assert soft.source == "race"
+    assert soft.base_lap_s == pytest.approx(90.0)
+
+
+def test_fuel_effect_does_not_change_the_fitting_basis() -> None:
+    records = tuple(
+        replace(record, fuel_start_kg=100.0 - record.lap_number)
+        for record in _degrading_laps(count=5, base=90.0, slope=0.10)
+    )
+    inputs = _inputs(
+        records=records,
+        config=MetricsConfig(fuel_effect_s_per_kg=0.03),
+    )
+
+    soft = build_compound_models(inputs, StrategyConfig()).get("soft")
+
+    assert soft is not None
+    assert soft.base_lap_s == pytest.approx(90.0)
+    assert soft.slope_s_per_lap == pytest.approx(0.10)
+
+
+def test_game_delta_requires_a_fit_for_the_mounted_compound() -> None:
+    records = _degrading_laps(count=5)
+    inventory = (
+        TyreSetSnapshot(
+            index=1,
+            actual_tyre_compound="medium",
+            visual_tyre_compound="c2",
+            wear_pct=0.0,
+            available=True,
+            recommended_session="race",
+            lifespan_laps=40,
+            usable_life_laps=30,
+            lap_delta_time_ms=800,
+            fitted=False,
+        ),
+    )
+    car = CarSnapshot(car_index=0, current_lap=5, actual_tyre_compound="hard")
+
+    models = build_compound_models(
+        _inputs(records=records, car=car, spare=inventory),
+        StrategyConfig(),
+    )
+
+    assert models.reference_compound == "soft"
+    assert models.get("medium") is None
+
+
 def test_wear_rate_is_blended_with_the_profile_prior() -> None:
     # Carrera 2 %/vuelta con 5 muestras y prior 10 %/vuelta: (3·10 + 5·2)/8 = 5.
     records = _degrading_laps(count=5, base=90.0, slope=0.10, wear_slope=2.0)
@@ -624,14 +799,10 @@ def test_wear_rate_is_blended_with_the_profile_prior() -> None:
     assert NOTE_WEAR_BLENDED in soft.notes
 
 
-def test_prior_only_model_is_not_projectable_without_a_traceable_slope() -> None:
+def test_prior_only_model_is_omitted_without_a_race_anchor() -> None:
     car = CarSnapshot(car_index=0, current_lap=1, actual_tyre_compound="soft", tyre_age_laps=0)
     profile = _weekend_profile((_compound_profile("soft", pace=91.25, delta=0.0, wear=0.42),))
 
     soft = build_compound_models(_inputs(car=car, profile=profile), StrategyConfig()).get("soft")
 
-    assert soft is not None
-    assert soft.base_lap_s == pytest.approx(91.25)
-    assert soft.slope_s_per_lap is None
-    assert not soft.available
-    assert NOTE_SLOPE_UNAVAILABLE in soft.notes
+    assert soft is None

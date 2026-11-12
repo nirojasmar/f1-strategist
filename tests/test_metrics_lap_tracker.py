@@ -681,6 +681,8 @@ def test_start_line_crossing_keeps_the_out_lap_without_flashback() -> None:
                 current_lap_time_ms=40_000,
                 sector1_time_ms=10_000,
                 lap_distance_m=5_809.0,
+                pit_lane_time_ms=25_000,
+                pit_stop_timer_ms=2_500,
                 tyre_age_laps=0,
                 actual_tyre_compound="hard",
             ),
@@ -748,6 +750,8 @@ def test_start_line_crossing_keeps_the_out_lap_without_flashback() -> None:
     assert record.lap_time_s == 96.099
     assert record.pit_exit is True
     assert record.pit_entry is False
+    assert record.pit_lane_time_s == 25.0
+    assert record.pit_stop_time_s == 2.5
     assert "flashback" not in record.flags
     assert "first_lap" not in record.flags
     assert "out_lap" in classify_lap(record, MetricsConfig())
@@ -1061,3 +1065,41 @@ def test_first_lap_is_reconciled_when_the_session_type_arrives_late() -> None:
     )
 
     assert "first_lap" in tracker._open_laps[0].flags
+
+
+def test_lap_one_is_marked_before_closing_when_race_type_arrives_on_lap_two() -> None:
+    tracker = LapTracker(config=MetricsConfig())
+    tracker.observe(
+        _snapshot_with_car(
+            CarSnapshot(
+                car_index=0,
+                current_lap=1,
+                lap_distance_m=10.0,
+                current_lap_time_ms=10_000,
+                tyre_age_laps=0,
+            ),
+            session_type=None,
+            track_length_m=5_809.0,
+            freshness_updates={"lap_data": 1.0, "car_status": 1.0},
+        ),
+        1.0,
+    )
+    tracker.observe(
+        _snapshot_with_car(
+            CarSnapshot(
+                car_index=0,
+                current_lap=2,
+                lap_distance_m=10.0,
+                last_lap_time_ms=90_000,
+                tyre_age_laps=1,
+            ),
+            session_type="race",
+            track_length_m=5_809.0,
+            freshness_updates={"lap_data": 2.0, "car_status": 2.0},
+        ),
+        2.0,
+    )
+
+    record = tracker.history.get(0, 1)
+    assert record is not None
+    assert "first_lap" in record.flags

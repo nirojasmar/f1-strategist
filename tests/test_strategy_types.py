@@ -73,6 +73,7 @@ def _evaluation(**changes: object) -> StrategyEvaluation:
         sensitive_to=(ASSUMPTION_RIVALS_DO_NOT_PIT,),
         data_quality=Quality.OK,
         inputs_hash=compute_inputs_hash({"lap": 12, "compound": "medium"}),
+        schema_version=STRATEGY_SCHEMA_VERSION,
         profile_hash="abc123",
     )
     return replace(evaluation, **changes)  # type: ignore[arg-type]
@@ -198,6 +199,8 @@ def test_perturbation_rejects_invalid_values(changes: dict[str, float]) -> None:
 def test_evaluation_rejects_inconsistent_data() -> None:
     with pytest.raises(ValueError, match="schema_version"):
         _evaluation(schema_version=99)
+    with pytest.raises(ValueError, match="schema_version"):
+        _evaluation(schema_version=True)
     with pytest.raises(ValueError, match="lap"):
         _evaluation(lap=0)
     with pytest.raises(ValueError, match="laps_remaining"):
@@ -214,6 +217,43 @@ def test_evaluation_rejects_inconsistent_data() -> None:
             key="stay_out",
             gain_interval_s=(2.0, 1.0),
         )
+
+
+@pytest.mark.parametrize("version", [None, True, 1.0, 1.5, 0, 99])
+def test_deserialization_rejects_invalid_schema_versions(version: object) -> None:
+    payload = _evaluation().to_dict()
+    payload["schema_version"] = version
+
+    with pytest.raises(ValueError, match="schema_version"):
+        StrategyEvaluation.from_dict(payload)
+
+
+def test_deserialization_requires_schema_version() -> None:
+    payload = _evaluation().to_dict()
+    del payload["schema_version"]
+
+    with pytest.raises(ValueError, match="schema_version"):
+        StrategyEvaluation.from_dict(payload)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("revision", 3.5, "revision"),
+        ("revision", True, "revision"),
+        ("session_uid", 123, "session_uid"),
+    ],
+)
+def test_deserialization_rejects_coerced_evaluation_fields(
+    field: str,
+    value: object,
+    message: str,
+) -> None:
+    payload = _evaluation().to_dict()
+    payload[field] = value
+
+    with pytest.raises(ValueError, match=message):
+        StrategyEvaluation.from_dict(payload)
 
 
 def test_strategy_snapshot_starts_empty() -> None:

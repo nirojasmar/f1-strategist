@@ -13,7 +13,7 @@ from f1_strategist.metrics.types import Quality
 def _lap(
     lap: int,
     *,
-    compound: str = "soft",
+    compound: str | None = "soft",
     tyre_age_start: int | None = None,
     lap_time_s: float | None = None,
     fuel_start_kg: float | None = None,
@@ -276,6 +276,59 @@ def test_laps_outside_any_stint_are_ignored() -> None:
     assert len(summaries) == 1
     assert (summaries[0].start_lap, summaries[0].end_lap) == (3, 6)
     assert summaries[0].laps == 4
+
+
+def test_laps_between_declared_stints_are_not_included() -> None:
+    laps = _green_stint(1, 8, compound="soft")
+    stints = (
+        TyreStint(compound="soft", start_lap=1, end_lap=2),
+        TyreStint(compound="hard", start_lap=5, end_lap=6),
+    )
+
+    summaries = summarize_stints(laps, stints, MetricsConfig())
+
+    assert [(item.start_lap, item.end_lap, item.laps) for item in summaries] == [
+        (1, 2, 2),
+        (5, 6, 2),
+    ]
+
+
+def test_observed_compound_change_survives_a_missing_compound_record() -> None:
+    laps = (
+        _lap(1, compound="soft", tyre_age_start=0),
+        _lap(2, compound=None, tyre_age_start=1),
+        _lap(3, compound="hard", tyre_age_start=2),
+    )
+
+    summaries = summarize_stints(laps, (), MetricsConfig())
+
+    assert [(item.start_lap, item.compound) for item in summaries] == [
+        (1, "soft"),
+        (3, "hard"),
+    ]
+
+
+def test_final_declared_stint_without_laps_does_not_leave_previous_period_open() -> None:
+    laps = _green_stint(1, 3, compound="soft")
+    stints = (
+        TyreStint(compound="soft", start_lap=1, end_lap=3),
+        TyreStint(compound="hard", start_lap=4),
+    )
+
+    summaries = summarize_stints(laps, stints, MetricsConfig())
+
+    assert len(summaries) == 1
+    assert summaries[0].end_lap == 3
+
+
+def test_declared_visual_compound_is_ignored_when_observed_compound_disagrees() -> None:
+    laps = _green_stint(1, 3, compound="c5")
+    stints = (TyreStint(compound="medium", visual_compound="c2", start_lap=1),)
+
+    summaries = summarize_stints(laps, stints, MetricsConfig())
+
+    assert summaries[0].compound == "c5"
+    assert summaries[0].visual_compound == "c5"
 
 
 def test_the_result_does_not_depend_on_the_input_order() -> None:

@@ -16,7 +16,7 @@ import math
 from collections.abc import Iterator
 from dataclasses import dataclass
 from statistics import linear_regression, mean
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from ..config import StrategyConfig
 from ..metrics.comparability import classify_lap, is_clean
@@ -24,6 +24,9 @@ from ..metrics.history import LapRecord, MetricInputs, current_stint_bounds
 from ..metrics.types import Quality, assess_quality
 from ..race_state import TyreSetSnapshot
 from ..weekend_profile import CompoundProfile, WeekendProfile, blend_with_prior
+
+if TYPE_CHECKING:
+    from .tyre_options import TyreOption
 
 #: Origen de la base y la pendiente de un modelo.
 CompoundSource = Literal["race", "blend", "profile", "game_delta", "none"]
@@ -228,19 +231,13 @@ def _clean_laps(
 
 def _fit_compound(
     records: tuple[LapRecord, ...],
-    fuel_effect_s_per_kg: float | None,
 ) -> _Fit | None:
     """Regresión de tiempo de vuelta sobre la edad del neumático al empezar la vuelta."""
     points: list[tuple[float, float]] = []
     for record in records:
         if record.lap_time_s is None or record.tyre_age_start is None:
             continue
-        value = record.lap_time_s
-        if fuel_effect_s_per_kg is not None:
-            if record.fuel_start_kg is None:
-                continue
-            value -= record.fuel_start_kg * fuel_effect_s_per_kg
-        points.append((float(record.tyre_age_start), value))
+        points.append((float(record.tyre_age_start), record.lap_time_s))
     if len(points) < _MIN_RACE_LAPS:
         return None
     ages = [age for age, _ in points]
@@ -353,43 +350,38 @@ def _initial_age(
     inputs: MetricInputs,
     compound: str,
     fitted: str | None,
-    wear_rate: float | None,
-    inventory: TyreSetSnapshot | None,
 ) -> tuple[float | None, tuple[str, ...]]:
     car = inputs.car
     if compound == fitted and car is not None and car.tyre_age_laps is not None:
         return float(car.tyre_age_laps), ()
-    if inventory is None:
-        return None, ()
-    if inventory.wear_pct <= 0:
-        return 0.0, ()
-    if wear_rate is None or wear_rate <= 0:
-        return None, ()
-    return inventory.wear_pct / wear_rate, (NOTE_USED_SET,)
+    return None, ()
 
 
 def _usable_life(
     inputs: MetricInputs,
     compound: str,
     fitted: str | None,
-    inventory: TyreSetSnapshot | None,
     wear_rate: float | None,
     initial_age: float | None,
 ) -> float | None:
     candidates: list[float] = []
     car = inputs.car
+    fitted_tyre = car.fitted_tyre if car is not None else None
     if (
         compound == fitted
-        and car is not None
-        and car.fitted_tyre is not None
-        and car.fitted_tyre.usable_life_laps > 0
+        and fitted_tyre is not None
+        and fitted_tyre.usable_life_laps > 0
+        and fitted_tyre.lifespan_laps > 0
     ):
-        candidates.append(float(car.fitted_tyre.usable_life_laps))
-    if inventory is not None and inventory.usable_life_laps > 0:
-        candidates.append(float(inventory.usable_life_laps))
+        candidates.append(
+            min(
+                float(fitted_tyre.usable_life_laps),
+                float(fitted_tyre.lifespan_laps),
+            )
+        )
     limit = inputs.config.tyre_wear_limit_pct
-    if limit is not None and wear_rate is not None and wear_rate > 0:
-        wear_now = inventory.wear_pct if inventory is not None else 0.0
+    if limit is not None and wear_rate is not None and wear_rate > 0 and compound == fitted:
+        wear_now = fitted_tyre.wear_pct if fitted_tyre is not None else 0.0
         remaining_wear = max(0.0, limit - wear_now)
         candidates.append((initial_age or 0.0) + remaining_wear / wear_rate)
     return min(candidates) if candidates else None
@@ -437,12 +429,15 @@ def _build_model(
 ) -> CompoundModel | None:
     profile = inputs.profile
     profile_entry = _profile_compound(profile, compound)
-    prior_base = profile_entry.pace_mean_s.value if profile_entry is not None else None
     prior_quality = profile_entry.quality if profile_entry is not None else Quality.UNAVAILABLE
     fit = fits.get(compound)
     reference_fit = fits.get(reference) if reference is not None else None
     reference_slope = reference_fit.slope_s_per_lap if reference_fit is not None else None
     reference_base = reference_fit.base_lap_s if reference_fit is not None else None
+    delta = _relative_delta(profile, compound, reference)
+    aligned_prior_base = (
+        reference_base + delta if reference_base is not None and delta is not None else None
+    )
     notes: list[str] = []
     source: CompoundSource
     base: float | None
@@ -451,9 +446,14 @@ def _build_model(
 
     if fit is not None:
         prior_slope, slope_note = _scaled_slope(profile, compound, reference, reference_slope)
-        base = blend_with_prior(prior_base, fit.base_lap_s, fit.n_laps, cfg.prior_strength_k)
+        base = blend_with_prior(
+            aligned_prior_base,
+            fit.base_lap_s,
+            fit.n_laps,
+            cfg.prior_strength_k,
+        )
         slope = blend_with_prior(prior_slope, fit.slope_s_per_lap, fit.n_laps, cfg.prior_strength_k)
-        source = "blend" if prior_base is not None else "race"
+        source = "blend" if aligned_prior_base is not None else "race"
         low, ok = inputs.config.thresholds("pace")
         quality = assess_quality(fit.n_laps, ok, low, stale)
         if source == "blend":
@@ -466,7 +466,6 @@ def _build_model(
             slope = reference_slope
             slope_note = NOTE_SLOPE_FROM_REFERENCE if slope is not None else None
         n_race_laps = 0
-        delta = _relative_delta(profile, compound, reference)
         anchored = False
         # El ritmo del compuesto sin vueltas de carrera se ancla siempre al
         # modelo de carrera más el delta, no al ritmo absoluto de práctica.
@@ -476,14 +475,16 @@ def _build_model(
             base = reference_base + delta
             source = "profile"
             anchored = True
-        elif prior_base is not None:
-            base = prior_base
-            source = "profile"
         elif compound == reference and reference_base is not None:
             base = reference_base
             source = "profile"
             anchored = True
-        elif inventory is not None and reference_base is not None and compound != reference:
+        elif (
+            inventory is not None
+            and reference_base is not None
+            and compound != reference
+            and reference == fitted
+        ):
             base = reference_base + inventory.lap_delta_time_ms / 1000.0
             source = "game_delta"
             anchored = True
@@ -533,7 +534,7 @@ def _build_model(
     else:
         wear_rate = prior_wear
 
-    initial_age, age_notes = _initial_age(inputs, compound, fitted, wear_rate, inventory)
+    initial_age, age_notes = _initial_age(inputs, compound, fitted)
     notes.extend(age_notes)
     if not inputs.state.tyre_inventory:
         notes.append(NOTE_INVENTORY_UNAVAILABLE)
@@ -541,7 +542,6 @@ def _build_model(
         inputs,
         compound,
         fitted,
-        inventory,
         wear_rate,
         initial_age,
     )
@@ -579,11 +579,10 @@ def build_compound_models(inputs: MetricInputs, cfg: StrategyConfig) -> Compound
         return CompoundModels(notes=(NOTE_NO_COMPOUNDS,))
 
     bounds = current_stint_bounds(inputs, inputs.car_index)
-    fuel_effect = inputs.config.fuel_effect_s_per_kg
     fits: dict[str, _Fit] = {}
     for compound in targets:
         records = _clean_laps(inputs, compound, bounds if compound == fitted else None)
-        fit = _fit_compound(records, fuel_effect)
+        fit = _fit_compound(records)
         if fit is not None:
             fits[compound] = fit
 
@@ -641,6 +640,40 @@ def project_lap_times(
     return tuple(times)
 
 
+def project_tyre_option_lap_times(
+    model: CompoundModel,
+    option: TyreOption,
+    laps: float,
+) -> tuple[float, ...]:
+    """Proyecta un juego concreto usando su desgaste y vida útil restante."""
+    if option.compound != model.compound:
+        raise ValueError("El compuesto de la opción no coincide con el modelo")
+    if model.wear_rate_pct_per_lap is None or model.wear_rate_pct_per_lap <= 0:
+        if option.initial_wear_pct > 0:
+            raise ValueError("No se puede proyectar la edad del juego sin una tasa de desgaste")
+        start_age = 0.0
+    else:
+        start_age = option.initial_wear_pct / model.wear_rate_pct_per_lap
+    usable_life = (
+        start_age + option.useful_life_laps if option.useful_life_laps is not None else None
+    )
+    option_model = CompoundModel(
+        compound=model.compound,
+        base_lap_s=model.base_lap_s,
+        slope_s_per_lap=model.slope_s_per_lap,
+        wear_rate_pct_per_lap=model.wear_rate_pct_per_lap,
+        n_race_laps=model.n_race_laps,
+        source=model.source,
+        quality=model.quality,
+        visual_compound=option.visual_compound or model.visual_compound,
+        initial_age_laps=start_age,
+        usable_life_laps=usable_life,
+        cliff_penalty_s_per_lap=model.cliff_penalty_s_per_lap,
+        notes=model.notes,
+    )
+    return project_lap_times(option_model, start_age, laps)
+
+
 __all__ = [
     "NOTE_INVENTORY_UNAVAILABLE",
     "NOTE_NO_COMPOUNDS",
@@ -656,4 +689,5 @@ __all__ = [
     "build_compound_models",
     "canonical_compound",
     "project_lap_times",
+    "project_tyre_option_lap_times",
 ]

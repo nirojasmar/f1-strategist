@@ -292,7 +292,7 @@ def _profile_loss(inputs: MetricInputs, cfg: StrategyConfig, stale: bool) -> Pit
     if profile is None:
         return None
     entry = profile.pit_loss_s
-    if entry.value is None:
+    if entry.value is None or entry.value < 0:
         return None
     quality = Quality.STALE if stale else entry.quality
     return PitLossEstimate(
@@ -453,9 +453,14 @@ def estimate_rejoin(
     if game_delta not in (None, 0):
         notes.append(NOTE_GAME_REJOIN_MISMATCH)
 
-    quality = Quality.OK if player.position is not None and len(rivals) >= 3 else Quality.LOW
-    if stale:
+    if missing_gap:
+        quality = Quality.LOW
+    elif stale:
         quality = Quality.STALE
+    elif player.position is not None and len(rivals) >= 3:
+        quality = Quality.OK
+    else:
+        quality = Quality.LOW
 
     return RejoinEstimate(
         position=position,

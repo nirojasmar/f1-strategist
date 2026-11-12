@@ -43,6 +43,7 @@ def _tyre_set(
     visual: str | None = None,
     wear: float = 0.0,
     available: bool | None = True,
+    lifespan_laps: int = 40,
     usable_life_laps: int = 30,
     lap_delta_time_ms: int = 300,
 ) -> TyreSetSnapshot:
@@ -53,7 +54,7 @@ def _tyre_set(
         wear_pct=wear,
         available=available,
         recommended_session="race",
-        lifespan_laps=40,
+        lifespan_laps=lifespan_laps,
         usable_life_laps=usable_life_laps,
         lap_delta_time_ms=lap_delta_time_ms,
         fitted=False,
@@ -191,6 +192,22 @@ def test_rule_satisfied_allows_staying_out() -> None:
     assert options.compounds == ("hard",)
 
 
+@pytest.mark.parametrize("wet_compound", ["intermediate", "wet"])
+def test_using_a_wet_compound_waives_the_two_dry_compound_rule(wet_compound: str) -> None:
+    inventory = (_tyre_set(1, "medium"),)
+    stints = (TyreStint(compound=wet_compound, start_lap=1, end_lap=4),)
+    car = _car(current_lap=5, actual_tyre_compound="medium")
+
+    options = tyre_options(
+        _inputs(inventory=inventory, stints=stints, car=car),
+        StrategyConfig(),
+    )
+
+    assert options.used_dry_compounds == ("medium",)
+    assert not options.requires_stop
+    assert options.stay_out_allowed
+
+
 def test_rule_can_be_disabled_by_configuration() -> None:
     inventory = (_tyre_set(1, "medium"),)
     car = _car(current_lap=5, actual_tyre_compound="medium")
@@ -314,6 +331,15 @@ def test_useful_life_is_scaled_by_existing_wear() -> None:
     assert hard is not None
     assert hard.initial_wear_pct == 50.0
     assert hard.useful_life_laps == pytest.approx(10.0)
+
+
+def test_useful_life_is_capped_by_reported_lifespan() -> None:
+    inventory = (_tyre_set(1, "hard", wear=50.0, lifespan_laps=8, usable_life_laps=20),)
+
+    hard = tyre_options(_inputs(inventory=inventory), StrategyConfig()).get("hard")
+
+    assert hard is not None
+    assert hard.useful_life_laps == pytest.approx(8.0)
 
 
 def test_unknown_life_is_reported_without_risk() -> None:
