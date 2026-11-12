@@ -34,6 +34,11 @@ from .types import (
     StrategySnapshot,
     compute_inputs_hash,
 )
+from .tyre_options import (
+    TyreOption,
+    TyreOptions,
+    tyre_options,
+)
 
 __all__ = [
     "ASSUMPTION_FUEL_EFFECT_NOT_SEPARATED",
@@ -62,4 +67,7 @@ __all__ = [
     "RejoinEstimate",
     "estimate_pit_loss",
     "estimate_rejoin",
+    "TyreOption",
+    "TyreOptions",
+    "tyre_options",
 ]
