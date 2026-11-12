@@ -15,6 +15,11 @@ from .decision import (
     SENSITIVE_WEAR_SLOPE,
     decide,
 )
+from .engine import (
+    NOTE_ENGINE_ERROR,
+    StrategyEngine,
+    evaluate_once,
+)
 from .evaluator import (
     NOTE_BASELINE,
     NOTE_NO_MODEL,
@@ -73,6 +78,7 @@ __all__ = [
     "NOTE_ALTERNATIVE_UNSTABLE",
     "NOTE_BASELINE",
     "NOTE_DEFAULT_NO_CHANGE",
+    "NOTE_ENGINE_ERROR",
     "NOTE_NO_ALTERNATIVES",
     "NOTE_NO_LAPS_REMAINING",
     "NOTE_NO_MODEL",
@@ -98,12 +104,14 @@ __all__ = [
     "StrategyAction",
     "StrategyAlternative",
     "StrategyDecision",
+    "StrategyEngine",
     "StrategyEvaluation",
     "StrategyRecommendation",
     "StrategySnapshot",
     "compute_inputs_hash",
     "decide",
     "evaluate_alternatives",
+    "evaluate_once",
     "CompoundModel",
     "CompoundModels",
     "build_compound_models",

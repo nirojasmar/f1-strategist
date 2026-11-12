@@ -383,9 +383,12 @@ def test_playback_session_exposes_an_empty_strategy_snapshot(tmp_path: Path) -> 
     assert snapshot.evaluation is None
 
 
-def test_cli_strategy_group_runs_without_subcommands(capsys: pytest.CaptureFixture[str]) -> None:
-    assert main(["strategy"]) == 0
-    assert "subcomandos" in capsys.readouterr().out
+def test_cli_strategy_requires_a_subcommand(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        main(["strategy"])
+
+    assert exc_info.value.code == 2
+    assert "required: strategy_command" in capsys.readouterr().err
 
 
 def test_alternative_result_accepts_the_zero_set_index() -> None:

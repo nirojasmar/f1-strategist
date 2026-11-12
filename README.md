@@ -50,6 +50,9 @@ uv run f1-strategist play captures/session-YYYYMMDD-HHMMSS.f1cap --speed 4
 # Calcular y exportar métricas sin red
 uv run f1-strategist metrics captures/session-YYYYMMDD-HHMMSS.f1cap --format json
 
+# Consultar la estrategia en una vuelta concreta
+uv run f1-strategist strategy at captures/session-YYYYMMDD-HHMMSS.f1cap --lap 12 --json
+
 # Comprobar la huella determinista de una captura
 uv run f1-strategist verify captures/session-YYYYMMDD-HHMMSS.f1cap
 

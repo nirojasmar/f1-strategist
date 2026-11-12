@@ -21,14 +21,18 @@ from rich.text import Text
 
 from . import __version__
 from .capture import CaptureError
-from .config import AppConfig, ConfigError, apply_overrides, load_config
+from .config import AppConfig, ConfigError, MetricsConfig, apply_overrides, load_config
 from .console import format_bytes, render, run_console
 from .datasets import DEFAULT_MANIFEST, Manifest, Scenario, load_manifest, verify_scenario
 from .fingerprint import build_run_info, fingerprint_capture
+from .metrics.engine import MetricsEngine
 from .metrics.export import EXPORT_FORMATS, render_metrics_export, run_metrics_capture
-from .offline import OfflineResult
+from .metrics.history import MetricInputs
+from .offline import OfflineResult, run_capture_offline
 from .packets import packet_name
+from .parser import ParsedPacket
 from .playback import PlaybackSession
+from .race_state import RaceState
 from .receiver import ReceiverError
 from .recorder import ingest_capture
 from .replay import replay_capture
@@ -42,6 +46,7 @@ from .store.queries import (
     session_events,
     session_laps,
 )
+from .strategy.engine import evaluate_once
 from .summary import summarize
 from .trim import trim_capture
 from .weekend_profile import WeekendProfile
@@ -367,10 +372,13 @@ def _build_parser() -> argparse.ArgumentParser:
         help="base de datos SQLite (por defecto, la de la configuración)",
     )
 
-    sub.add_parser(
-        "strategy",
-        help="motor de estrategia (sin subcomandos en esta versión)",
-    )
+    strategy = sub.add_parser("strategy", help="consulta recomendaciones de estrategia")
+    strategy_sub = strategy.add_subparsers(dest="strategy_command", required=True)
+    strategy_at = strategy_sub.add_parser("at", help="evalúa una captura en una vuelta")
+    strategy_at.add_argument("file", type=Path, help="captura de entrada (.f1cap o .f1cap.gz)")
+    strategy_at.add_argument("--lap", type=_positive_int, required=True, help="vuelta de carrera")
+    strategy_at.add_argument("--json", action="store_true", help="imprime la evaluación en JSON")
+    strategy_at.add_argument("--config", type=Path, help="archivo TOML de configuración")
     return parser
 
 
@@ -544,6 +552,7 @@ def _cmd_play(args: argparse.Namespace, console: Console, err: Console) -> int:
         speed=args.speed,
         start_lap=args.start_lap,
         profiles_by_uid=profiles,
+        strategy_config=cfg.strategy,
     )
     _install_signal_handlers()
     try:
@@ -1377,10 +1386,90 @@ def _cmd_trim(args: argparse.Namespace, console: Console, err: Console) -> int:
     return 0
 
 
+class _StrategyAtCollector:
+    """Conserva las entradas de la vuelta solicitada durante la reproducción offline."""
+
+    def __init__(
+        self,
+        metrics_config: MetricsConfig,
+        profiles_by_uid: dict[int, WeekendProfile],
+        target_lap: int,
+    ) -> None:
+        self.metrics_engine = MetricsEngine(metrics_config)
+        self.profiles_by_uid = profiles_by_uid
+        self.target_lap = target_lap
+        self.state = RaceState()
+        self.target_inputs: MetricInputs | None = None
+        self._current_lap: int | None = None
+        self._is_race = False
+
+    def apply(self, packet: ParsedPacket, observed_at: float) -> None:
+        self.state.apply(packet, observed_at)
+        state = self.state.snapshot()
+        session = state.session
+        self._is_race = session.session_type is not None and session.session_type.lower() in {
+            "race",
+            "race_2",
+            "race_3",
+        }
+        profile = (
+            self.profiles_by_uid.get(session.uid)
+            if self._is_race and session.uid is not None
+            else None
+        )
+        self.metrics_engine.set_profile(profile)
+        self.metrics_engine.apply(packet, observed_at, state)
+        player = state.player_car
+        self._current_lap = player.current_lap if player is not None else state.current_lap
+        if self._is_race and self._current_lap == self.target_lap:
+            car_index = state.player_car_index
+            self.target_inputs = MetricInputs(
+                state=state,
+                history=self.metrics_engine.history.snapshot(),
+                config=self.metrics_engine.config,
+                now=observed_at,
+                car_index=car_index if car_index is not None else -1,
+                profile=profile,
+            )
+
+    def should_stop(self) -> bool:
+        return (
+            self._is_race and self._current_lap is not None and self._current_lap >= self.target_lap
+        )
+
+
 def _cmd_strategy(args: argparse.Namespace, console: Console, err: Console) -> int:
-    """Grupo del motor de estrategia; aún no tiene subcomandos."""
-    console.print("El motor de estrategia todavía no tiene subcomandos.")
-    console.print("[dim]Disponible en próximas versiones de la Fase 4.[/]")
+    cfg = load_config(args.config)
+    profiles = _profiles_for_capture(cfg, args.file, err)
+    collector = _StrategyAtCollector(cfg.metrics, profiles, args.lap)
+    offline = run_capture_offline(args.file, [collector], stop_when=collector.should_stop)
+    _warn_offline_issues(offline, err)
+    inputs = collector.target_inputs
+    if inputs is None:
+        raise ValueError(
+            f"No se encontró la vuelta {args.lap} en una sesión de carrera de la captura."
+        )
+
+    evaluation = evaluate_once(
+        inputs,
+        cfg.strategy.for_track(inputs.state.session.track),
+    )
+    if args.json:
+        _write_stdout(json.dumps(evaluation.to_dict(), ensure_ascii=False, indent=2) + "\n")
+    else:
+        recommendation = evaluation.recommendation
+        console.print(
+            f"Vuelta {evaluation.lap} · {recommendation.action.value} · "
+            f"alternativa {recommendation.key}"
+        )
+        if recommendation.gain_vs_baseline_s is not None:
+            console.print(
+                f"Ganancia estimada: {recommendation.gain_vs_baseline_s:.2f} s "
+                f"(confianza {recommendation.confidence:.0%})"
+            )
+        if inputs.profile is not None:
+            console.print(f"Perfil: {inputs.profile.hash}")
+        console.print(f"Calidad de datos: {evaluation.data_quality.value}")
     return 0
 
 

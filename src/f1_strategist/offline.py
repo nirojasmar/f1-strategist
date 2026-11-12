@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from collections import Counter
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
@@ -53,6 +53,7 @@ def run_capture_offline(
     consumers: Iterable[PacketConsumer],
     *,
     speed: float | None = None,
+    stop_when: Callable[[], bool] | None = None,
 ) -> OfflineResult:
     """Procesa una captura sin red, hilos ni esperas.
 
@@ -98,6 +99,8 @@ def run_capture_offline(
         packets_parsed += 1
         for consumer in packet_consumers:
             consumer.apply(packet, observed_at)
+        if stop_when is not None and stop_when():
+            break
 
     return OfflineResult(
         packets_read=packets_read,

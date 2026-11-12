@@ -22,6 +22,7 @@ from .race_state import RaceState, RaceStateSnapshot
 from .receiver import Stats, StatsSnapshot, UdpReceiver
 from .recorder import _RACE_SESSION_TYPES, SessionRecorder, serialize_config
 from .store import SessionInfo, SessionStore
+from .strategy.engine import StrategyEngine
 from .strategy.types import StrategySnapshot
 from .weekend_profile import WeekendProfile
 from .weekend_provider import resolve_weekend_profile
@@ -37,11 +38,15 @@ class CaptureSession:
         queue_size: int = 20000,
         *,
         metrics_engine: MetricsEngine | None = None,
+        strategy_engine: StrategyEngine | None = None,
     ) -> None:
         self.config = config
         self.stats = Stats()
         self._race_state = RaceState()
         self._metrics_engine = metrics_engine or MetricsEngine(config.metrics)
+        self._strategy_engine = strategy_engine or StrategyEngine(
+            config.strategy, config.metrics
+        )
         self._queue: queue.Queue[CapturedPacket] = queue.Queue(maxsize=queue_size)
         self._receiver = UdpReceiver(config.telemetry, self._queue, self.stats)
         self._writer: CaptureWriter | None = None
@@ -74,6 +79,10 @@ class CaptureSession:
     def start(self) -> None:
         # El socket se abre primero: si falla no se crea ningún archivo de captura.
         self._receiver.start()
+        if self.config.strategy.enabled and not self.config.recording.enabled:
+            # Decisión D3: la estrategia puede calcularse sin grabación, pero la
+            # evaluación no quedará registrada. Se avisa al arrancar.
+            self.stats.record_consumer_error(message("strategy_recording_disabled"))
         if self.config.capture.enabled:
             name = datetime.now().strftime("session-%Y%m%d-%H%M%S.f1cap")
             self.capture_path = self.config.capture.directory / name
@@ -267,6 +276,11 @@ class CaptureSession:
             _LOGGER.exception("Unable to hand the weekend profile to the metrics engine")
             self._record_error(message("weekend_profile_error", error=str(exc)))
         try:
+            self._strategy_engine.set_profile(profile)
+        except Exception as exc:
+            _LOGGER.exception("Unable to hand the weekend profile to the strategy engine")
+            self._record_error(message("weekend_profile_error", error=str(exc)))
+        try:
             recorder.set_weekend_profile(uid, profile.to_json(), profile.hash)
         except Exception as exc:
             _LOGGER.exception("Unable to register the weekend profile")
@@ -279,8 +293,8 @@ class CaptureSession:
         return self._metrics_engine.snapshot()
 
     def strategy_snapshot(self) -> StrategySnapshot:
-        """Stub del motor de estrategia; S7 sustituye este método."""
-        return StrategySnapshot()
+        """Última evaluación publicada por el motor de estrategia."""
+        return self._strategy_engine.snapshot()
 
     def _consume(self) -> None:
         while not (self._stop_consumer.is_set() and self._queue.empty()):
@@ -342,6 +356,7 @@ class CaptureSession:
                         if state_snapshot.session.uid != previous_state.session.uid:
                             self._weekend_profile = None
                             self._metrics_engine.set_profile(None)
+                            self._strategy_engine.set_profile(None)
                         recorder = self._recorder
                         if recorder is not None:
                             self._prepare_weekend_profile(state_snapshot)
@@ -364,6 +379,17 @@ class CaptureSession:
                             except Exception as exc:
                                 _LOGGER.exception("Unexpected error while recording the session")
                                 self._record_error(message("recorder_error", error=str(exc)))
+                        try:
+                            self._strategy_engine.apply(
+                                state_snapshot,
+                                self._metrics_engine.snapshot(),
+                                self._metrics_engine.history.snapshot(),
+                                self._weekend_profile,
+                                observed_at,
+                            )
+                        except Exception as exc:
+                            _LOGGER.exception("Unexpected error while updating strategy")
+                            self._record_error(message("strategy_engine_error", error=str(exc)))
                         self._last_observed_at = observed_at
                         self._last_header = parsed_packet.header
         writer = self._writer

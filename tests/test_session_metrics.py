@@ -11,6 +11,7 @@ from f1_strategist.config import (
     CaptureConfig,
     MetricsConfig,
     RecordingConfig,
+    StrategyConfig,
     TelemetryConfig,
 )
 from f1_strategist.metrics.engine import MetricsEngine, MetricsSnapshot
@@ -130,6 +131,7 @@ def test_engine_failure_does_not_stop_state_or_capture(tmp_path: Path) -> None:
             telemetry=TelemetryConfig(listen_port=0),
             capture=CaptureConfig(enabled=True, directory=tmp_path / "out"),
             recording=RecordingConfig(enabled=False),
+            strategy=StrategyConfig(enabled=False),
         ),
         metrics_engine=_FailingEngine(),
     )
@@ -167,3 +169,21 @@ def test_engine_failure_does_not_stop_state_or_capture(tmp_path: Path) -> None:
     assert session.metrics_snapshot().metrics == {}
     assert session.capture_path is not None
     assert len(list(CaptureReader(session.capture_path))) == 1
+
+
+def test_strategy_without_recording_reports_diagnostic() -> None:
+    session = CaptureSession(
+        AppConfig(
+            telemetry=TelemetryConfig(listen_port=0),
+            capture=CaptureConfig(enabled=False),
+            recording=RecordingConfig(enabled=False),
+            strategy=StrategyConfig(enabled=True),
+        )
+    )
+    session.start()
+    session.stop()
+
+    snapshot = session.snapshot()
+    assert snapshot.consumer_errors == 1
+    assert snapshot.consumer_error is not None
+    assert snapshot.consumer_error.key == "strategy_recording_disabled"
