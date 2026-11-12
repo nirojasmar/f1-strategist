@@ -15,11 +15,12 @@ registros de forma permanente; conviene conservar copias de `sessions.db` junto 
 capturas.
 
 El esquema vive en [`src/f1_strategist/store/schema.py`](../src/f1_strategist/store/schema.py)
-y la versión actual es `SCHEMA_VERSION = 5`. La versión se guarda en `PRAGMA user_version`.
+y la versión actual es `SCHEMA_VERSION = 7`. La versión se guarda en `PRAGMA user_version`.
 Al abrir la base en modo escritura se aplican las migraciones pendientes. Los comandos
-`sessions` la abren en solo lectura: ante una base con un esquema anterior la rechazan sin
-migrarla y piden abrirla antes en modo escritura; una base creada por una versión más nueva
-de la herramienta también se rechaza.
+de consulta la abren en solo lectura y admiten v6 y v7 sin migrarlas; una base v6 no contiene
+proyecciones por vuelta y sus evaluaciones no se pueden incluir en `strategy review`. Al abrir
+una base compatible en modo escritura se aplican las migraciones hasta v7. La apertura de solo
+lectura rechaza bases anteriores a v6 o creadas por una versión más nueva de la herramienta.
 
 ## Tablas
 
@@ -46,6 +47,7 @@ reconstruida desde una captura (`ingest`).
 | `weekend_structure_json` | Orden de tipos de sesión anunciado por el juego. |
 | `weekend_id` | Fin de semana al que pertenece la sesión, automático o manual. |
 | `profile_json`, `profile_hash` | Perfil canónico usado al iniciar una carrera y su SHA-256. |
+| `strategy_fingerprint` | SHA-256 de un objeto con la versión de esquema de estrategia y su configuración canónica. |
 
 ### `weekends`
 
@@ -119,6 +121,18 @@ Instantáneas de cada juego de neumáticos del piloto. `kind` es `session_end` o
 prefiere el inventario de inicio de carrera y, si falta, usa la última instantánea de
 cierre de sesión.
 
+### `strategy_evaluations`
+
+Evaluaciones publicadas por el motor de estrategia, en orden por sesión y secuencia. Se
+guarda una evaluación por vuelta y otra cada vez que cambia la revisión de la recomendación.
+La fila conserva la acción y alternativa recomendadas, la ganancia estimada y su intervalo,
+la confianza, calidad de datos, huellas de entradas y perfil, y el JSON completo de la
+evaluación. Desde v7 también conserva el índice del coche, compuesto y tiempos de vuelta
+proyectados desde la siguiente vuelta completa; estas columnas permiten comparar cada
+horizonte con vueltas reales válidas posteriores sin reconstruir el modelo. Las filas v6
+conservan `NULL` en esos campos. La clave `(session_id, seq)` permite reescribir una secuencia
+sin duplicar filas.
+
 ### Perfil del fin de semana
 
 `profile_json` conserva el documento versionado (`schema_version`) exacto que alimentó
@@ -141,6 +155,7 @@ de práctica y clasificación no reciben esas métricas.
 - `idx_app_errors_session`: errores por sesión.
 - `idx_sessions_weekend_id`: localizar las sesiones de un fin de semana.
 - `idx_weekends_game_link`: unicidad de identificadores de temporada/fin de semana.
+- La clave primaria de `strategy_evaluations` permite recorrer sus filas por sesión y secuencia.
 
 ## Consultas de ejemplo
 
@@ -248,9 +263,9 @@ huella para la misma captura y configuración.
 
 Las migraciones son inmutables y se aplican en orden. Para cambiar el esquema:
 
-1. Añade una tupla de sentencias nuevas en `schema.py`, por ejemplo `_V6_STATEMENTS`.
-2. Incrementa `SCHEMA_VERSION` y añade `Migration(version=6, statements=_V6_STATEMENTS)` al
-   final de `MIGRATIONS`. No edites migraciones ya publicadas.
+1. Añade una tupla de sentencias nuevas en `schema.py`, con la siguiente versión disponible.
+2. Incrementa `SCHEMA_VERSION` y añade la migración correspondiente al final de `MIGRATIONS`.
+   No edites migraciones ya publicadas.
 3. Actualiza `_SESSION_COLUMNS`, `SessionInfo`, `create_session`, `update_session`,
    `finish_session`, `_session_from_row` y los métodos de lectura o escritura afectados.
 4. Añade una prueba que abra una base de la versión anterior, aplique la migración y
@@ -266,6 +281,14 @@ modificarla.
 - La captura es la fuente de verdad para volver a calcular vueltas, eventos y métricas.
 - `capture_sha256` identifica el archivo; `config_hash` identifica la configuración.
 - `fingerprint` identifica el resultado derivado y permite comparar ejecuciones.
+- `strategy_fingerprint` es la huella SHA-256 de un objeto con `schema_version` y la configuración
+  de estrategia serializada de forma canónica; no depende del sistema operativo ni del orden de las
+  claves.
+- Guardar o cambiar `strategy_fingerprint` no modifica el valor de `fingerprint` ya almacenado.
+  En cambio, `compute_capture_fingerprint` recalcula la huella a partir de la configuración completa,
+  incluida la estrategia; al recalcularla tras un cambio de estrategia, el nuevo resultado puede diferir
+  del valor almacenado. Compara los valores almacenados entre sí, o los resultados recalculados bajo la
+  misma configuración, no un valor almacenado con otro recalculado bajo una configuración distinta.
 - `incomplete = 1` indica que faltan datos: truncamiento de captura, pérdida de lotes en la
   cola del grabador, error de escritura o cierre anómalo. La sesión sigue siendo consultable,
   pero no debe usarse como referencia completa.

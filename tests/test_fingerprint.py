@@ -16,12 +16,15 @@ from f1_strategist.config import (
     AppConfig,
     CaptureConfig,
     MetricsConfig,
+    StrategyConfig,
+    StrategyTrackOverride,
 )
 from f1_strategist.fingerprint import (
     _FingerprintCollector,
     build_run_info,
     compute_config_hash,
     compute_fingerprint,
+    compute_strategy_fingerprint,
     fingerprint_capture,
 )
 from f1_strategist.metrics.engine import MetricsEngine
@@ -187,6 +190,29 @@ def test_fingerprint_ignores_key_order(
 
     changed_metrics = {**metrics, "metric_a": {**metrics["metric_a"], "value": 1.6}}
     assert compute_fingerprint(run.events, run.history, changed_metrics) != first
+
+
+def test_strategy_fingerprint_ignores_track_order_and_platform(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = StrategyConfig(
+        tracks={
+            "monza": StrategyTrackOverride(min_gain_s=2.0),
+            "spa": StrategyTrackOverride(pit_loss_override_s=21.0),
+        }
+    )
+    reordered = StrategyConfig(
+        tracks={
+            "spa": StrategyTrackOverride(pit_loss_override_s=21.0),
+            "monza": StrategyTrackOverride(min_gain_s=2.0),
+        }
+    )
+    fingerprint = compute_strategy_fingerprint(first)
+    monkeypatch.setattr("f1_strategist.fingerprint.platform.platform", lambda: "otro-sistema")
+    monkeypatch.setattr("f1_strategist.fingerprint.platform.python_version", lambda: "0.0.0")
+
+    assert fingerprint == compute_strategy_fingerprint(reordered)
+    assert len(fingerprint) == 64
 
 
 def test_run_info_has_versions_and_capture_hash(

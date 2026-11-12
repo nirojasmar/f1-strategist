@@ -23,11 +23,15 @@ from f1_strategist.race_state import (
 from f1_strategist.strategy.tyre_options import (
     NOTE_AVAILABILITY_UNKNOWN,
     NOTE_LIFE_RISK,
+    NOTE_MANDATORY_COMPOUND_PENDING,
     NOTE_NO_INVENTORY,
     NOTE_NO_OPTIONS,
     NOTE_RULE_DISABLED,
     NOTE_RULE_PENDING,
     NOTE_RULE_SATISFIED,
+    NOTE_RULE_SESSION_UNKNOWN,
+    NOTE_RULE_SPRINT,
+    NOTE_RULE_WET_WAIVED,
     NOTE_WET,
     NOTE_WET_SETS_SKIPPED,
     TyreOption,
@@ -78,7 +82,9 @@ def _inputs(
     cars = list(state.cars)
     if car is not None:
         cars[car.car_index] = car
-    session = replace(state.session, **(session_fields or {}))
+    fields = {"session_type": "race", "weekend_structure": ("practice_1", "race")}
+    fields.update(session_fields or {})
+    session = replace(state.session, **fields)
     state = replace(state, cars=tuple(cars), session=session, tyre_inventory=inventory)
     history = LapHistorySnapshot(
         records={0: records} if records else {},
@@ -169,6 +175,7 @@ def test_rule_pending_makes_the_stop_mandatory_and_excludes_the_current_compound
     assert options.requires_stop
     assert not options.stay_out_allowed
     assert NOTE_RULE_PENDING in options.notes
+    assert NOTE_MANDATORY_COMPOUND_PENDING not in options.notes
     assert options.compounds == ("hard",)
 
 
@@ -192,6 +199,109 @@ def test_rule_satisfied_allows_staying_out() -> None:
     assert options.compounds == ("hard",)
 
 
+def test_requires_a_medium_or_hard_visual_compound_after_two_other_dry_compounds() -> None:
+    inventory = (
+        _tyre_set(1, "c1", visual="hard"),
+        _tyre_set(2, "c2", visual="medium"),
+        _tyre_set(3, "c4", visual="soft"),
+    )
+    stints = (
+        TyreStint(compound="c4", visual_compound="soft", start_lap=1, end_lap=5),
+        TyreStint(compound="c5", visual_compound="soft", start_lap=6, end_lap=9),
+    )
+    car = _car(current_lap=10, actual_tyre_compound="c5", visual_tyre_compound="soft")
+
+    options = tyre_options(
+        _inputs(inventory=inventory, stints=stints, car=car),
+        StrategyConfig(),
+    )
+
+    assert options.requires_stop
+    assert NOTE_MANDATORY_COMPOUND_PENDING in options.notes
+    assert {option.visual_compound for option in options} == {"hard", "medium"}
+
+
+def test_a_visual_hard_or_medium_stint_satisfies_the_mandatory_compound() -> None:
+    inventory = (_tyre_set(1, "c2", visual="medium"),)
+    stints = (TyreStint(compound="c1", visual_compound="hard", start_lap=1, end_lap=5),)
+    car = _car(current_lap=6, actual_tyre_compound="c1", visual_tyre_compound="hard")
+
+    options = tyre_options(
+        _inputs(inventory=inventory, stints=stints, car=car),
+        StrategyConfig(),
+    )
+
+    assert options.requires_stop
+    assert NOTE_MANDATORY_COMPOUND_PENDING not in options.notes
+    assert options.compounds == ("c2",)
+
+
+def test_sprint_is_exempt_and_main_race_in_sprint_weekend_is_not() -> None:
+    inventory = (_tyre_set(1, "soft", visual="soft"), _tyre_set(2, "hard", visual="hard"))
+    car = _car(current_lap=5, actual_tyre_compound="soft", visual_tyre_compound="soft")
+    sprint = tyre_options(
+        _inputs(
+            inventory=inventory,
+            car=car,
+            session_fields={
+                "session_type": "race",
+                "weekend_structure": ("short_sprint_shootout", "race", "race_2"),
+            },
+        ),
+        StrategyConfig(),
+    )
+    main_race = tyre_options(
+        _inputs(
+            inventory=inventory,
+            car=car,
+            session_fields={
+                "session_type": "race_2",
+                "weekend_structure": ("short_sprint_shootout", "race", "race_2"),
+            },
+        ),
+        StrategyConfig(),
+    )
+
+    assert not sprint.requires_stop
+    assert NOTE_RULE_SPRINT in sprint.notes
+    assert main_race.requires_stop
+    assert main_race.compounds == ("hard",)
+
+
+def test_race_with_missing_weekend_structure_does_not_assume_it_is_not_a_sprint() -> None:
+    inventory = (_tyre_set(1, "soft", visual="soft"),)
+    car = _car(current_lap=5, actual_tyre_compound="soft", visual_tyre_compound="soft")
+
+    options = tyre_options(
+        _inputs(
+            inventory=inventory,
+            car=car,
+            session_fields={"session_type": "race", "weekend_structure": ()},
+        ),
+        StrategyConfig(),
+    )
+
+    assert not options.requires_stop
+    assert NOTE_RULE_SESSION_UNKNOWN in options.notes
+
+
+def test_non_race_sessions_do_not_apply_the_compound_rule() -> None:
+    inventory = (_tyre_set(1, "soft", visual="soft"),)
+    car = _car(current_lap=5, actual_tyre_compound="soft", visual_tyre_compound="soft")
+
+    options = tyre_options(
+        _inputs(
+            inventory=inventory,
+            car=car,
+            session_fields={"session_type": "practice_1"},
+        ),
+        StrategyConfig(),
+    )
+
+    assert not options.requires_stop
+    assert NOTE_RULE_DISABLED in options.notes
+
+
 @pytest.mark.parametrize("wet_compound", ["intermediate", "wet"])
 def test_using_a_wet_compound_waives_the_two_dry_compound_rule(wet_compound: str) -> None:
     inventory = (_tyre_set(1, "medium"),)
@@ -206,6 +316,7 @@ def test_using_a_wet_compound_waives_the_two_dry_compound_rule(wet_compound: str
     assert options.used_dry_compounds == ("medium",)
     assert not options.requires_stop
     assert options.stay_out_allowed
+    assert NOTE_RULE_WET_WAIVED in options.notes
 
 
 def test_rule_can_be_disabled_by_configuration() -> None:
@@ -246,6 +357,9 @@ def test_wet_weather_sets_the_flag() -> None:
 
     assert options.wet_conditions
     assert NOTE_WET in options.notes
+    assert NOTE_RULE_WET_WAIVED not in options.notes
+    assert options.requires_stop
+    assert NOTE_RULE_PENDING in options.notes
 
 
 def test_forecast_rain_within_the_window_sets_the_flag() -> None:
@@ -260,6 +374,9 @@ def test_forecast_rain_within_the_window_sets_the_flag() -> None:
 
     assert options.wet_conditions
     assert NOTE_WET in options.notes
+    assert NOTE_RULE_WET_WAIVED not in options.notes
+    assert options.requires_stop
+    assert NOTE_RULE_PENDING in options.notes
 
 
 def test_forecast_rain_outside_the_window_is_ignored() -> None:

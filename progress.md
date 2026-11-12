@@ -45,7 +45,7 @@ Documentos de diseño:
 | Lenguaje y entorno | Python 3.12+, `uv`, `ruff`, `pyright`, `pytest` | Acordado (2026-10-31) |
 | Modelos y configuración | `pydantic` v2 y TOML | Acordado |
 | LLM | Cliente HTTP a API compatible con OpenAI, adaptador intercambiable | Acordado; modelo concreto pendiente |
-| Almacenamiento | Captura binaria cruda (`.f1cap`) + SQLite para derivados | Implementado; esquema actual v5 documentado en `docs/almacenamiento_sqlite.md` |
+| Almacenamiento | Captura binaria cruda (`.f1cap`) + SQLite para derivados | Implementado; esquema actual v7 documentado en `docs/almacenamiento_sqlite.md` |
 | Grabación e ingesta | Grabador en vivo con hilo y cola acotada; `ingest` offline idempotente | Implementado (G5); la cola del vivo no bloquea y la ingesta espera al escritor para no perder lotes |
 | Replay y huella | Replay interno (`play`) y reemisión UDP (`replay`); huella canónica compartida por `verify` e `ingest` | Implementado (G2, G4, G5); la velocidad no cambia el tiempo simulado y la captura truncada se marca incompleta |
 | Perfil del fin de semana | Se construye al empezar la carrera y se registra en la sesión (`profile_json` + `profile_hash`); la reproducción usa el registrado | Implementado (Fase 3.5, P1--P8); sin fin de semana enlazado no hay perfil y la captura continúa |
@@ -61,12 +61,12 @@ Documentos de diseño:
 
 | Fase | Estado | Notas |
 | --- | --- | --- |
-| 0. Definición y entorno | Parcial | Repo, CI definido, config, receptor y guía de firewall listos. Falta validar la recepción desde otro PC de la red local y en Linux real. |
+| 0. Definición y entorno | Parcial | Repo, CI definido, config, receptor y guía de firewall listos. Validada la recepción desde otro PC de la red local y en Linux real. |
 | 1. Receptor, parser y estado | Implementada; CI verde | Snapshots inmutables de sesión y coches, daños, frescura por grupo, eventos y resumen de consola. |
 | 2. Métricas e histórico | Implementada; validación parcial | A1--A4, B1--B3, C1--C4/C2b, D1--D9, E1--E4 y F2--F4 implementados. F3 y la documentación se actualizaron según O5; la semántica/tolerancia del MFD sigue abierta aunque la validación local actual pasa. |
-| 3. Grabación y replay | Implementada; validación local completa | G1--G8 implementados sobre SQLite versionado (actualmente v5 tras las migraciones de Fase 3.5), `play`/`replay`, datasets, huella y `verify`, grabador en vivo e `ingest`, inspección con `sessions`, pruebas E2E y benchmarks. Documentación en `docs/almacenamiento_sqlite.md`. Queda repetir CI en Linux y macOS. |
+| 3. Grabación y replay | Implementada; validación local completa | G1--G8 implementados sobre SQLite versionado (v7 tras las migraciones de Fase 4), `play`/`replay`, datasets, huella y `verify`, grabador en vivo e `ingest`, inspección con `sessions`, pruebas E2E y benchmarks. Documentación en `docs/almacenamiento_sqlite.md`. Queda repetir CI en Linux y macOS. |
 | 3.5. Perfil del fin de semana | Implementada; validación local Windows | P1--P8 implementadas. Esquema SQLite v5, enlace de sesiones, resúmenes de tandas, inventario, perfil versionado y métricas `profile.*`; la prueba integrada cubre práctica, clasificación, carrera y reingesta con huella estable. Validación Linux por CI pendiente. |
-| 4. Motor de estrategia | En curso; ola 0 cerrada | Rama `f4-wave-0-baseline`: H1, H2, S1--S4 y los 13 fixes de `review_fase_4_ola_0.md`, más el esqueleto del motor y los tipos del contrato. Siguiente: S5 (evaluador de alternativas). |
+| 4. Motor de estrategia | En curso; S1--S9 implementadas | Ola 0 cerrada; S5--S8 cubren evaluación, decisión, motor integrado y registro SQLite; S9 añade panel, comandos de consulta y revisión de proyecciones en SQLite v7. Siguiente: S10 (validación E2E y rendimiento). |
 | 5--10 | No iniciadas | |
 
 ## 5. Qué está verificado y qué no
@@ -224,6 +224,19 @@ Documentos de diseño:
 -   Validación Windows de la ola 0: `uv run pytest -q` (790 aprobadas, 4 benchmarks excluidos), Ruff
     (lint y formato, 116 archivos) y Pyright (0 errores) pasan. La suite partió de 768 pruebas antes de
     los fixes de la revisión.
+-   S8: SQLite v6 migra desde v5 sin perder sesiones, guarda evaluaciones por vuelta y cambio de revisión
+    en vivo y en `ingest`, y conserva una huella canónica de estrategia separada de `fingerprint`.
+    La suite completa actual pasa (859 pruebas; 4 benchmarks excluidos), Ruff y Pyright (0 errores).
+-   S9: SQLite v7 guarda el coche, compuesto y pronóstico de tiempos por vuelta. El panel de estrategia y
+    `strategy show`, `export` (JSON/CSV) y `review` usan la lectura de sesiones; `review` compara el error
+    absoluto medio por horizonte y omite datos históricos sin proyección. La lectura v6 permanece disponible.
+    Verificación Windows: 878 pruebas aprobadas, 4 benchmarks excluidos; Ruff y Pyright (0 errores).
+-   Revisión de la ola 1: se corrigieron H1, H2 y H4--H10 (identidad de juegos, línea base obligatoria,
+    bloqueo por calidad/condiciones, cadencia, revisión de errores, proyección fraccionaria, vida de neumáticos,
+    `review` y formato). H3 bloquea lluvia, SC/VSC y los eventos observables de bandera roja; la telemetría no
+    expone un indicador directo y persistente de bandera roja activa, por lo que queda pendiente validación real.
+    La reproducción de Suzuka ya termina correctamente con claves únicas. Validación Windows: 899 aprobadas,
+    4 benchmarks excluidos; Ruff lint/formato y Pyright pasan.
 
 **No verificado todavía:**
 
@@ -235,9 +248,9 @@ Documentos de diseño:
 -   La Fase 3.5 solo está validada en Windows: CI en Linux y macOS queda pendiente (Docker no tiene
     daemon disponible y WSL solo muestra la distribución interna `docker-desktop`). El perfil del fin de
     semana tampoco se ha probado todavía contra capturas reales de un fin de semana completo.
--   La Fase 4 solo se ha validado con escenarios sintéticos: los modelos de ritmo, desgaste, pérdida en
-    boxes y reglas de neumáticos aún no se han contrastado contra una captura real con paradas
-    estratégicas. La decisión final (S6--S10) tampoco existe todavía.
+-   La Fase 4 aún requiere validación con capturas reales de estrategia y condiciones variadas. La
+    bandera roja no se ha probado con una captura real; tampoco se ha medido el requisito de rendimiento
+    de S7 (<1 ms medio). La validación E2E y rendimiento de S10 siguen pendientes.
 -   Queda volver a ejecutar CI de GitHub Actions después de la Ola 5.
 
 ## 6. Bitácora
@@ -653,6 +666,57 @@ fixes de la revisión (`0b3bd76`).
     Ruff (lint y formato, 116 archivos) y Pyright (0 errores) pasan. La suite partió de 768 pruebas
     antes de los fixes (+22 nuevas). `git diff --check` limpio. CI remota no se ejecutó.
 
+### 2026-11-12
+
+**S8 --- Registro de evaluaciones en SQLite, esquema v6.**
+
+-   Migración v6 añade `sessions.strategy_fingerprint` y `strategy_evaluations`, conservando las bases
+    v5 y sus datos. El almacén expone escritura idempotente por `(session_id, seq)` y lectura ordenada.
+-   `SessionRecorder.record_strategy` encola evaluaciones sin acceso síncrono a SQLite; persiste una por
+    vuelta y cada cambio de revisión. La sesión en vivo y la ingesta offline usan la misma ruta.
+-   La huella independiente cubre la configuración de estrategia en JSON canónico y no depende del
+    orden de claves ni del sistema operativo; la huella existente de captura no cambia.
+-   Verificación Windows: 859 pruebas aprobadas, 4 benchmarks excluidos; Ruff y Pyright (0 errores).
+
+**UE1 y UE3 --- fixtures reales y regla de neumáticos.**
+
+-   UE1: se añadieron los fixtures anonimizados de práctica y carrera de Suzuka al manifiesto; los cinco
+    escenarios del manifiesto se verifican correctamente.
+-   UE3: `tyre_options` exige en carreras normales secas dos compuestos distintos, con al menos un juego
+    visualmente medio o duro. La regla no se impone con lluvia ni en Sprint; una sesión `race` sin
+    `weekend_structure` queda sin clasificar y no activa la regla prematuramente.
+-   La captura de China confirma el Sprint por `short_sprint_shootout` en `weekend_structure` (`race`) y la
+    carrera principal como `race_2`. En algunos paquetes de esta última, la telemetría registra ventana
+    ideal/límite 9/17; queda pendiente confirmar visualmente el texto del HUD.
+-   Validación: 866 pruebas aprobadas, 4 benchmarks excluidos; pruebas de neumáticos (31), Ruff y Pyright
+    pasan.
+
+**S9 --- Panel de consola y comandos `strategy`, esquema v7.**
+
+-   El panel y `strategy show` presentan la recomendación, confianza, ganancia, supuestos, riesgos y calidad;
+    `strategy export` admite JSON/CSV y `strategy review` calcula el error absoluto medio por horizonte.
+-   SQLite v7 conserva el coche, compuesto y tiempos proyectados por vuelta para comparar contra vueltas
+    reales válidas posteriores. Las bases v6 siguen siendo consultables, pero sus evaluaciones sin pronóstico
+    no contribuyen a `review`.
+-   Verificación Windows inicial: 878 pruebas aprobadas, 4 benchmarks excluidos; Ruff y Pyright (0 errores).
+
+**Revisión de la ola 1 --- correcciones posteriores a S9.**
+
+-   H1: las alternativas y recomendaciones identifican el juego de neumáticos; se comprobó la reproducción
+    original sobre Suzuka, que ahora emite JSON con código 0 y alternativas únicas.
+-   H2: la línea base obligatoria usa la ventana ideal o, si no está disponible, la última parada viable;
+    una parada obligatoria se recomienda aunque no haya ganancia robusta frente a ese plan.
+-   H3: lluvia actual/pronosticada y SC/VSC bloquean recomendaciones. Los eventos observables de bandera roja
+    mantienen el bloqueo hasta cerrar una vuelta normal tras la reanudación; la detección en vivo requiere una
+    captura real, pues el protocolo no publica una señal directa de bandera roja activa.
+-   H4--H8: se incorporan calidad e identidad del juego al contrato de evaluación v3; el motor reevalúa cambios
+    de historial, inventario, distancia y frescura, reintenta fallos con cadencia mínima e incrementa revisión
+    al entrar/salir de error. Las fracciones se proyectan cronológicamente y el riesgo de vida se limita al plan
+    seleccionado y considera ambos juegos.
+-   H9--H10: `review` omite vueltas inválidas/ausentes sin truncar horizontes posteriores, pero se detiene ante
+    paradas o cambio de compuesto; el formato completo exigido por CI pasa.
+-   Validación Windows: 899 pruebas aprobadas, 4 benchmarks excluidos; Ruff lint/formato y Pyright (0 errores).
+
 ## 7. Hallazgos de la primera captura real
 
 Captura: 68 541 paquetes, ~66 MB, 795,5 s entre el primer y el último paquete. Salida de `inspect`:
@@ -818,8 +882,8 @@ La Fase 3 está implementada y documentada. El criterio de salida se verificó l
 repetir CI en Linux y macOS. La Fase 2 mantiene abierta la semántica del indicador de combustible del MFD
 y el fixture de Monza acredita solo los escenarios observados localmente. El siguiente trabajo es:
 
-1.  **Fase 4:** ola 0 cerrada (tipos, ritmo, boxes y neumáticos). Siguiente: S5 (evaluador de
-    alternativas), S6 (sensibilidad y decisión) y S7--S11 (motor, SQLite v6, consola y validación).
+1.  **Fase 4:** S1--S9 implementadas (panel, comandos y registro SQLite v7). Siguiente: S10 (validación
+    E2E y rendimiento).
 2.  **CI:** volver a ejecutar GitHub Actions después de la Ola 2.
 3.  **Calibración diferida:** ajustar los parámetros que hoy no tienen valor universal y ampliar la
     validación a capturas con lluvia, safety car y otras condiciones.

@@ -15,13 +15,14 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from .capture import CaptureReader
-from .config import MetricsConfig
+from .config import MetricsConfig, StrategyConfig
 from .metrics.engine import MetricsEngine, MetricsSnapshot
 from .metrics.history import LapHistorySnapshot
 from .packets import parse_header
 from .parser import PacketParseError, is_ignored_by_design, parse_packet
 from .race_state import RaceState, RaceStateSnapshot
 from .receiver import Stats, StatsSnapshot
+from .strategy.engine import StrategyEngine
 from .strategy.types import StrategySnapshot
 from .weekend_profile import WeekendProfile
 
@@ -43,11 +44,13 @@ class PlaybackSession:
         speed: float = 1.0,
         start_lap: int | None = None,
         profiles_by_uid: Mapping[int, WeekendProfile] | None = None,
+        strategy_config: StrategyConfig | None = None,
     ) -> None:
         if start_lap is not None and start_lap < 1:
             raise ValueError("start_lap debe ser positivo")
         self.path = Path(path)
         self._config = config
+        self._strategy_config = strategy_config or StrategyConfig()
         self._loop = loop
         self._speed = _validate_speed(speed)
         self._seek_lap = start_lap
@@ -64,6 +67,7 @@ class PlaybackSession:
         self._packets_parsed = 0
         self._race_state = RaceState()
         self._metrics_engine = MetricsEngine(config)
+        self._strategy_engine = StrategyEngine(self._strategy_config, config)
         self._stats = Stats()
         # Valida cabecera y metadatos ahora para que los errores sean inmediatos.
         CaptureReader(self.path)
@@ -213,8 +217,8 @@ class PlaybackSession:
         return self._metrics_engine.history.snapshot()
 
     def strategy_snapshot(self) -> StrategySnapshot:
-        """Stub del motor de estrategia; S7 sustituye este método."""
-        return StrategySnapshot()
+        """Última evaluación publicada por el motor de estrategia."""
+        return self._strategy_engine.snapshot()
 
     # ------------------------------------------------------------------
     # Hilo de reproducción
@@ -251,6 +255,7 @@ class PlaybackSession:
     def _reset_pipeline(self) -> None:
         self._race_state = RaceState()
         self._metrics_engine = MetricsEngine(self._config)
+        self._strategy_engine = StrategyEngine(self._strategy_config, self._config)
         self._stats = Stats()
         with self._condition:
             self._observed_at = 0.0
@@ -298,14 +303,22 @@ class PlaybackSession:
             self._race_state.apply(packet, observed_at)
             state = self._race_state.snapshot()
             session = state.session
-            self._metrics_engine.set_profile(
+            profile = (
                 self._profiles_by_uid.get(session.uid)
                 if session.uid is not None
                 and session.session_type is not None
                 and session.session_type.lower() in {"race", "race_2", "race_3"}
                 else None
             )
+            self._metrics_engine.set_profile(profile)
             self._metrics_engine.apply(packet, observed_at, state)
+            self._strategy_engine.apply(
+                state,
+                self._metrics_engine.snapshot(),
+                self._metrics_engine.history.snapshot(),
+                profile,
+                observed_at,
+            )
             last_state = state
             last_observed_at = observed_at
             if seeking and state.current_lap is not None and state.current_lap >= (seek_lap or 1):

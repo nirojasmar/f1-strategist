@@ -11,6 +11,7 @@ from f1_strategist.config import (
     CaptureConfig,
     MetricsConfig,
     RecordingConfig,
+    StrategyConfig,
     TelemetryConfig,
 )
 from f1_strategist.metrics.engine import MetricsEngine, MetricsSnapshot
@@ -19,6 +20,7 @@ from f1_strategist.parser import ParsedPacket
 from f1_strategist.ports import SessionPort
 from f1_strategist.race_state import RaceStateSnapshot
 from f1_strategist.session import CaptureSession
+from f1_strategist.strategy.types import StrategyAction
 from tests.scenarios import ScenarioCar, build_race_timed
 
 
@@ -130,6 +132,7 @@ def test_engine_failure_does_not_stop_state_or_capture(tmp_path: Path) -> None:
             telemetry=TelemetryConfig(listen_port=0),
             capture=CaptureConfig(enabled=True, directory=tmp_path / "out"),
             recording=RecordingConfig(enabled=False),
+            strategy=StrategyConfig(enabled=False),
         ),
         metrics_engine=_FailingEngine(),
     )
@@ -167,3 +170,63 @@ def test_engine_failure_does_not_stop_state_or_capture(tmp_path: Path) -> None:
     assert session.metrics_snapshot().metrics == {}
     assert session.capture_path is not None
     assert len(list(CaptureReader(session.capture_path))) == 1
+
+
+def test_strategy_engine_error_is_recorded_once_per_error_transition(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("strategy boom")
+
+    monkeypatch.setattr("f1_strategist.strategy.engine.evaluate_once", fail)
+    packets = list(build_race_timed(_cars(), total_laps=3, samples_per_lap=1))
+    parsed = iter(packet for packet, _ in packets)
+    monkeypatch.setattr("f1_strategist.session.parse_packet", lambda _: next(parsed))
+    session = CaptureSession(
+        AppConfig(
+            telemetry=TelemetryConfig(listen_port=0),
+            capture=CaptureConfig(enabled=False),
+            recording=RecordingConfig(enabled=False),
+            strategy=StrategyConfig(enabled=True),
+        )
+    )
+    session._stop_consumer.set()
+    for packet, observed_at in packets:
+        session._queue.put(
+            CapturedPacket(
+                recv_time_ns=0,
+                source_ip="127.0.0.1",
+                source_port=4000,
+                payload=_payload(packet),
+                recv_monotonic=observed_at,
+            )
+        )
+
+    session._consume()
+
+    diagnostic = session.snapshot().consumer_error
+    assert session.snapshot().consumer_errors == 1
+    assert diagnostic is not None
+    assert diagnostic.key == "strategy_engine_error"
+    assert diagnostic.get("error") == "RuntimeError: strategy boom"
+    evaluation = session._strategy_engine.snapshot().evaluation
+    assert evaluation is not None
+    assert evaluation.recommendation.action is StrategyAction.INSUFFICIENT_DATA
+
+
+def test_strategy_without_recording_reports_diagnostic() -> None:
+    session = CaptureSession(
+        AppConfig(
+            telemetry=TelemetryConfig(listen_port=0),
+            capture=CaptureConfig(enabled=False),
+            recording=RecordingConfig(enabled=False),
+            strategy=StrategyConfig(enabled=True),
+        )
+    )
+    session.start()
+    session.stop()
+
+    snapshot = session.snapshot()
+    assert snapshot.consumer_errors == 1
+    assert snapshot.consumer_error is not None
+    assert snapshot.consumer_error.key == "strategy_recording_disabled"

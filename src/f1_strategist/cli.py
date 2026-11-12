@@ -16,19 +16,25 @@ from typing import Any
 
 from rich.console import Console, Group
 from rich.live import Live
+from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
 from . import __version__
 from .capture import CaptureError
-from .config import AppConfig, ConfigError, apply_overrides, load_config
+from .config import AppConfig, ConfigError, MetricsConfig, apply_overrides, load_config
 from .console import format_bytes, render, run_console
+from .console_messages import render_strategy_rows
 from .datasets import DEFAULT_MANIFEST, Manifest, Scenario, load_manifest, verify_scenario
 from .fingerprint import build_run_info, fingerprint_capture
+from .metrics.engine import MetricsEngine
 from .metrics.export import EXPORT_FORMATS, render_metrics_export, run_metrics_capture
-from .offline import OfflineResult
+from .metrics.history import MetricInputs
+from .offline import OfflineResult, run_capture_offline
 from .packets import packet_name
+from .parser import ParsedPacket
 from .playback import PlaybackSession
+from .race_state import RaceState
 from .receiver import ReceiverError
 from .recorder import ingest_capture
 from .replay import replay_capture
@@ -42,6 +48,10 @@ from .store.queries import (
     session_events,
     session_laps,
 )
+from .strategy.engine import evaluate_once
+from .strategy.export import STRATEGY_EXPORT_FORMATS, render_strategy_export
+from .strategy.review import review_strategy_evaluations
+from .strategy.types import StrategyEvaluation
 from .summary import summarize
 from .trim import trim_capture
 from .weekend_profile import WeekendProfile
@@ -367,9 +377,46 @@ def _build_parser() -> argparse.ArgumentParser:
         help="base de datos SQLite (por defecto, la de la configuración)",
     )
 
-    sub.add_parser(
-        "strategy",
-        help="motor de estrategia (sin subcomandos en esta versión)",
+    strategy = sub.add_parser("strategy", help="consulta recomendaciones de estrategia")
+    strategy_sub = strategy.add_subparsers(dest="strategy_command", required=True)
+    strategy_at = strategy_sub.add_parser("at", help="evalúa una captura en una vuelta")
+    strategy_at.add_argument("file", type=Path, help="captura de entrada (.f1cap o .f1cap.gz)")
+    strategy_at.add_argument("--lap", type=_positive_int, required=True, help="vuelta de carrera")
+    strategy_at.add_argument("--json", action="store_true", help="imprime la evaluación en JSON")
+    strategy_at.add_argument("--config", type=Path, help="archivo TOML de configuración")
+
+    strategy_show = strategy_sub.add_parser("show", help="muestra una evaluación guardada")
+    strategy_show.add_argument("--session", type=_positive_int, required=True, metavar="ID")
+    strategy_show.add_argument("--lap", type=_positive_int, help="vuelta exacta")
+    strategy_show.add_argument(
+        "--db",
+        type=Path,
+        help="base de datos SQLite (por defecto, la de la configuración)",
+    )
+
+    strategy_export = strategy_sub.add_parser("export", help="exporta evaluaciones guardadas")
+    strategy_export.add_argument("--session", type=_positive_int, required=True, metavar="ID")
+    strategy_export.add_argument(
+        "--format",
+        choices=STRATEGY_EXPORT_FORMATS,
+        default="json",
+        help="formato de salida (por defecto: json)",
+    )
+    strategy_export.add_argument("--out", type=Path, help="archivo de salida (por defecto, stdout)")
+    strategy_export.add_argument(
+        "--db",
+        type=Path,
+        help="base de datos SQLite (por defecto, la de la configuración)",
+    )
+
+    strategy_review = strategy_sub.add_parser(
+        "review", help="compara proyecciones guardadas con vueltas reales"
+    )
+    strategy_review.add_argument("--session", type=_positive_int, required=True, metavar="ID")
+    strategy_review.add_argument(
+        "--db",
+        type=Path,
+        help="base de datos SQLite (por defecto, la de la configuración)",
     )
     return parser
 
@@ -544,6 +591,7 @@ def _cmd_play(args: argparse.Namespace, console: Console, err: Console) -> int:
         speed=args.speed,
         start_lap=args.start_lap,
         profiles_by_uid=profiles,
+        strategy_config=cfg.strategy,
     )
     _install_signal_handlers()
     try:
@@ -1377,11 +1425,181 @@ def _cmd_trim(args: argparse.Namespace, console: Console, err: Console) -> int:
     return 0
 
 
-def _cmd_strategy(args: argparse.Namespace, console: Console, err: Console) -> int:
-    """Grupo del motor de estrategia; aún no tiene subcomandos."""
-    console.print("El motor de estrategia todavía no tiene subcomandos.")
-    console.print("[dim]Disponible en próximas versiones de la Fase 4.[/]")
+class _StrategyAtCollector:
+    """Conserva las entradas de la vuelta solicitada durante la reproducción offline."""
+
+    def __init__(
+        self,
+        metrics_config: MetricsConfig,
+        profiles_by_uid: dict[int, WeekendProfile],
+        target_lap: int,
+    ) -> None:
+        self.metrics_engine = MetricsEngine(metrics_config)
+        self.profiles_by_uid = profiles_by_uid
+        self.target_lap = target_lap
+        self.state = RaceState()
+        self.target_inputs: MetricInputs | None = None
+        self._current_lap: int | None = None
+        self._is_race = False
+
+    def apply(self, packet: ParsedPacket, observed_at: float) -> None:
+        self.state.apply(packet, observed_at)
+        state = self.state.snapshot()
+        session = state.session
+        self._is_race = session.session_type is not None and session.session_type.lower() in {
+            "race",
+            "race_2",
+            "race_3",
+        }
+        profile = (
+            self.profiles_by_uid.get(session.uid)
+            if self._is_race and session.uid is not None
+            else None
+        )
+        self.metrics_engine.set_profile(profile)
+        self.metrics_engine.apply(packet, observed_at, state)
+        player = state.player_car
+        self._current_lap = player.current_lap if player is not None else state.current_lap
+        if self._is_race and self._current_lap == self.target_lap:
+            car_index = state.player_car_index
+            self.target_inputs = MetricInputs(
+                state=state,
+                history=self.metrics_engine.history.snapshot(),
+                config=self.metrics_engine.config,
+                now=observed_at,
+                car_index=car_index if car_index is not None else -1,
+                profile=profile,
+            )
+
+    def should_stop(self) -> bool:
+        return (
+            self._is_race and self._current_lap is not None and self._current_lap >= self.target_lap
+        )
+
+
+def _cmd_strategy_at(args: argparse.Namespace, console: Console, err: Console) -> int:
+    cfg = load_config(args.config)
+    profiles = _profiles_for_capture(cfg, args.file, err)
+    collector = _StrategyAtCollector(cfg.metrics, profiles, args.lap)
+    offline = run_capture_offline(args.file, [collector], stop_when=collector.should_stop)
+    _warn_offline_issues(offline, err)
+    inputs = collector.target_inputs
+    if inputs is None:
+        raise ValueError(
+            f"No se encontró la vuelta {args.lap} en una sesión de carrera de la captura."
+        )
+
+    evaluation = evaluate_once(
+        inputs,
+        cfg.strategy.for_track(inputs.state.session.track),
+    )
+    if args.json:
+        _write_stdout(json.dumps(evaluation.to_dict(), ensure_ascii=False, indent=2) + "\n")
+    else:
+        recommendation = evaluation.recommendation
+        console.print(
+            f"Vuelta {evaluation.lap} · {recommendation.action.value} · "
+            f"alternativa {recommendation.key}"
+        )
+        if recommendation.gain_vs_baseline_s is not None:
+            console.print(
+                f"Ganancia estimada: {recommendation.gain_vs_baseline_s:.2f} s "
+                f"(confianza {recommendation.confidence:.0%})"
+            )
+        if inputs.profile is not None:
+            console.print(f"Perfil: {inputs.profile.hash}")
+        console.print(f"Calidad de datos: {evaluation.data_quality.value}")
     return 0
+
+
+def _cmd_strategy(args: argparse.Namespace, console: Console, err: Console) -> int:
+    if args.strategy_command == "at":
+        return _cmd_strategy_at(args, console, err)
+
+    db = _sessions_database(args)
+    with SessionStore.open(db, readonly=True) as store:
+        session = require_session(store, args.session)
+        assert session.id is not None
+        evaluations = list(store.iter_strategy_evaluations(session.id))
+
+        if args.strategy_command == "show":
+            matching = (
+                [item for item in evaluations if item.lap == args.lap]
+                if args.lap is not None
+                else evaluations
+            )
+            if not matching:
+                if not evaluations:
+                    console.print(f"La sesión {session.id} no tiene evaluaciones de estrategia.")
+                    return 0
+                err.print(
+                    f"[red]Error:[/] la sesión {session.id} no tiene una evaluación "
+                    f"para la vuelta {args.lap}."
+                )
+                return 2
+            stored = matching[-1]
+            evaluation = StrategyEvaluation.from_json(stored.evaluation_json)
+            table = Table.grid(padding=(0, 2))
+            table.add_column(style="bold")
+            table.add_column(overflow="fold")
+            table.add_row("Secuencia", Text(str(stored.seq)))
+            table.add_row("Revisión", Text(str(evaluation.revision)))
+            for label, value in render_strategy_rows(evaluation):
+                table.add_row(label, Text(value))
+            console.print(
+                Panel(
+                    table,
+                    title=f"Estrategia · sesión {session.id} · vuelta {evaluation.lap}",
+                    expand=False,
+                )
+            )
+            return 0
+
+        if args.strategy_command == "export":
+            if args.out is not None:
+                if _same_file(args.out, db):
+                    raise ValueError("La salida no puede sobrescribir la base de datos.")
+                if session.capture_path is not None and _same_file(
+                    args.out, Path(session.capture_path)
+                ):
+                    raise ValueError("La salida no puede sobrescribir la captura asociada.")
+            output = render_strategy_export(session.id, evaluations, args.format)
+            if args.out is None:
+                _write_stdout(output)
+            else:
+                args.out.parent.mkdir(parents=True, exist_ok=True)
+                with args.out.open("w", encoding="utf-8", newline="") as handle:
+                    handle.write(output)
+                console.print(f"Exportación de estrategia de la sesión {session.id} escrita.")
+            return 0
+
+        if not evaluations:
+            console.print(f"La sesión {session.id} no tiene evaluaciones de estrategia.")
+            return 0
+        review = review_strategy_evaluations(evaluations, store.iter_laps(session.id))
+        console.print(
+            f"Evaluaciones utilizadas: {review.evaluations_used}/{review.evaluations_total} "
+            "(última revisión por vuelta; solo vueltas válidas sin parada y con el mismo "
+            "compuesto)."
+        )
+        if not review.horizons:
+            console.print(
+                "No hay comparaciones válidas. Las evaluaciones antiguas sin proyecciones "
+                "vuelta a vuelta siguen siendo consultables, pero no pueden revisarse."
+            )
+            return 0
+        table = Table(title=f"Error de proyección · sesión {session.id}", expand=False)
+        table.add_column("Horizonte", justify="right")
+        table.add_column("Muestras", justify="right")
+        table.add_column("Error absoluto medio", justify="right")
+        for item in review.horizons:
+            table.add_row(
+                f"{item.horizon_laps} vueltas",
+                str(item.samples),
+                f"{item.mean_absolute_error_s:.3f} s",
+            )
+        console.print(table)
+        return 0
 
 
 def main(argv: Sequence[str] | None = None) -> int:

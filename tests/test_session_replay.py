@@ -7,7 +7,13 @@ import time
 from pathlib import Path
 
 from f1_strategist.capture import CapturedPacket, CaptureReader, CaptureWriter
-from f1_strategist.config import AppConfig, CaptureConfig, RecordingConfig, TelemetryConfig
+from f1_strategist.config import (
+    AppConfig,
+    CaptureConfig,
+    RecordingConfig,
+    StrategyConfig,
+    TelemetryConfig,
+)
 from f1_strategist.diagnostics import diagnose
 from f1_strategist.packets import HEADER_STRUCT
 from f1_strategist.replay import replay_capture
@@ -49,6 +55,7 @@ def test_replay_is_received_and_recorded(tmp_path: Path) -> None:
         telemetry=TelemetryConfig(listen_port=0),
         capture=CaptureConfig(enabled=True, directory=tmp_path / "out"),
         recording=RecordingConfig(enabled=False),
+        strategy=StrategyConfig(enabled=False),
     )
     session = CaptureSession(cfg)
     session.start()

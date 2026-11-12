@@ -130,6 +130,22 @@ def test_speed_does_not_change_the_result(
     assert results[0] == results[1] == results[2]
 
 
+def test_strategy_result_is_invariant_to_playback_speed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path, _ = _capture(tmp_path, monkeypatch)
+    evaluations = []
+    for speed in (0.0, 1.0, 4.0):
+        session = PlaybackSession(path, speed=speed)
+        _play_to_end(session)
+        evaluation = session.strategy_snapshot().evaluation
+        assert evaluation is not None
+        evaluations.append(evaluation.to_dict())
+
+    assert evaluations[0] == evaluations[1] == evaluations[2]
+
+
 def test_play_matches_the_offline_metrics_runner(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -374,6 +390,31 @@ def test_play_command_at_speed_zero(
 
     assert main(["play", str(path), "--speed", "0"]) == 0
     assert "Reproducción completada" in capsys.readouterr().out
+
+
+def test_strategy_at_prints_the_requested_lap_as_json(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    path, _ = _capture(tmp_path, monkeypatch)
+
+    assert main(["strategy", "at", str(path), "--lap", "2", "--json"]) == 0
+    evaluation = json.loads(capsys.readouterr().out)
+    assert evaluation["lap"] == 2
+    assert evaluation["session_uid"]
+    assert "recommendation" in evaluation
+
+
+def test_strategy_at_reports_a_lap_missing_from_the_capture(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    path, _ = _capture(tmp_path, monkeypatch)
+
+    assert main(["strategy", "at", str(path), "--lap", "99", "--json"]) == 2
+    assert "No se encontró la vuelta 99" in capsys.readouterr().err
 
 
 def test_play_and_verify_load_the_profile_registered_for_the_capture(
