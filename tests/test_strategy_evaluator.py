@@ -504,3 +504,90 @@ def test_evaluation_is_deterministic() -> None:
     second = evaluate_alternatives(models, _pit(20.0), options, inputs, StrategyConfig())
 
     assert first == second
+
+
+def test_sakhir_lap_fifteen_does_not_discard_stay_out() -> None:
+    """Vida del neumático en edad total: 6 + 5,5 vueltas caben en 16, no en 11."""
+    car = _car(
+        current_lap=15,
+        lap_distance_m=TRACK_LENGTH_M / 2,
+        actual_tyre_compound="soft",
+    )
+    inputs = _inputs(car=car, session_fields=_race_state(total_laps=20))
+    models = _models(
+        _model("soft", 90.0, 0.05, initial_age_laps=6.0, usable_life_laps=16.0),
+        _model("hard", 90.3, 0.04),
+    )
+
+    results = evaluate_alternatives(
+        models,
+        _pit(20.0),
+        _options(_option("hard")),
+        inputs,
+        StrategyConfig(),
+    )
+
+    stay = _by_key(results)["stay_out"]
+    assert NOTE_STAY_OUT_NOT_VIABLE not in stay.notes
+
+
+def test_sakhir_lap_fourteen_keeps_stay_out_viable() -> None:
+    car = _car(
+        current_lap=14,
+        lap_distance_m=TRACK_LENGTH_M / 2,
+        actual_tyre_compound="soft",
+    )
+    inputs = _inputs(car=car, session_fields=_race_state(total_laps=20))
+    models = _models(
+        _model("soft", 90.0, 0.05, initial_age_laps=5.0, usable_life_laps=16.0),
+        _model("hard", 90.3, 0.04),
+    )
+
+    results = evaluate_alternatives(
+        models,
+        _pit(20.0),
+        _options(_option("hard")),
+        inputs,
+        StrategyConfig(),
+    )
+
+    assert "stay_out" in _by_key(results)
+
+
+def test_recommended_life_limit_still_discards_stay_out() -> None:
+    """El límite recomendado se aplica en edad total: 6 + 5,5 > 11."""
+    car = _car(
+        current_lap=15,
+        lap_distance_m=TRACK_LENGTH_M / 2,
+        actual_tyre_compound="soft",
+    )
+    inputs = _inputs(car=car, session_fields=_race_state(total_laps=20))
+    models = _models(
+        _model("soft", 90.0, 0.05, initial_age_laps=6.0, usable_life_laps=11.0),
+        _model("hard", 90.3, 0.04),
+    )
+
+    results = evaluate_alternatives(
+        models,
+        _pit(20.0),
+        _options(_option("hard")),
+        inputs,
+        StrategyConfig(),
+    )
+
+    assert "stay_out" not in _by_key(results)
+
+
+def test_zero_remaining_fitted_tyre_life_rejects_stay_out() -> None:
+    stay = _model("soft", 90.0, 0.05, initial_age_laps=6.0, usable_life_laps=6.0)
+    results = evaluate_alternatives(
+        _models(stay, _model("hard", 90.3, 0.04)),
+        _pit(20.0),
+        _options(_option("hard")),
+        _inputs(
+            car=_car(current_lap=15, lap_distance_m=TRACK_LENGTH_M / 2, actual_tyre_compound="soft")
+        ),
+        StrategyConfig(),
+    )
+
+    assert "stay_out" not in _by_key(results)

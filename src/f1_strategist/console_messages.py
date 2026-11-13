@@ -9,10 +9,19 @@ from .packets import packet_name
 from .parser import ParseIssue
 from .race_state import CarSnapshot, RaceEvent, RaceStateSnapshot
 from .receiver import PacketSequenceStats
-from .strategy.types import StrategyAction, StrategyEvaluation
+from .strategy.types import (
+    BASELINE_STAY_OUT,
+    StrategyAction,
+    StrategyAlternative,
+    StrategyEvaluation,
+)
 
 METRICS_PANEL_TITLE = "Métricas"
 STRATEGY_PANEL_TITLE = "Estrategia"
+
+#: Marcadores del panel: distinguen «no disponible» de «no aplica a la acción».
+_STRATEGY_UNKNOWN = "Desconocido"
+_STRATEGY_NOT_APPLICABLE = "No aplica"
 
 _METRIC_ROWS = (
     ("progress.laps_remaining", "Vueltas restantes"),
@@ -172,12 +181,38 @@ def render_metrics_rows(
     return tuple(rows)
 
 
+def _strategy_reference_stop(
+    evaluation: StrategyEvaluation,
+) -> StrategyAlternative | None:
+    """Mejor parada calculada cuando la acción no recomienda ninguna."""
+    return min(
+        (item for item in evaluation.alternatives if item.key != BASELINE_STAY_OUT),
+        key=lambda item: (item.remaining_time_s, item.key),
+        default=None,
+    )
+
+
+def _strategy_reference_text(alternative: StrategyAlternative) -> str:
+    """Describe una parada calculada que no es la recomendación."""
+    parts = alternative.key.split(":")
+    compound = parts[1] if len(parts) > 1 else alternative.key
+    detail = f"{compound}, {alternative.gain_vs_baseline_s:+.2f} s"
+    return f"{detail} (alternativa, no recomendada)"
+
+
 def render_strategy_rows(
     evaluation: StrategyEvaluation,
 ) -> tuple[tuple[str, str], ...]:
-    """Devuelve las etiquetas y explicaciones del panel de estrategia."""
+    """Devuelve las etiquetas y explicaciones del panel de estrategia.
+
+    Los campos de parada solo se rellenan cuando la acción recomienda una.
+    Para ``NO_CHANGE`` e ``INSUFFICIENT_DATA`` se marcan como no aplicables y
+    se muestra aparte la mejor parada calculada, identificada como alternativa
+    sin recomendación; así el panel distingue «no disponible» de «no aplica».
+    """
     recommendation = evaluation.recommendation
     action = recommendation.action
+    stop_action = action in {StrategyAction.PIT_NOW, StrategyAction.PIT_IN}
     if action is StrategyAction.NO_CHANGE:
         explanation = "Ninguna parada superó el mínimo de ganancia considerando la incertidumbre."
     elif action is StrategyAction.INSUFFICIENT_DATA:
@@ -196,13 +231,37 @@ def render_strategy_rows(
         (item for item in evaluation.alternatives if item.key == recommendation.key),
         None,
     )
-    return (
+    reference = None if stop_action else _strategy_reference_stop(evaluation)
+    if stop_action:
+        if alternative is not None and alternative.rejoin_position is not None:
+            rejoin = f"Posición {alternative.rejoin_position} (recomendación)"
+        else:
+            rejoin = _STRATEGY_UNKNOWN
+    elif reference is None:
+        rejoin = _STRATEGY_NOT_APPLICABLE
+    elif reference.rejoin_position is None:
+        rejoin = f"{_STRATEGY_UNKNOWN} (alternativa, no recomendación)"
+    else:
+        rejoin = f"Posición {reference.rejoin_position} (alternativa, no recomendación)"
+
+    rows: list[tuple[str, str]] = [
         ("Recomendación", _STRATEGY_ACTION_LABELS[action]),
         ("Explicación", explanation),
-        ("Compuesto", recommendation.compound or "—"),
+        (
+            "Compuesto",
+            (recommendation.compound or _STRATEGY_UNKNOWN)
+            if stop_action
+            else _STRATEGY_NOT_APPLICABLE,
+        ),
         (
             "Juego",
-            "—" if recommendation.set_index is None else str(recommendation.set_index),
+            (
+                _STRATEGY_UNKNOWN
+                if recommendation.set_index is None
+                else str(recommendation.set_index)
+            )
+            if stop_action
+            else _STRATEGY_NOT_APPLICABLE,
         ),
         (
             "Vuelta de parada",
@@ -211,46 +270,55 @@ def render_strategy_rows(
                 if action is StrategyAction.PIT_NOW
                 else f"Vuelta {recommendation.pit_lap}"
                 if recommendation.pit_lap is not None
-                else "—"
-            ),
+                else _STRATEGY_UNKNOWN
+            )
+            if stop_action
+            else _STRATEGY_NOT_APPLICABLE,
         ),
         (
             "Ganancia vs. línea base",
             (
-                "—"
+                _STRATEGY_UNKNOWN
                 if recommendation.gain_vs_baseline_s is None
                 else f"{recommendation.gain_vs_baseline_s:.2f} s"
-            ),
+            )
+            if stop_action
+            else _STRATEGY_NOT_APPLICABLE,
         ),
         (
             "Intervalo de ganancia",
-            "—" if interval is None else f"{interval[0]:.2f} a {interval[1]:.2f} s",
+            (_STRATEGY_UNKNOWN if interval is None else f"{interval[0]:.2f} a {interval[1]:.2f} s")
+            if stop_action
+            else _STRATEGY_NOT_APPLICABLE,
         ),
         (
             "Confianza",
-            "—" if recommendation.confidence is None else f"{recommendation.confidence:.0%}",
+            _STRATEGY_UNKNOWN
+            if recommendation.confidence is None
+            else f"{recommendation.confidence:.0%}",
         ),
+        ("Reincorporación", rejoin),
+    ]
+    if reference is not None:
+        rows.append(("Mejor parada calculada", _strategy_reference_text(reference)))
+    elif not stop_action and not evaluation.alternatives:
+        rows.append(("Mejor parada calculada", "Ninguna calculada"))
+    rows.extend(
         (
-            "Reincorporación",
+            ("Calidad de datos", _QUALITY_LABELS[evaluation.data_quality]),
+            ("Motivo", _render_strategy_keys(recommendation.notes)),
             (
-                "—"
-                if alternative is None or alternative.rejoin_position is None
-                else f"Posición {alternative.rejoin_position}"
+                "Vueltas restantes",
+                _STRATEGY_UNKNOWN
+                if evaluation.laps_remaining is None
+                else f"{evaluation.laps_remaining:.1f}",
             ),
-        ),
-        ("Calidad de datos", _QUALITY_LABELS[evaluation.data_quality]),
-        ("Motivo", _render_strategy_keys(recommendation.notes)),
-        (
-            "Vueltas restantes",
-            "—" if evaluation.laps_remaining is None else f"{evaluation.laps_remaining:.1f}",
-        ),
-        (
-            "Supuestos",
-            _render_strategy_keys(evaluation.assumptions),
-        ),
-        ("Riesgos", _render_strategy_keys(evaluation.risks)),
-        ("Sensibilidad", _render_strategy_keys(evaluation.sensitive_to)),
+            ("Supuestos", _render_strategy_keys(evaluation.assumptions)),
+            ("Riesgos", _render_strategy_keys(evaluation.risks)),
+            ("Sensibilidad", _render_strategy_keys(evaluation.sensitive_to)),
+        )
     )
+    return tuple(rows)
 
 
 def render_strategy_recording_warning() -> str:

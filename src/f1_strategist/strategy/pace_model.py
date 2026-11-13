@@ -367,18 +367,15 @@ def _usable_life(
     candidates: list[float] = []
     car = inputs.car
     fitted_tyre = car.fitted_tyre if car is not None else None
-    if (
-        compound == fitted
-        and fitted_tyre is not None
-        and fitted_tyre.usable_life_laps > 0
-        and fitted_tyre.lifespan_laps > 0
-    ):
-        candidates.append(
-            min(
-                float(fitted_tyre.usable_life_laps),
-                float(fitted_tyre.lifespan_laps),
-            )
-        )
+    if compound == fitted and fitted_tyre is not None:
+        # ``usable_life_laps`` es la edad máxima recomendada del compuesto, pero
+        # ``lifespan_laps`` son las vueltas que el juego considera restantes
+        # desde la edad actual: cada límite se convierte a edad total antes de
+        # compararlos con ``edad + vueltas``.
+        if fitted_tyre.usable_life_laps > 0:
+            candidates.append(float(fitted_tyre.usable_life_laps))
+        if fitted_tyre.lifespan_laps >= 0:
+            candidates.append((initial_age or 0.0) + float(fitted_tyre.lifespan_laps))
     limit = inputs.config.tyre_wear_limit_pct
     if limit is not None and wear_rate is not None and wear_rate > 0 and compound == fitted:
         wear_now = fitted_tyre.wear_pct if fitted_tyre is not None else 0.0

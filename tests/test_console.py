@@ -397,6 +397,127 @@ def test_strategy_engine_error_renders_its_cause_in_spanish() -> None:
     assert "ValueError: boom" in rendered
 
 
+def _strategy_evaluation(
+    *,
+    recommendation: StrategyRecommendation,
+    alternatives: tuple[StrategyAlternative, ...],
+    baseline: str = "stay_out",
+) -> StrategyEvaluation:
+    return StrategyEvaluation(
+        revision=1,
+        session_uid="123",
+        lap=13,
+        laps_remaining=7.0,
+        baseline=baseline,
+        recommendation=recommendation,
+        alternatives=alternatives,
+        assumptions=(),
+        risks=(),
+        sensitive_to=(),
+        data_quality=Quality.OK,
+        inputs_hash="a" * 64,
+        schema_version=STRATEGY_SCHEMA_VERSION,
+    )
+
+
+def test_strategy_rows_mark_not_applicable_and_alternative_reference() -> None:
+    from f1_strategist.console_messages import render_strategy_rows
+
+    evaluation = _strategy_evaluation(
+        recommendation=StrategyRecommendation(
+            action=StrategyAction.NO_CHANGE,
+            key="stay_out",
+            notes=("decision_default_no_change",),
+        ),
+        alternatives=(
+            StrategyAlternative(key="stay_out", remaining_time_s=1000.0, gain_vs_baseline_s=0.0),
+            StrategyAlternative(
+                key="pit_now:hard:set1",
+                remaining_time_s=1004.0,
+                gain_vs_baseline_s=-4.0,
+                rejoin_position=11,
+            ),
+        ),
+    )
+
+    rows = dict(render_strategy_rows(evaluation))
+
+    assert rows["Compuesto"] == "No aplica"
+    assert rows["Vuelta de parada"] == "No aplica"
+    assert rows["Reincorporación"] == "Posición 11 (alternativa, no recomendación)"
+    assert rows["Mejor parada calculada"] == "hard, -4.00 s (alternativa, no recomendada)"
+
+
+def test_strategy_rows_never_present_an_alternative_rejoin_as_recommendation() -> None:
+    from f1_strategist.console_messages import render_strategy_rows
+
+    evaluation = _strategy_evaluation(
+        recommendation=StrategyRecommendation(
+            action=StrategyAction.INSUFFICIENT_DATA,
+            key="pit_now:c3:set5",
+            notes=("stay_out_unavailable",),
+        ),
+        alternatives=(
+            StrategyAlternative(
+                key="pit_now:c3:set5",
+                remaining_time_s=900.0,
+                gain_vs_baseline_s=0.0,
+                rejoin_position=19,
+            ),
+        ),
+    )
+
+    rows = dict(render_strategy_rows(evaluation))
+
+    assert rows["Compuesto"] == "No aplica"
+    assert rows["Reincorporación"] == "Posición 19 (alternativa, no recomendación)"
+
+
+def test_strategy_rows_mark_unknown_fields_for_insufficient_data_without_alternatives() -> None:
+    from f1_strategist.console_messages import render_strategy_rows
+
+    evaluation = _strategy_evaluation(
+        recommendation=StrategyRecommendation(
+            action=StrategyAction.INSUFFICIENT_DATA,
+            key="stay_out",
+            notes=("pit_loss_unavailable",),
+        ),
+        alternatives=(),
+    )
+
+    rows = dict(render_strategy_rows(evaluation))
+
+    assert rows["Vuelta de parada"] == "No aplica"
+    assert rows["Reincorporación"] == "No aplica"
+    assert rows["Mejor parada calculada"] == "Ninguna calculada"
+    assert rows["Vueltas restantes"] == "7.0"
+
+
+def test_strategy_rows_mark_unknown_values_for_a_stop_without_details() -> None:
+    from f1_strategist.console_messages import render_strategy_rows
+
+    evaluation = _strategy_evaluation(
+        recommendation=StrategyRecommendation(
+            action=StrategyAction.PIT_NOW,
+            key="pit_now:hard",
+        ),
+        alternatives=(
+            StrategyAlternative(
+                key="pit_now:hard",
+                remaining_time_s=900.0,
+                gain_vs_baseline_s=0.0,
+            ),
+        ),
+    )
+
+    rows = dict(render_strategy_rows(evaluation))
+
+    assert rows["Compuesto"] == "Desconocido"
+    assert rows["Juego"] == "Desconocido"
+    assert rows["Reincorporación"] == "Desconocido"
+    assert rows["Confianza"] == "Desconocido"
+
+
 def test_metrics_panel_marks_live_rows_stale_when_lap_data_ages(monkeypatch) -> None:
     config = AppConfig()
     session = CaptureSession(config)

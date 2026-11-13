@@ -203,6 +203,30 @@ def test_fewer_than_three_laps_produce_no_fit() -> None:
     assert models.notes == ("no_compounds",)
 
 
+def test_c1_at_stint_start_has_no_model_until_enough_laps() -> None:
+    """Sakhir, vueltas 9-12: el C1 recién montado no fabrica ritmo ni pendiente."""
+    car = CarSnapshot(
+        car_index=0,
+        current_lap=11,
+        actual_tyre_compound="hard",
+        tyre_age_laps=2,
+    )
+    two_laps = _degrading_laps(compound="hard", first=9, count=2, base=92.0, slope=0.05)
+
+    early = build_compound_models(_inputs(records=two_laps, car=car), StrategyConfig())
+
+    assert early.get("hard") is None
+    assert early.models == ()
+
+    three_laps = _degrading_laps(compound="hard", first=9, count=3, base=92.0, slope=0.05)
+    late = build_compound_models(_inputs(records=three_laps, car=car), StrategyConfig())
+    hard = late.get("hard")
+
+    assert hard is not None
+    assert hard.available
+    assert hard.source == "race"
+
+
 def test_blend_uses_the_race_aligned_relative_prior() -> None:
     records = _degrading_laps(count=4, base=90.0, slope=0.10)
     profile = _weekend_profile((_compound_profile("soft", pace=95.0, delta=0.0, wear=0.5),))
@@ -398,18 +422,23 @@ def test_unmounted_set_life_is_taken_from_each_tyre_option() -> None:
     assert hard.usable_life_laps is None
 
 
-def test_fitted_tyre_life_is_bounded_by_its_reported_lifespan() -> None:
+def test_fitted_tyre_lifespan_counts_as_remaining_laps() -> None:
+    """``lifespan_laps`` son vueltas restantes: se suman a la edad actual.
+
+    Valores de Sakhir, vuelta 15: edad 6, juego con 11 vueltas restantes y
+    máximo recomendado de 16. El límite en edad total es 16, no 11.
+    """
     car = CarSnapshot(
         car_index=0,
-        current_lap=5,
+        current_lap=15,
         actual_tyre_compound="soft",
-        tyre_age_laps=4,
+        tyre_age_laps=6,
         fitted_tyre=FittedTyreSnapshot(
             actual_tyre_compound="soft",
             visual_tyre_compound="c5",
-            wear_pct=50.0,
-            lifespan_laps=8,
-            usable_life_laps=12,
+            wear_pct=31.75,
+            lifespan_laps=11,
+            usable_life_laps=16,
         ),
     )
     soft = build_compound_models(
@@ -418,7 +447,31 @@ def test_fitted_tyre_life_is_bounded_by_its_reported_lifespan() -> None:
     ).get("soft")
 
     assert soft is not None
-    assert soft.usable_life_laps == pytest.approx(8.0)
+    assert soft.usable_life_laps == pytest.approx(16.0)
+
+
+def test_zero_remaining_fitted_tyre_lifespan_is_a_real_limit() -> None:
+    car = CarSnapshot(
+        car_index=0,
+        current_lap=15,
+        actual_tyre_compound="soft",
+        tyre_age_laps=6,
+        fitted_tyre=FittedTyreSnapshot(
+            actual_tyre_compound="soft",
+            visual_tyre_compound="c5",
+            wear_pct=31.75,
+            lifespan_laps=0,
+            usable_life_laps=16,
+        ),
+    )
+    soft = build_compound_models(
+        _inputs(records=_degrading_laps(count=5), car=car),
+        StrategyConfig(),
+    ).get("soft")
+
+    assert soft is not None
+    assert soft.initial_age_laps == pytest.approx(6.0)
+    assert soft.usable_life_laps == pytest.approx(6.0)
 
 
 def test_each_tyre_option_projects_with_its_own_age_and_remaining_life() -> None:

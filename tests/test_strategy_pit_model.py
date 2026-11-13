@@ -73,7 +73,15 @@ def _stop_laps(car_index: int, *, loss_s: float = 20.0) -> tuple[LapRecord, ...]
             pit_stop_time_s=2.5,
             closed=True,
         ),
-        LapRecord(car_index, 3, lap_time_s=entry_lap, valid=True, pit_exit=True, closed=True),
+        LapRecord(
+            car_index,
+            3,
+            lap_time_s=entry_lap,
+            valid=True,
+            pit_exit=True,
+            pit_lane_time_s=25.0,
+            closed=True,
+        ),
         LapRecord(car_index, 4, lap_time_s=90.0, valid=True, closed=True),
         LapRecord(car_index, 5, lap_time_s=90.0, valid=True, closed=True),
     )
@@ -157,7 +165,7 @@ def test_negative_profile_prior_falls_back_to_lane_time() -> None:
             4,
             lap_time_s=115.0,
             valid=True,
-            pit_entry=True,
+            pit_exit=True,
             pit_lane_time_s=24.0,
             closed=True,
         ),
@@ -176,7 +184,7 @@ def test_lane_time_is_the_last_resort() -> None:
             4,
             lap_time_s=115.0,
             valid=True,
-            pit_entry=True,
+            pit_exit=True,
             pit_lane_time_s=24.0,
             closed=True,
         ),
@@ -188,6 +196,56 @@ def test_lane_time_is_the_last_resort() -> None:
     assert estimate.sample_count == 1
     assert estimate.quality is Quality.LOW
     assert NOTE_LANE_TIME_ONLY in estimate.notes
+
+
+def test_partial_entry_lane_time_is_not_a_full_pit_loss() -> None:
+    """Una entrada cerrada con 1,933 s de carril no es la pérdida completa."""
+    partial = (
+        LapRecord(
+            0,
+            4,
+            lap_time_s=115.0,
+            valid=True,
+            pit_entry=True,
+            pit_lane_time_s=1.933,
+            closed=True,
+        ),
+    )
+    estimate = estimate_pit_loss(_inputs({0: partial}), StrategyConfig())
+
+    assert not estimate.available
+    assert estimate.value_s is None
+    assert estimate.source == "none"
+    assert estimate.notes == (NOTE_NO_PIT_LOSS,)
+
+
+def test_exit_lap_lane_time_completes_the_partial_entry() -> None:
+    """La vuelta de salida acumula el tiempo completo y sí es una muestra válida."""
+    complete = (
+        LapRecord(
+            0,
+            4,
+            lap_time_s=115.0,
+            valid=True,
+            pit_entry=True,
+            pit_lane_time_s=1.933,
+            closed=True,
+        ),
+        LapRecord(
+            0,
+            5,
+            lap_time_s=92.0,
+            valid=True,
+            pit_exit=True,
+            pit_lane_time_s=23.933,
+            closed=True,
+        ),
+    )
+    estimate = estimate_pit_loss(_inputs({0: complete}), StrategyConfig())
+
+    assert estimate.available
+    assert estimate.source == "lane"
+    assert estimate.value_s == pytest.approx(23.933)
 
 
 def test_no_source_means_unavailable_and_never_zero() -> None:

@@ -307,10 +307,12 @@ def _profile_loss(inputs: MetricInputs, cfg: StrategyConfig, stale: bool) -> Pit
 
 
 def _lane_loss(inputs: MetricInputs, cfg: StrategyConfig, stale: bool) -> PitLossEstimate | None:
+    # Solo una vuelta que ya ha salido del carril acumula el tiempo completo:
+    # la de entrada se cierra con el tramo recorrido y daría una pérdida parcial.
     records = tuple(
         record
         for record in inputs.history.records_for(inputs.car_index)
-        if record.closed and record.pit_entry and record.pit_lane_time_s is not None
+        if record.closed and record.pit_exit and record.pit_lane_time_s is not None
     )
     if not records:
         return None
