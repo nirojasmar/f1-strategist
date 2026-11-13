@@ -33,7 +33,7 @@ from .pace_model import (
     canonical_compound,
     project_lap_times,
 )
-from .pit_model import PitLossEstimate, estimate_pit_loss
+from .pit_model import PitLossEstimate, estimate_pit_loss, estimate_rejoin
 from .types import (
     ASSUMPTION_FUEL_EFFECT_NOT_SEPARATED,
     ASSUMPTION_PROFILE_PRIOR_USED,
@@ -335,6 +335,11 @@ def evaluate_once(
     """
     models = build_compound_models(inputs, cfg)
     pit = estimate_pit_loss(inputs, cfg)
+    rejoin = (
+        estimate_rejoin(inputs, pit.value_s, cfg, pit_loss_band_s=pit.band_s or 0.0)
+        if pit.value_s is not None
+        else None
+    )
     options = tyre_options(inputs, cfg)
     unmodeled_conditions = _unmodeled_conditions(inputs, options)
     quality = _data_quality(inputs, models, pit, cfg, unmodeled_conditions)
@@ -415,6 +420,13 @@ def evaluate_once(
         forecast_car_index=inputs.car_index if projected_lap_times is not None else None,
         forecast_compound=options.current_compound if projected_lap_times is not None else None,
         projected_lap_times_s=projected_lap_times,
+        pit_loss_s=pit.value_s,
+        pit_loss_band_s=pit.band_s,
+        pit_loss_source=pit.source,
+        pit_loss_quality=pit.quality,
+        pit_loss_notes=pit.notes,
+        rejoin_position_range=rejoin.position_range if rejoin is not None else None,
+        rejoin_quality=rejoin.quality if rejoin is not None else None,
     )
 
 

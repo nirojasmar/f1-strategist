@@ -1,6 +1,6 @@
 # Progreso del proyecto --- F1 Strategist
 
-**Última actualización:** 2026-11-11
+**Última actualización:** 2026-11-12
 **Propósito de este archivo:** llevar trazabilidad del avance importante y dejar el contexto
 necesario para que cualquier persona o agente que llegue al proyecto entienda dónde estamos, qué
 está decidido, qué está verificado y qué falta.
@@ -66,12 +66,16 @@ Documentos de diseño:
 | 2. Métricas e histórico | Implementada; validación parcial | A1--A4, B1--B3, C1--C4/C2b, D1--D9, E1--E4 y F2--F4 implementados. F3 y la documentación se actualizaron según O5; la semántica/tolerancia del MFD sigue abierta aunque la validación local actual pasa. |
 | 3. Grabación y replay | Implementada; validación local completa | G1--G8 implementados sobre SQLite versionado (v7 tras las migraciones de Fase 4), `play`/`replay`, datasets, huella y `verify`, grabador en vivo e `ingest`, inspección con `sessions`, pruebas E2E y benchmarks. Documentación en `docs/almacenamiento_sqlite.md`. Queda repetir CI en Linux y macOS. |
 | 3.5. Perfil del fin de semana | Implementada; validación local Windows | P1--P8 implementadas. Esquema SQLite v5, enlace de sesiones, resúmenes de tandas, inventario, perfil versionado y métricas `profile.*`; la prueba integrada cubre práctica, clasificación, carrera y reingesta con huella estable. Validación Linux por CI pendiente. |
-| 4. Motor de estrategia | En curso; S1--S9 implementadas | Ola 0 cerrada; S5--S8 cubren evaluación, decisión, motor integrado y registro SQLite; S9 añade panel, comandos de consulta y revisión de proyecciones en SQLite v7. Hay escenarios reales de alta degradación y safety car en el manifiesto; S10 E2E y rendimiento sigue pendiente. |
+| 4. Motor de estrategia | En curso; S1--S9, S12 y S13 implementadas | Ola 0 cerrada; S5--S8 cubren evaluación, decisión, motor integrado y registro SQLite; S9 añade panel y comandos. S13 incorpora prior por circuito y rango de reincorporación; S10 E2E/rendimiento y S11 documentación integral siguen pendientes. |
 | 5--10 | No iniciadas | |
 
 ## 5. Qué está verificado y qué no
 
 **Verificado:**
+
+-   S13: el prior de circuito se evalúa después de las fuentes de sesión y conserva su fuente, banda y calidad;
+    el cálculo publica rango de reincorporación. Validación Windows: `uv run pytest -q` (938 aprobadas,
+    4 deseleccionadas), Ruff lint/formato, Pyright (0 errores), `git diff --check` y wheel con el CSV incluido.
 
 -   La suite `pytest` (567 pruebas funcionales, 3 benchmarks excluidos por defecto), Ruff (lint y formato,
     96 archivos) y Pyright (0 errores) pasan en Windows (2026-11-08). Incluye las pruebas de captura real
@@ -734,6 +738,19 @@ fixes de la revisión (`0b3bd76`).
     priorizarse después. Se registra también investigar un prior externo de posición de reincorporación cuando
     aún nadie haya parado, refinable a cálculo con huecos/posiciones en vivo.
 
+**S13 --- Prior de pérdida en boxes y reincorporación por circuito.**
+
+-   El CSV se carga como recurso empaquetado. El prior es el último recurso tras anulación, muestras de carrera,
+    perfil del fin de semana y tiempo de carril. El año de calendario no se usa como filtro; se excluye Sepang
+    porque no está disponible en F1 25 ni en su DLC 2026.
+-   SC/VSC usan sus columnas específicas; se conserva ±0,5 s para SC solo donde la fuente lo indica. El HUD y
+    la evaluación muestran fuente, banda, calidad y la estimación/rango de posición; la neutralización sigue
+    bloqueando la recomendación. Sin circuito o valor aplicable, el resultado queda no disponible.
+-   La captura de Madring proporcionada confirma `track_id=42` en 1.089 paquetes de sesión; el parser ahora lo
+    expone como `madring` y el prior real observado es 31,1 s. La fila advierte que no es una cifra oficial.
+-   Validación Windows: 938 pruebas aprobadas, 4 deseleccionadas; Ruff lint/formato, Pyright (0 errores),
+    `git diff --check` y wheel construido con el CSV incluido.
+
 ## 7. Hallazgos de la primera captura real
 
 Captura: 68 541 paquetes, ~66 MB, 795,5 s entre el primer y el último paquete. Salida de `inspect`:
@@ -899,8 +916,8 @@ La Fase 3 está implementada y documentada. El criterio de salida se verificó l
 repetir CI en Linux y macOS. La Fase 2 mantiene abierta la semántica del indicador de combustible del MFD
 y el fixture de Monza acredita solo los escenarios observados localmente. El siguiente trabajo es:
 
-1.  **Fase 4:** S1--S9 implementadas (panel, comandos y registro SQLite v7). Siguiente: S10 (validación
-    E2E y rendimiento).
+1.  **Fase 4:** S1--S9 y S12--S13 implementadas (panel, registro SQLite v7 y prior por circuito).
+    Siguiente: S10 (validación E2E/rendimiento) y S11 (documentación integral).
 2.  **CI:** volver a ejecutar GitHub Actions después de la Ola 2.
 3.  **Calibración diferida:** ajustar los parámetros que hoy no tienen valor universal y ampliar la
     validación a capturas con lluvia, safety car y otras condiciones.

@@ -81,9 +81,25 @@ _STRATEGY_KEY_LABELS = {
     "alternative_quality_insufficient": "Calidad insuficiente en las opciones de parada",
     "pace_quality_insufficient": "Calidad insuficiente en el modelo de ritmo",
     "pit_loss_unavailable": "Pérdida en boxes no disponible",
+    "no_pit_loss_source": "Pérdida en boxes no disponible",
+    "fixed_band": "Banda de incertidumbre configurada",
+    "circuit_pit_loss_prior": "Prior de pérdida por circuito",
+    "circuit_pit_loss_not_official": "El valor del CSV no es oficial; se presenta como estimación",
+    "circuit_vsc_pit_loss_estimate": "Pérdida en boxes estimada bajo VSC",
+    "circuit_sc_pit_loss_estimate": "Pérdida en boxes estimada bajo SC",
+    "circuit_sc_uncertainty": "La fuente indica la incertidumbre de SC",
     "data_stale": "Datos obsoletos",
     "wear_slope": "Pendiente de desgaste",
     "pit_loss_s": "Pérdida en boxes",
+}
+
+_PIT_LOSS_SOURCE_LABELS = {
+    "override": "anulación de configuración",
+    "field": "muestras de carrera",
+    "profile": "perfil del fin de semana",
+    "lane": "tiempo de carril de boxes",
+    "circuit": "prior de circuito (estimación)",
+    "none": "sin fuente",
 }
 
 
@@ -234,7 +250,9 @@ def render_strategy_rows(
     reference = None if stop_action else _strategy_reference_stop(evaluation)
     if stop_action:
         if alternative is not None and alternative.rejoin_position is not None:
-            rejoin = f"Posición {alternative.rejoin_position} (recomendación)"
+            rejoin = _render_rejoin_position(
+                alternative.rejoin_position, "recomendación", evaluation
+            )
         else:
             rejoin = _STRATEGY_UNKNOWN
     elif reference is None:
@@ -242,7 +260,9 @@ def render_strategy_rows(
     elif reference.rejoin_position is None:
         rejoin = f"{_STRATEGY_UNKNOWN} (alternativa, no recomendación)"
     else:
-        rejoin = f"Posición {reference.rejoin_position} (alternativa, no recomendación)"
+        rejoin = _render_rejoin_position(
+            reference.rejoin_position, "alternativa, no recomendación", evaluation
+        )
 
     rows: list[tuple[str, str]] = [
         ("Recomendación", _STRATEGY_ACTION_LABELS[action]),
@@ -298,6 +318,7 @@ def render_strategy_rows(
             else f"{recommendation.confidence:.0%}",
         ),
         ("Reincorporación", rejoin),
+        ("Pérdida en boxes", _render_pit_loss_estimate(evaluation)),
     ]
     if reference is not None:
         rows.append(("Mejor parada calculada", _strategy_reference_text(reference)))
@@ -319,6 +340,42 @@ def render_strategy_rows(
         )
     )
     return tuple(rows)
+
+
+def _render_rejoin_position(
+    position: int,
+    role: str,
+    evaluation: StrategyEvaluation,
+) -> str:
+    if evaluation.rejoin_position_range is None and evaluation.rejoin_quality is None:
+        return f"Posición {position} ({role})"
+    details = ["estimada"]
+    if evaluation.rejoin_position_range is not None:
+        low, high = evaluation.rejoin_position_range
+        details.append(f"rango {low} a {high}")
+    if evaluation.rejoin_quality is not None:
+        details.append(f"calidad {_QUALITY_LABELS[evaluation.rejoin_quality]}")
+    details.append(role)
+    return f"Posición {position} ({'; '.join(details)})"
+
+
+def _render_pit_loss_estimate(evaluation: StrategyEvaluation) -> str:
+    source = evaluation.pit_loss_source
+    if source is None:
+        return _STRATEGY_UNKNOWN
+    if evaluation.pit_loss_s is None:
+        value = "No disponible" if source == "none" else _STRATEGY_UNKNOWN
+    else:
+        value = f"{evaluation.pit_loss_s:.2f} s"
+        if evaluation.pit_loss_band_s is not None:
+            value += f" (±{evaluation.pit_loss_band_s:.2f} s)"
+    details = [value, _PIT_LOSS_SOURCE_LABELS.get(source, source.replace("_", " "))]
+    if evaluation.pit_loss_quality is not None:
+        details.append(f"calidad {_QUALITY_LABELS[evaluation.pit_loss_quality]}")
+    notes = _render_strategy_keys(evaluation.pit_loss_notes)
+    if notes != "—":
+        details.append(notes)
+    return "; ".join(details)
 
 
 def render_strategy_recording_warning() -> str:

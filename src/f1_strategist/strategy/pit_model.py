@@ -1,21 +1,29 @@
 """Pérdida en boxes y reincorporación estimadas.
 
-El módulo es puro y determinista: recibe el estado, el histórico, el perfil del
-fin de semana y la configuración, y devuelve estimaciones inmutables. No usa
-reloj, no hace E/S y no inventa valores: cuando no hay ninguna fuente, la
-estimación queda no disponible (nunca vale cero).
+El cálculo es determinista: recibe el estado, el histórico, el perfil del fin
+de semana y la configuración, y devuelve estimaciones inmutables. La tabla
+estática de circuitos se carga una sola vez desde los recursos del paquete.
+No usa reloj ni inventa valores: cuando no hay ninguna fuente, la estimación
+queda no disponible (nunca vale cero).
 
 La pérdida se toma de la fuente más específica disponible, en este orden:
 anulación explícita de la configuración, mediana del campo en esta carrera,
-prior del fin de semana, tiempo de carril de boxes del juego y, si no hay
-ninguna, ``none``. La reincorporación se calcula con los intervalos al líder y
-**supone que los rivales no paran**: es un supuesto declarado, no un dato.
+prior del fin de semana, tiempo de carril de boxes del juego, prior por
+circuito y, si no hay ninguna, ``none``. La reincorporación se calcula con los
+intervalos al líder y **supone que los rivales no paran**: es un supuesto
+declarado, no un dato.
 """
 
 from __future__ import annotations
 
+import csv
 import math
+import re
+import unicodedata
 from dataclasses import dataclass
+from functools import lru_cache
+from importlib.resources import files
+from io import StringIO
 from statistics import median
 from typing import Literal
 
@@ -26,9 +34,11 @@ from ..metrics.types import Quality
 from ..race_state import CarSnapshot
 
 #: Origen de la pérdida en boxes estimada.
-PitLossSource = Literal["override", "field", "profile", "lane", "none"]
+PitLossSource = Literal["override", "field", "profile", "lane", "circuit", "none"]
 
-PIT_LOSS_SOURCES: frozenset[str] = frozenset({"override", "field", "profile", "lane", "none"})
+PIT_LOSS_SOURCES: frozenset[str] = frozenset(
+    {"override", "field", "profile", "lane", "circuit", "none"}
+)
 
 NOTE_OVERRIDE = "pit_loss_override"
 NOTE_FIELD_DISPERSION = "field_dispersion"
@@ -43,6 +53,11 @@ NOTE_LEADER_GAP_UNAVAILABLE = "leader_gap_unavailable"
 NOTE_GAME_REJOIN_MISMATCH = "game_rejoin_mismatch"
 NOTE_PLAYER_UNAVAILABLE = "player_car_unavailable"
 NOTE_NEGATIVE_SAMPLES_DISCARDED = "negative_pit_loss_samples_discarded"
+NOTE_CIRCUIT_PRIOR = "circuit_pit_loss_prior"
+NOTE_CIRCUIT_GREEN_NOT_OFFICIAL = "circuit_pit_loss_not_official"
+NOTE_CIRCUIT_VSC_ESTIMATE = "circuit_vsc_pit_loss_estimate"
+NOTE_CIRCUIT_SC_ESTIMATE = "circuit_sc_pit_loss_estimate"
+NOTE_CIRCUIT_SC_UNCERTAINTY = "circuit_sc_uncertainty"
 
 #: Estados de resultado que excluyen a un coche del cálculo de reincorporación.
 _RETIRED_STATUSES = frozenset(
@@ -64,6 +79,155 @@ _MIN_FIELD_STOPS = 3
 
 #: Factor de consistencia de la desviación absoluta mediana (MAD).
 _MAD_FACTOR = 1.4826
+
+_TRACK_CIRCUIT_ALIASES = {
+    "melbourne": "australia",
+    "australia": "australia",
+    "shanghai": "chinashanghai",
+    "china": "chinashanghai",
+    "chinashanghai": "chinashanghai",
+    "sakhir": "bahrainsakhir",
+    "bahrain": "bahrainsakhir",
+    "bahrainsakhir": "bahrainsakhir",
+    "catalunya": "spainbarcelonacatalunya",
+    "barcelona": "spainbarcelonacatalunya",
+    "spainbarcelonacatalunya": "spainbarcelonacatalunya",
+    "monaco": "monaco",
+    "montreal": "canadamontreal",
+    "canada": "canadamontreal",
+    "canadamontreal": "canadamontreal",
+    "silverstone": "greatbritainsilverstone",
+    "silverstonereverse": "greatbritainsilverstone",
+    "greatbritain": "greatbritainsilverstone",
+    "greatbritainsilverstone": "greatbritainsilverstone",
+    "hungaroring": "hungaryhungaroring",
+    "hungary": "hungaryhungaroring",
+    "hungaryhungaroring": "hungaryhungaroring",
+    "spa": "belgiumspafrancorchamps",
+    "belgium": "belgiumspafrancorchamps",
+    "belgiumspafrancorchamps": "belgiumspafrancorchamps",
+    "monza": "italymonza",
+    "italy": "italymonza",
+    "italymonza": "italymonza",
+    "singapore": "singaporemarinabay",
+    "marinabay": "singaporemarinabay",
+    "singaporemarinabay": "singaporemarinabay",
+    "suzuka": "japansuzuka",
+    "japan": "japansuzuka",
+    "japansuzuka": "japansuzuka",
+    "abudhabi": "abudhabiyasmarina",
+    "yasmarina": "abudhabiyasmarina",
+    "abudhabiyasmarina": "abudhabiyasmarina",
+    "texas": "unitedstatesaustincota",
+    "austin": "unitedstatesaustincota",
+    "cota": "unitedstatesaustincota",
+    "unitedstatesaustincota": "unitedstatesaustincota",
+    "brazil": "saopaulointerlagos",
+    "interlagos": "saopaulointerlagos",
+    "saopaulointerlagos": "saopaulointerlagos",
+    "austria": "austriaredbullring",
+    "austriareverse": "austriaredbullring",
+    "redbullring": "austriaredbullring",
+    "austriaredbullring": "austriaredbullring",
+    "mexico": "mexicocityhermanosrodriguez",
+    "mexicocity": "mexicocityhermanosrodriguez",
+    "hermanosrodriguez": "mexicocityhermanosrodriguez",
+    "mexicocityhermanosrodriguez": "mexicocityhermanosrodriguez",
+    "baku": "azerbaijanbaku",
+    "azerbaijan": "azerbaijanbaku",
+    "azerbaijanbaku": "azerbaijanbaku",
+    "zandvoort": "netherlandszandvoort",
+    "zandvoortreverse": "netherlandszandvoort",
+    "netherlands": "netherlandszandvoort",
+    "netherlandszandvoort": "netherlandszandvoort",
+    "imola": "emiliaromagnaimola",
+    "emiliaromagna": "emiliaromagnaimola",
+    "emiliaromagnaimola": "emiliaromagnaimola",
+    "jeddah": "saudiarabiajeddah",
+    "saudiarabia": "saudiarabiajeddah",
+    "saudiarabiajeddah": "saudiarabiajeddah",
+    "miami": "miami",
+    "lasvegas": "lasvegasstripcircuit",
+    "lasvegasstripcircuit": "lasvegasstripcircuit",
+    "losail": "qatarlusail",
+    "lusail": "qatarlusail",
+    "qatar": "qatarlusail",
+    "qatarlusail": "qatarlusail",
+    "madrid": "spainmadridmadring",
+    "madring": "spainmadridmadring",
+    "spainmadridmadring": "spainmadridmadring",
+}
+
+
+@dataclass(frozen=True, slots=True)
+class _CircuitPitLoss:
+    green_flag_s: float | None
+    vsc_s: float | None
+    sc_s: float | None
+    sc_uncertainty_s: float | None
+    green_flag_is_official: bool
+
+
+def _normalize_circuit_name(name: str) -> str:
+    normalized = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode("ascii")
+    return "".join(character.lower() for character in normalized if character.isalnum())
+
+
+def _csv_number(value: str | None, *, circuit: str, column: str) -> float | None:
+    if value is None or not value.strip():
+        return None
+    try:
+        number = float(value)
+    except ValueError as exc:
+        raise ValueError(f"Valor inválido en {column!r} para {circuit!r}: {value!r}") from exc
+    if not math.isfinite(number) or number < 0:
+        raise ValueError(f"Valor no válido en {column!r} para {circuit!r}: {value!r}")
+    return number
+
+
+@lru_cache(maxsize=1)
+def _circuit_pit_losses() -> dict[str, _CircuitPitLoss]:
+    resource = files("f1_strategist").joinpath("data", "F1-pit-loss-calendars-2025-2026.csv")
+    reader = csv.DictReader(StringIO(resource.read_text(encoding="utf-8-sig")))
+    required_columns = {
+        "Circuit",
+        "Green-flag pit loss (s)",
+        "Estimated VSC pit loss (s)",
+        "Estimated SC pit loss (s)",
+        "Notes",
+    }
+    if reader.fieldnames is None or not required_columns.issubset(reader.fieldnames):
+        raise ValueError("El CSV de pérdidas en boxes no contiene las columnas requeridas")
+    results: dict[str, _CircuitPitLoss] = {}
+    for row in reader:
+        circuit = row["Circuit"]
+        if circuit is None or not circuit.strip():
+            raise ValueError("El CSV de pérdidas en boxes contiene un circuito vacío")
+        key = _normalize_circuit_name(circuit)
+        if key in results:
+            raise ValueError(f"Circuito duplicado en el CSV de pérdidas en boxes: {circuit!r}")
+        notes = row["Notes"] or ""
+        uncertainty = re.search(r"SC model uncertainty approx\. ±(\d+(?:\.\d+)?) s", notes)
+        results[key] = _CircuitPitLoss(
+            green_flag_s=_csv_number(
+                row["Green-flag pit loss (s)"],
+                circuit=circuit,
+                column="Green-flag pit loss (s)",
+            ),
+            vsc_s=_csv_number(
+                row["Estimated VSC pit loss (s)"],
+                circuit=circuit,
+                column="Estimated VSC pit loss (s)",
+            ),
+            sc_s=_csv_number(
+                row["Estimated SC pit loss (s)"],
+                circuit=circuit,
+                column="Estimated SC pit loss (s)",
+            ),
+            sc_uncertainty_s=(None if uncertainty is None else float(uncertainty.group(1))),
+            green_flag_is_official="pit stop time loss as n/a" not in notes.casefold(),
+        )
+    return results
 
 
 def _check_finite(value: float, name: str, *, minimum: float | None = None) -> float:
@@ -145,6 +309,7 @@ class RejoinEstimate:
     game_delta_positions: int | None = None
     quality: Quality = Quality.UNAVAILABLE
     notes: tuple[str, ...] = ()
+    position_range: tuple[int, int] | None = None
 
     def __post_init__(self) -> None:
         if self.position is not None and self.position < 1:
@@ -159,6 +324,11 @@ class RejoinEstimate:
                 _check_finite(value, name, minimum=0.0)
         if self.game_rejoin_position is not None and self.game_rejoin_position < 1:
             raise ValueError("game_rejoin_position debe ser positiva")
+        if self.position_range is not None:
+            low, high = self.position_range
+            if low < 1 or high < low:
+                raise ValueError("position_range requiere posiciones positivas y low <= high")
+            object.__setattr__(self, "position_range", (low, high))
         object.__setattr__(self, "notes", tuple(self.notes))
 
     @property
@@ -178,6 +348,7 @@ class RejoinEstimate:
             "game_delta_positions": self.game_delta_positions,
             "quality": self.quality.value,
             "notes": list(self.notes),
+            "position_range": (None if self.position_range is None else list(self.position_range)),
         }
 
 
@@ -330,6 +501,52 @@ def _lane_loss(inputs: MetricInputs, cfg: StrategyConfig, stale: bool) -> PitLos
     )
 
 
+def _circuit_loss(inputs: MetricInputs, cfg: StrategyConfig, stale: bool) -> PitLossEstimate | None:
+    track = inputs.state.session.track
+    if track is None:
+        return None
+    circuit_key = _TRACK_CIRCUIT_ALIASES.get(_normalize_circuit_name(track))
+    if circuit_key is None:
+        return None
+    circuit = _circuit_pit_losses().get(circuit_key)
+    if circuit is None:
+        return None
+
+    safety_car_status = inputs.state.session.safety_car_status
+    if safety_car_status == "no_safety_car":
+        value_s = circuit.green_flag_s
+        band_s = cfg.pit_loss_band_s
+        notes = [NOTE_CIRCUIT_PRIOR, NOTE_FIXED_BAND]
+        if not circuit.green_flag_is_official:
+            notes.append(NOTE_CIRCUIT_GREEN_NOT_OFFICIAL)
+    elif safety_car_status == "virtual_safety_car":
+        value_s = circuit.vsc_s
+        band_s = cfg.pit_loss_band_s
+        notes = [NOTE_CIRCUIT_PRIOR, NOTE_CIRCUIT_VSC_ESTIMATE, NOTE_FIXED_BAND]
+    elif safety_car_status == "full_safety_car":
+        value_s = circuit.sc_s
+        band_s = circuit.sc_uncertainty_s
+        notes = [NOTE_CIRCUIT_PRIOR, NOTE_CIRCUIT_SC_ESTIMATE]
+        if band_s is not None:
+            notes.append(NOTE_CIRCUIT_SC_UNCERTAINTY)
+        else:
+            band_s = cfg.pit_loss_band_s
+            notes.append(NOTE_FIXED_BAND)
+    else:
+        return None
+    if value_s is None:
+        return None
+    return PitLossEstimate(
+        value_s=value_s,
+        band_s=band_s,
+        dispersion_s=None,
+        source="circuit",
+        sample_count=0,
+        quality=Quality.STALE if stale else Quality.LOW,
+        notes=tuple(notes),
+    )
+
+
 def estimate_pit_loss(inputs: MetricInputs, cfg: StrategyConfig) -> PitLossEstimate:
     """Estima la pérdida en boxes con la fuente más específica disponible."""
     stale = _freshness_is_stale(inputs)
@@ -347,6 +564,7 @@ def estimate_pit_loss(inputs: MetricInputs, cfg: StrategyConfig) -> PitLossEstim
         _field_loss(inputs, cfg, stale),
         _profile_loss(inputs, cfg, stale),
         _lane_loss(inputs, cfg, stale),
+        _circuit_loss(inputs, cfg, stale),
     )
     for candidate in candidates:
         if candidate is not None:
@@ -374,6 +592,8 @@ def estimate_rejoin(
     inputs: MetricInputs,
     pit_loss_s: float,
     cfg: StrategyConfig,
+    *,
+    pit_loss_band_s: float = 0.0,
 ) -> RejoinEstimate:
     """Calcula la posición esperada al salir de boxes y el tráfico inmediato.
 
@@ -382,6 +602,7 @@ def estimate_rejoin(
     ignoran y se declara en las notas.
     """
     _check_finite(pit_loss_s, "pit_loss_s", minimum=0.0)
+    _check_finite(pit_loss_band_s, "pit_loss_band_s", minimum=0.0)
     stale = _freshness_is_stale(inputs)
     player = inputs.car
     if player is None:
@@ -435,6 +656,13 @@ def estimate_rejoin(
 
     projected = own_gap + pit_loss_s
     position = 1 + sum(1 for gap, _ in rivals if gap < projected)
+    position_range: tuple[int, int] | None = None
+    if pit_loss_band_s > 0.0:
+        lower_projected = max(0.0, projected - pit_loss_band_s)
+        upper_projected = projected + pit_loss_band_s
+        lower_position = 1 + sum(1 for gap, _ in rivals if gap < lower_projected)
+        upper_position = 1 + sum(1 for gap, _ in rivals if gap < upper_projected)
+        position_range = (lower_position, upper_position)
     ahead = [(gap, index) for gap, index in rivals if gap < projected]
     behind = [(gap, index) for gap, index in rivals if gap >= projected]
     gap_ahead: float | None = None
@@ -475,6 +703,7 @@ def estimate_rejoin(
         game_delta_positions=game_delta,
         quality=quality,
         notes=tuple(notes),
+        position_range=position_range,
     )
 
 
@@ -489,6 +718,11 @@ __all__ = [
     "NOTE_PROFILE_PRIOR",
     "NOTE_RIVALS_DO_NOT_PIT",
     "NOTE_RIVAL_GAP_UNAVAILABLE",
+    "NOTE_CIRCUIT_PRIOR",
+    "NOTE_CIRCUIT_GREEN_NOT_OFFICIAL",
+    "NOTE_CIRCUIT_VSC_ESTIMATE",
+    "NOTE_CIRCUIT_SC_ESTIMATE",
+    "NOTE_CIRCUIT_SC_UNCERTAINTY",
     "PIT_LOSS_SOURCES",
     "PitLossEstimate",
     "PitLossSource",

@@ -123,12 +123,23 @@ def test_serialization_is_order_independent_and_canonical() -> None:
 
 
 def test_evaluation_round_trips_through_the_typed_contract() -> None:
-    evaluation = _evaluation()
+    evaluation = _evaluation(
+        pit_loss_s=10.0,
+        pit_loss_band_s=0.5,
+        pit_loss_source="circuit",
+        pit_loss_quality=Quality.LOW,
+        pit_loss_notes=("circuit_pit_loss_prior", "circuit_sc_uncertainty"),
+        rejoin_position_range=(4, 6),
+        rejoin_quality=Quality.LOW,
+    )
 
     restored = StrategyEvaluation.from_json(evaluation.to_json())
 
     assert restored == evaluation
     assert restored.to_json() == evaluation.to_json()
+    assert restored.pit_loss_source == "circuit"
+    assert restored.pit_loss_band_s == pytest.approx(0.5)
+    assert restored.rejoin_position_range == (4, 6)
 
 
 def test_evaluation_round_trips_projected_laps_and_player_identity() -> None:
@@ -151,6 +162,13 @@ def test_evaluation_reads_legacy_schema_v1_without_forecasts() -> None:
     payload.pop("forecast_car_index")
     payload.pop("forecast_compound")
     payload.pop("projected_lap_times_s")
+    payload.pop("pit_loss_s")
+    payload.pop("pit_loss_band_s")
+    payload.pop("pit_loss_source")
+    payload.pop("pit_loss_quality")
+    payload.pop("pit_loss_notes")
+    payload.pop("rejoin_position_range")
+    payload.pop("rejoin_quality")
     payload["recommendation"].pop("set_index")
     payload["recommendation"].pop("notes")
     for alternative in payload["alternatives"]:
@@ -161,6 +179,8 @@ def test_evaluation_reads_legacy_schema_v1_without_forecasts() -> None:
 
     assert restored.schema_version == 1
     assert restored.projected_lap_times_s is None
+    assert restored.pit_loss_source is None
+    assert restored.rejoin_position_range is None
 
 
 def test_evaluation_reads_schema_v2_without_set_identity_and_quality() -> None:

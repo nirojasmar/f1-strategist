@@ -303,6 +303,15 @@ estimated_total_time(plan) =
 La implementación real debe evitar contar dos veces los mismos costes y
 documentar los supuestos.
 
+La pérdida en boxes usa primero fuentes de la sesión (anulación, observaciones,
+perfil y tiempo de carril) y deja el CSV de circuitos como último prior. La
+columna `Calendars` no filtra la selección: se resuelve por circuito, con alias
+explícitos y sin sustituciones aproximadas. El resultado conserva origen,
+calidad y banda; VSC/SC se identifican como estimaciones y solo se publica la
+incertidumbre SC indicada por la fuente. La posición de reincorporación incluye
+un rango derivado de esa banda y de los huecos conocidos. El bloqueo de
+recomendaciones bajo SC/VSC se mantiene.
+
 Salida sugerida:
 
 ``` json

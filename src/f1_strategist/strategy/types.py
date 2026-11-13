@@ -385,6 +385,13 @@ class StrategyEvaluation:
     forecast_car_index: int | None = None
     forecast_compound: str | None = None
     projected_lap_times_s: tuple[float, ...] | None = None
+    pit_loss_s: float | None = None
+    pit_loss_band_s: float | None = None
+    pit_loss_source: str | None = None
+    pit_loss_quality: Quality | None = None
+    pit_loss_notes: tuple[str, ...] = ()
+    rejoin_position_range: tuple[int, int] | None = None
+    rejoin_quality: Quality | None = None
 
     def __post_init__(self) -> None:
         if type(self.schema_version) is not int:
@@ -421,6 +428,24 @@ class StrategyEvaluation:
             if self.forecast_car_index is None or self.forecast_compound is None:
                 raise ValueError("La proyección requiere coche y compuesto")
             object.__setattr__(self, "projected_lap_times_s", projected_lap_times)
+        if self.pit_loss_s is not None:
+            _check_finite("pit_loss_s", self.pit_loss_s)
+            if self.pit_loss_s < 0:
+                raise ValueError("pit_loss_s no puede ser negativo")
+        if self.pit_loss_band_s is not None:
+            _check_finite("pit_loss_band_s", self.pit_loss_band_s)
+            if self.pit_loss_band_s < 0:
+                raise ValueError("pit_loss_band_s no puede ser negativo")
+        if self.pit_loss_source is not None and not self.pit_loss_source:
+            raise ValueError("pit_loss_source no puede estar vacía")
+        if self.rejoin_position_range is not None:
+            low, high = self.rejoin_position_range
+            if low < 1 or high < low:
+                raise ValueError(
+                    "rejoin_position_range requiere posiciones positivas y low <= high"
+                )
+            object.__setattr__(self, "rejoin_position_range", (low, high))
+        object.__setattr__(self, "pit_loss_notes", tuple(dict.fromkeys(self.pit_loss_notes)))
         alternatives = tuple(self.alternatives)
         keys = [item.key for item in alternatives]
         if len(set(keys)) != len(keys):
@@ -460,6 +485,17 @@ class StrategyEvaluation:
                 if self.projected_lap_times_s is None
                 else [_round(value) for value in self.projected_lap_times_s]
             ),
+            "pit_loss_s": _round(self.pit_loss_s),
+            "pit_loss_band_s": _round(self.pit_loss_band_s),
+            "pit_loss_source": self.pit_loss_source,
+            "pit_loss_quality": (
+                None if self.pit_loss_quality is None else self.pit_loss_quality.value
+            ),
+            "pit_loss_notes": list(self.pit_loss_notes),
+            "rejoin_position_range": (
+                None if self.rejoin_position_range is None else list(self.rejoin_position_range)
+            ),
+            "rejoin_quality": None if self.rejoin_quality is None else self.rejoin_quality.value,
         }
 
     def to_json(self) -> str:
@@ -499,6 +535,13 @@ class StrategyEvaluation:
             )
         ):
             raise ValueError("projected_lap_times_s debe ser una lista de números o None")
+        position_range = data.get("rejoin_position_range")
+        if position_range is not None and (
+            not isinstance(position_range, (list, tuple))
+            or len(position_range) != 2
+            or any(type(value) is not int for value in position_range)
+        ):
+            raise ValueError("rejoin_position_range debe ser una pareja de enteros o None")
         return cls(
             revision=revision,
             session_uid=session_uid,
@@ -522,6 +565,19 @@ class StrategyEvaluation:
                 None
                 if projected_lap_times is None
                 else tuple(float(value) for value in projected_lap_times)
+            ),
+            pit_loss_s=data.get("pit_loss_s"),
+            pit_loss_band_s=data.get("pit_loss_band_s"),
+            pit_loss_source=data.get("pit_loss_source"),
+            pit_loss_quality=(
+                None if data.get("pit_loss_quality") is None else Quality(data["pit_loss_quality"])
+            ),
+            pit_loss_notes=tuple(data.get("pit_loss_notes", ())),
+            rejoin_position_range=(
+                None if position_range is None else (position_range[0], position_range[1])
+            ),
+            rejoin_quality=(
+                None if data.get("rejoin_quality") is None else Quality(data["rejoin_quality"])
             ),
         )
 

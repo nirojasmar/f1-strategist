@@ -101,6 +101,7 @@ def test_evaluate_once_attaches_forecast_to_the_serialized_evaluation(
         uid=123,
         session_type="race",
         track="monza",
+        safety_car_status="no_safety_car",
         total_laps=10,
         track_length_m=5_000.0,
     )
@@ -133,6 +134,9 @@ def test_evaluate_once_attaches_forecast_to_the_serialized_evaluation(
     assert evaluation.forecast_car_index == 0
     assert evaluation.forecast_compound == "soft"
     assert evaluation.projected_lap_times_s == forecast
+    assert evaluation.pit_loss_source == "circuit"
+    assert evaluation.pit_loss_s == pytest.approx(24.14)
+    assert evaluation.pit_loss_band_s == pytest.approx(2.0)
 
 
 def _evaluation(

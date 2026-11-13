@@ -151,6 +151,7 @@ _ENUMS: dict[str, dict[int | str, str]] = {
         39: "silverstone_reverse",
         40: "austria_reverse",
         41: "zandvoort_reverse",
+        42: "madring",
     },
     "safety_car": {
         0: "no_safety_car",

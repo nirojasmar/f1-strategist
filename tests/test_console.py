@@ -493,6 +493,49 @@ def test_strategy_rows_mark_unknown_fields_for_insufficient_data_without_alterna
     assert rows["Vueltas restantes"] == "7.0"
 
 
+def test_strategy_rows_show_estimated_circuit_loss_and_rejoin_uncertainty() -> None:
+    from f1_strategist.console_messages import render_strategy_rows
+
+    evaluation = _strategy_evaluation(
+        recommendation=StrategyRecommendation(
+            action=StrategyAction.NO_CHANGE,
+            key="stay_out",
+        ),
+        alternatives=(
+            StrategyAlternative(key="stay_out", remaining_time_s=1000.0, gain_vs_baseline_s=0.0),
+            StrategyAlternative(
+                key="pit_now:hard",
+                remaining_time_s=1004.0,
+                gain_vs_baseline_s=-4.0,
+                rejoin_position=11,
+            ),
+        ),
+    )
+    evaluation = replace(
+        evaluation,
+        pit_loss_s=10.0,
+        pit_loss_band_s=0.5,
+        pit_loss_source="circuit",
+        pit_loss_quality=Quality.LOW,
+        pit_loss_notes=(
+            "circuit_pit_loss_prior",
+            "circuit_sc_pit_loss_estimate",
+            "circuit_sc_uncertainty",
+        ),
+        rejoin_position_range=(10, 12),
+        rejoin_quality=Quality.LOW,
+    )
+
+    rows = dict(render_strategy_rows(evaluation))
+
+    assert rows["Reincorporación"] == (
+        "Posición 11 (estimada; rango 10 a 12; calidad low (bajo); alternativa, no recomendación)"
+    )
+    assert "10.00 s (±0.50 s)" in rows["Pérdida en boxes"]
+    assert "prior de circuito (estimación)" in rows["Pérdida en boxes"]
+    assert "Pérdida en boxes estimada bajo SC" in rows["Pérdida en boxes"]
+
+
 def test_strategy_rows_mark_unknown_values_for_a_stop_without_details() -> None:
     from f1_strategist.console_messages import render_strategy_rows
 
