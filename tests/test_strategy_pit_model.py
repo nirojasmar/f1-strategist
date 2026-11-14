@@ -454,6 +454,29 @@ def test_rejoin_position_range_reflects_pit_loss_uncertainty() -> None:
     assert estimate.position_range == (4, 5)
 
 
+def test_rejoin_band_larger_than_the_loss_keeps_the_player_gap_as_lower_bound() -> None:
+    """Una banda mayor que la pérdida no puede mejorar la posición mínima."""
+    inputs = _rejoin_inputs(
+        rivals=(
+            _car(1, position=1, current_lap=20),
+            _rival(2, 2, 5.0),
+            _rival(3, 4, 15.0),
+        )
+    )
+
+    estimate = estimate_rejoin(
+        inputs,
+        2.0,
+        StrategyConfig(),
+        pit_loss_band_s=30.0,
+    )
+
+    assert estimate.position == 3
+    # El suelo es el hueco actual (10 s) con pérdida nula, no 0: los rivales a
+    # 0 y 5 s siguen por delante y el rango inferior no puede ser 1.
+    assert estimate.position_range == (3, 4)
+
+
 def test_rejoin_flags_traffic_risk_when_ahead_is_too_close() -> None:
     inputs = _rejoin_inputs(rivals=(_rival(2, 4, 29.5),))
     estimate = estimate_rejoin(inputs, 20.0, StrategyConfig())

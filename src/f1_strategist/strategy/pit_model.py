@@ -658,7 +658,10 @@ def estimate_rejoin(
     position = 1 + sum(1 for gap, _ in rivals if gap < projected)
     position_range: tuple[int, int] | None = None
     if pit_loss_band_s > 0.0 and not missing_gap:
-        lower_projected = max(0.0, projected - pit_loss_band_s)
+        # La pérdida no puede ser negativa: la corrección se acota a cero antes
+        # de sumarla al hueco actual, de modo que una banda mayor que la pérdida
+        # no sitúa al piloto por delante de donde ya estaba.
+        lower_projected = own_gap + max(0.0, pit_loss_s - pit_loss_band_s)
         upper_projected = projected + pit_loss_band_s
         lower_position = 1 + sum(1 for gap, _ in rivals if gap < lower_projected)
         upper_position = 1 + sum(1 for gap, _ in rivals if gap < upper_projected)
