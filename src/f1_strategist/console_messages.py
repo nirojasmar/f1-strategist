@@ -67,6 +67,12 @@ _STRATEGY_ACTION_LABELS = {
 _STRATEGY_KEY_LABELS = {
     "fuel_effect_not_separated": "Efecto del combustible no separado",
     "rivals_do_not_pit": "Se supone que los rivales no paran",
+    "rejoin_current_gaps_not_projected": (
+        "La reincorporación usa huecos actuales; no proyecta el tráfico hasta la vuelta futura"
+    ),
+    "rival_gap_unavailable": (
+        "Faltan huecos de uno o más rivales; no se publica un rango de reincorporación"
+    ),
     "profile_prior_used": "Se usó el perfil del fin de semana como prior",
     "damage_not_modelled": "Daños del coche no modelados",
     "tyre_damage_not_modelled": "Daño de neumáticos no modelado",

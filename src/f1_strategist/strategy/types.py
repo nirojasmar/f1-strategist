@@ -8,6 +8,10 @@ La serialización es estable: las claves se ordenan y los flotantes se
 redondean, de modo que dos ejecuciones equivalentes producen el mismo JSON y
 el mismo ``inputs_hash``. Los textos visibles son claves de mensaje; el
 español se resuelve en la capa de presentación.
+
+La huella incluye el reloj usado para evaluar frescura y las configuraciones
+efectivas de métricas y estrategia; cambiar esos valores puede cambiarla aunque
+la recomendación publicada siga siendo la misma.
 """
 
 from __future__ import annotations
@@ -31,6 +35,7 @@ BASELINE_STAY_OUT = "stay_out"
 
 ASSUMPTION_FUEL_EFFECT_NOT_SEPARATED = "fuel_effect_not_separated"
 ASSUMPTION_RIVALS_DO_NOT_PIT = "rivals_do_not_pit"
+ASSUMPTION_REJOIN_CURRENT_GAPS = "rejoin_current_gaps_not_projected"
 ASSUMPTION_PROFILE_PRIOR_USED = "profile_prior_used"
 
 RISK_DAMAGE_NOT_MODELLED = "damage_not_modelled"

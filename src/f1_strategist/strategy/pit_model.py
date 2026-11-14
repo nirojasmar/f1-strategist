@@ -657,7 +657,7 @@ def estimate_rejoin(
     projected = own_gap + pit_loss_s
     position = 1 + sum(1 for gap, _ in rivals if gap < projected)
     position_range: tuple[int, int] | None = None
-    if pit_loss_band_s > 0.0:
+    if pit_loss_band_s > 0.0 and not missing_gap:
         lower_projected = max(0.0, projected - pit_loss_band_s)
         upper_projected = projected + pit_loss_band_s
         lower_position = 1 + sum(1 for gap, _ in rivals if gap < lower_projected)

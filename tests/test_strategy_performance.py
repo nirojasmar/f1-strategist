@@ -148,9 +148,9 @@ def _summary(samples: list[int]) -> tuple[float, float]:
 
 
 @pytest.mark.xfail(
-    reason="Incidencia S10-R1: con doce juegos la evaluación tarda ~13 ms de media "
-    "y ~16 ms de p99; el criterio de la sección 11 (1 ms / 5 ms) exige optimizar "
-    "el motor, fuera del alcance de S10",
+    reason="Incidencia S10-R1 sigue abierta: tras reutilizar la pasada neutral e indexar "
+    "alternativas, doce juegos aún tardan ~13.2 ms de media y ~15.7 ms de p99, "
+    "por encima del criterio de 1 ms / 5 ms",
     strict=False,
 )
 def test_evaluation_latency_meets_the_plan_limits() -> None:

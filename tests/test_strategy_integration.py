@@ -411,7 +411,8 @@ def test_rejoin_traffic_without_cost_is_declared_as_a_risk() -> None:
     leader = _car(1, position=1, current_lap=15, delta_to_leader_ms=0)
     # A 10,5 s del líder: al salir de boxes (1,0 + 10,0 s) queda medio segundo por delante.
     traffic = _car(2, position=3, current_lap=15, delta_to_leader_ms=10_500)
-    state = _state(lap=15, cars=(car, leader, traffic), inventory=(_hard_set(),))
+    missing_gap = _car(9, position=10, current_lap=15, delta_to_leader_ms=None)
+    state = _state(lap=15, cars=(car, leader, traffic, missing_gap), inventory=(_hard_set(),))
     records = _stint(
         compound="hard", first_lap=1, ages=range(0, 5), base_lap_s=90.0, slope_s_per_lap=0.02
     ) + _stint(
@@ -422,7 +423,9 @@ def test_rejoin_traffic_without_cost_is_declared_as_a_risk() -> None:
 
     assert evaluation.recommendation.action is StrategyAction.PIT_NOW
     assert RISK_TRAFFIC_NOT_PRICED in evaluation.risks
-    assert evaluation.rejoin_position_range is not None
+    assert evaluation.rejoin_position_range is None
+    assert "rival_gap_unavailable" in evaluation.risks
+    assert "rejoin_current_gaps_not_projected" in evaluation.assumptions
 
 
 # --- Escenario 7: explicabilidad y determinismo ---------------------------------
@@ -458,3 +461,25 @@ def test_every_evaluation_is_traceable_and_has_the_same_fingerprint() -> None:
     assert first.schema_version >= 1
     assert first.recommendation.confidence is not None
     assert first.data_quality in set(Quality)
+
+
+def test_inputs_hash_changes_with_freshness_clock_and_effective_strategy_config() -> None:
+    car = _player(current_lap=15, position=2, actual_tyre_compound="soft", tyre_age_laps=9)
+    state = _state(lap=15, cars=(car, *_rivals(gap_s=5.0)), inventory=(_hard_set(),))
+    records = _stint(
+        compound="hard", first_lap=1, ages=range(0, 5), base_lap_s=90.0, slope_s_per_lap=0.02
+    ) + _stint(
+        compound="soft", first_lap=6, ages=range(0, 10), base_lap_s=90.0, slope_s_per_lap=0.5
+    )
+    inputs = _inputs(state=state, records=records)
+    config = _stop_config()
+    baseline = evaluate_once(inputs, config).inputs_hash
+
+    later = evaluate_once(replace(inputs, now=inputs.now + 1.0), config).inputs_hash
+    configured = evaluate_once(
+        inputs,
+        StrategyConfig(min_gain_s=StrategyConfig().min_gain_s + 1.0),
+    ).inputs_hash
+
+    assert later != baseline
+    assert configured != baseline

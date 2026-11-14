@@ -39,4 +39,10 @@ Verificar todos los escenarios con:
 ```powershell
 uv run f1-strategist datasets verify --manifest tests\fixtures\real\manifest.toml
 ```powershell
+
+Las capturas de Sakhir son fixtures opcionales y no se versionan: la carrera ocupa
+25.132.303 bytes. El manifiesto conserva sus hashes y expectativas para quien las tenga
+localmente; las pruebas que las necesitan las omiten con una razón explícita si faltan.
+La verificación del manifiesto informa esas entradas como no disponibles sin invalidar
+las capturas presentes.powershell
   uv run f1-strategist trim captures\session-20261101-233816.f1cap tests\fixtures\real\monza-13-laps.f1cap.gz --types 1,2,3,4,7,8,10,11,12 --decimate 2=6 --decimate 7=6 --decimate 10=6 --decimate 11=2 --decimate 12=2 --laps 1-13 --anonymize

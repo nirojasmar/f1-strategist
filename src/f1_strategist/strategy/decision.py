@@ -86,12 +86,15 @@ _MIN_SLOPE_SCALE = 1e-3
 Evaluator = Callable[[Perturbation], tuple[AlternativeResult, ...]]
 
 
-def _scenarios(cfg: StrategyConfig) -> dict[str, Perturbation]:
+def _scenarios(
+    cfg: StrategyConfig,
+    pit_loss_band_s: float | None = None,
+) -> dict[str, Perturbation]:
     """Perturbaciones de banda: neutral, cada factor por separado y esquinas."""
     band = cfg.wear_slope_band_pct / 100.0
     up = max(_MIN_SLOPE_SCALE, 1.0 + band)
     down = max(_MIN_SLOPE_SCALE, 1.0 - band)
-    delta = cfg.pit_loss_band_s
+    delta = cfg.pit_loss_band_s if pit_loss_band_s is None else pit_loss_band_s
     return {
         "neutral": Perturbation(),
         "slope_up": Perturbation(slope_scale=up),
@@ -112,11 +115,12 @@ def _bounds(
     lower: dict[str, float] = {}
     upper: dict[str, float] = {}
     unstable: set[str] = set()
-    keys = {item.key for item in runs["neutral"]}
+    indexed = {name: {item.key: item for item in results} for name, results in runs.items()}
+    keys = indexed["neutral"]
     for key in keys:
         values: list[float] = []
-        for name, results in runs.items():
-            found = next((item for item in results if item.key == key), None)
+        for name, results in indexed.items():
+            found = results.get(key)
             if found is None:
                 # La alternativa deja de existir bajo esta perturbación: no se
                 # puede prometer su ganancia y se marca como inestable.
@@ -245,6 +249,8 @@ def decide(
     evaluate: Evaluator,
     quality: DataQuality,
     cfg: StrategyConfig,
+    *,
+    pit_loss_band_s: float | None = None,
 ) -> StrategyDecision:
     """Convierte las alternativas en una decisión con intervalo y confianza.
 
@@ -254,7 +260,9 @@ def decide(
     faltan entradas críticas la acción es ``INSUFFICIENT_DATA`` y, en cualquier
     otro caso, ``NO_CHANGE``.
     """
-    scenarios = _scenarios(cfg)
+    if pit_loss_band_s is not None and (not math.isfinite(pit_loss_band_s) or pit_loss_band_s < 0):
+        raise ValueError("pit_loss_band_s debe ser finito y no negativo")
+    scenarios = _scenarios(cfg, pit_loss_band_s)
     runs = {name: evaluate(perturbation) for name, perturbation in scenarios.items()}
     neutral = runs["neutral"]
     insufficient = _insufficient_notes(quality, cfg)

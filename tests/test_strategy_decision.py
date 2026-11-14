@@ -96,6 +96,22 @@ def test_clear_gain_recommends_the_best_stop() -> None:
     assert 0.0 < decision.confidence <= 1.0
 
 
+def test_source_pit_loss_band_overrides_the_configured_band() -> None:
+    def evaluate(perturbation: Perturbation) -> tuple[AlternativeResult, ...]:
+        return (_stay_out(), _pit(gain=40.0 - perturbation.pit_loss_delta_s))
+
+    decision = decide(
+        evaluate,
+        _quality(),
+        StrategyConfig(pit_loss_band_s=2.0),
+        pit_loss_band_s=50.0,
+    )
+
+    assert decision.action is StrategyAction.NO_CHANGE
+    assert decision.gain_interval_s is None
+    assert decision.sensitive_to == (SENSITIVE_PIT_LOSS,)
+
+
 def test_gain_inside_the_noise_makes_no_change() -> None:
     def evaluate(perturbation: Perturbation) -> tuple[AlternativeResult, ...]:
         shift = perturbation.pit_loss_delta_s

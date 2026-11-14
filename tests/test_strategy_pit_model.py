@@ -512,9 +512,10 @@ def test_rejoin_marks_missing_rival_gaps() -> None:
             _car(6, position=7, current_lap=20),
         )
     )
-    estimate = estimate_rejoin(inputs, 20.0, StrategyConfig())
+    estimate = estimate_rejoin(inputs, 20.0, StrategyConfig(), pit_loss_band_s=2.0)
 
     assert estimate.position == 5
+    assert estimate.position_range is None
     assert NOTE_RIVAL_GAP_UNAVAILABLE in estimate.notes
     assert estimate.quality is Quality.LOW
 
