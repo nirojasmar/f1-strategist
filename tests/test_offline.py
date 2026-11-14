@@ -84,6 +84,22 @@ def test_offline_runner_reports_last_observed_time_and_zero_speed(tmp_path: Path
     assert [observed_at for _, observed_at in consumer.received] == [0.0, 0.0]
 
 
+def test_offline_runner_stops_after_consumers_request_it(tmp_path: Path) -> None:
+    path = tmp_path / "early-stop.f1cap"
+    payload = (Path(__file__).parent / "fixtures" / "car_status.bin").read_bytes()
+    _write_capture(path, [payload, payload, payload], [1_000_000_000, 2_000_000_000, 3_000_000_000])
+    consumer = RecordingConsumer()
+
+    result = run_capture_offline(
+        path,
+        [consumer],
+        stop_when=lambda: len(consumer.received) == 1,
+    )
+
+    assert result.packets_read == result.packets_parsed == 1
+    assert len(consumer.received) == 1
+
+
 def test_offline_runner_bounds_distinct_parser_rejections(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

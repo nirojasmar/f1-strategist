@@ -8,6 +8,7 @@ otra conexión escribe (WAL).
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
 from collections.abc import Iterable, Iterator, Sequence
 from contextlib import contextmanager
@@ -66,6 +67,7 @@ _SESSION_COLUMNS: tuple[str, ...] = (
     "weekend_id",
     "profile_json",
     "profile_hash",
+    "strategy_fingerprint",
 )
 
 _WEEKEND_COLUMNS: tuple[str, ...] = (
@@ -126,6 +128,7 @@ class SessionInfo:
     weekend_id: int | None = None
     profile_json: str | None = None
     profile_hash: str | None = None
+    strategy_fingerprint: str | None = None
 
     def __post_init__(self) -> None:
         if self.session_uid < 0 or self.session_uid > 2**64 - 1:
@@ -236,6 +239,67 @@ class TyreInventorySnapshot:
             raise ValueError("set_index no puede ser negativo")
 
 
+@dataclass(frozen=True, slots=True)
+class StoredStrategyEvaluation:
+    """Evaluación de estrategia serializada para persistencia."""
+
+    seq: int
+    t_sim_s: float
+    lap: int
+    action: str
+    recommended_key: str
+    gain_vs_baseline_s: float | None
+    gain_low_s: float | None
+    gain_high_s: float | None
+    confidence: float | None
+    data_quality: str
+    inputs_hash: str
+    profile_hash: str | None
+    evaluation_json: str
+    forecast_car_index: int | None = None
+    forecast_compound: str | None = None
+    projected_lap_times_s: tuple[float, ...] | None = None
+
+    def __post_init__(self) -> None:
+        if self.seq < 1:
+            raise ValueError("seq debe ser positivo")
+        if self.lap < 1:
+            raise ValueError("lap debe ser positivo")
+        for name in (
+            "t_sim_s",
+            "gain_vs_baseline_s",
+            "gain_low_s",
+            "gain_high_s",
+            "confidence",
+        ):
+            value = getattr(self, name)
+            if value is not None and not math.isfinite(value):
+                raise ValueError(f"{name} debe ser finito")
+        if self.confidence is not None and not 0 <= self.confidence <= 1:
+            raise ValueError("confidence debe estar entre 0 y 1")
+        if self.forecast_car_index is not None and self.forecast_car_index < 0:
+            raise ValueError("forecast_car_index no puede ser negativo")
+        if self.forecast_compound is not None and not self.forecast_compound:
+            raise ValueError("forecast_compound no puede estar vacío")
+        if self.projected_lap_times_s is not None:
+            projected_lap_times = tuple(self.projected_lap_times_s)
+            for value in projected_lap_times:
+                if not math.isfinite(value) or value <= 0.0:
+                    raise ValueError("projected_lap_times_s debe contener tiempos positivos")
+            if self.forecast_car_index is None or self.forecast_compound is None:
+                raise ValueError("La proyección requiere coche y compuesto")
+            object.__setattr__(self, "projected_lap_times_s", projected_lap_times)
+        for name in (
+            "action",
+            "recommended_key",
+            "data_quality",
+            "inputs_hash",
+            "evaluation_json",
+        ):
+            if not getattr(self, name):
+                raise ValueError(f"{name} no puede estar vacío")
+
+
 class SessionStore:
     """Conexión a una base de sesiones con API de escritura y lectura."""
 
@@ -338,6 +402,7 @@ class SessionStore:
             info.weekend_id,
             info.profile_json,
             info.profile_hash,
+            info.strategy_fingerprint,
         ]
         columns = _SESSION_COLUMNS[1:]
         weekend_index = _SESSION_COLUMNS.index("weekend_id") - 1
@@ -426,7 +491,8 @@ class SessionStore:
                 "weekend_structure_json = COALESCE(?, weekend_structure_json), "
                 "weekend_id = COALESCE(?, weekend_id), "
                 "profile_json = COALESCE(?, profile_json), "
-                "profile_hash = COALESCE(?, profile_hash) "
+                "profile_hash = COALESCE(?, profile_hash), "
+                "strategy_fingerprint = COALESCE(?, strategy_fingerprint) "
                 "WHERE id = ?",
                 (
                     info.game_format,
@@ -448,6 +514,7 @@ class SessionStore:
                     weekend_id,
                     info.profile_json,
                     info.profile_hash,
+                    info.strategy_fingerprint,
                     session_id,
                 ),
             )
@@ -659,6 +726,113 @@ class SessionStore:
                 "wear_pct, available, lifespan_laps, usable_life_laps, lap_delta_time_ms, "
                 "recommended_session, fitted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 rows,
+            )
+
+    def add_strategy_evaluations(
+        self,
+        session_id: int,
+        evaluations: Iterable[StoredStrategyEvaluation],
+    ) -> None:
+        """Inserta o reemplaza evaluaciones por su secuencia dentro de la sesión."""
+        rows = [
+            (
+                session_id,
+                item.seq,
+                item.t_sim_s,
+                item.lap,
+                item.action,
+                item.recommended_key,
+                item.gain_vs_baseline_s,
+                item.gain_low_s,
+                item.gain_high_s,
+                item.confidence,
+                item.data_quality,
+                item.inputs_hash,
+                item.profile_hash,
+                item.evaluation_json,
+                item.forecast_car_index,
+                item.forecast_compound,
+                (
+                    None
+                    if item.projected_lap_times_s is None
+                    else json.dumps(
+                        item.projected_lap_times_s,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                        allow_nan=False,
+                    )
+                ),
+            )
+            for item in evaluations
+        ]
+        if not rows:
+            return
+        with self.transaction() as connection:
+            connection.executemany(
+                "INSERT INTO strategy_evaluations "
+                "(session_id, seq, t_sim_s, lap, action, recommended_key, "
+                "gain_vs_baseline_s, gain_low_s, gain_high_s, confidence, data_quality, "
+                "inputs_hash, profile_hash, evaluation_json, forecast_car_index, "
+                "forecast_compound, projected_lap_times_json) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(session_id, seq) DO UPDATE SET "
+                "t_sim_s = excluded.t_sim_s, lap = excluded.lap, action = excluded.action, "
+                "recommended_key = excluded.recommended_key, "
+                "gain_vs_baseline_s = excluded.gain_vs_baseline_s, "
+                "gain_low_s = excluded.gain_low_s, gain_high_s = excluded.gain_high_s, "
+                "confidence = excluded.confidence, data_quality = excluded.data_quality, "
+                "inputs_hash = excluded.inputs_hash, profile_hash = excluded.profile_hash, "
+                "evaluation_json = excluded.evaluation_json, "
+                "forecast_car_index = excluded.forecast_car_index, "
+                "forecast_compound = excluded.forecast_compound, "
+                "projected_lap_times_json = excluded.projected_lap_times_json",
+                rows,
+            )
+
+    def iter_strategy_evaluations(
+        self,
+        session_id: int,
+    ) -> Iterator[StoredStrategyEvaluation]:
+        """Itera las evaluaciones de estrategia en orden de secuencia."""
+        columns = {
+            str(row["name"])
+            for row in self._connection.execute("PRAGMA table_info(strategy_evaluations)")
+        }
+        forecast_car_index = "forecast_car_index" if "forecast_car_index" in columns else "NULL"
+        forecast_compound = "forecast_compound" if "forecast_compound" in columns else "NULL"
+        projected_lap_times = (
+            "projected_lap_times_json" if "projected_lap_times_json" in columns else "NULL"
+        )
+        cursor = self._connection.execute(
+            "SELECT seq, t_sim_s, lap, action, recommended_key, gain_vs_baseline_s, "
+            "gain_low_s, gain_high_s, confidence, data_quality, inputs_hash, profile_hash, "
+            "evaluation_json, "
+            f"{forecast_car_index} AS forecast_car_index, "
+            f"{forecast_compound} AS forecast_compound, "
+            f"{projected_lap_times} AS projected_lap_times_json "
+            "FROM strategy_evaluations WHERE session_id = ? ORDER BY seq",
+            (session_id,),
+        )
+        for row in cursor:
+            yield StoredStrategyEvaluation(
+                seq=int(row["seq"]),
+                t_sim_s=float(row["t_sim_s"]),
+                lap=int(row["lap"]),
+                action=str(row["action"]),
+                recommended_key=str(row["recommended_key"]),
+                gain_vs_baseline_s=_optional_float(row["gain_vs_baseline_s"]),
+                gain_low_s=_optional_float(row["gain_low_s"]),
+                gain_high_s=_optional_float(row["gain_high_s"]),
+                confidence=_optional_float(row["confidence"]),
+                data_quality=str(row["data_quality"]),
+                inputs_hash=str(row["inputs_hash"]),
+                profile_hash=_optional_str(row["profile_hash"]),
+                evaluation_json=str(row["evaluation_json"]),
+                forecast_car_index=_optional_int(row["forecast_car_index"]),
+                forecast_compound=_optional_str(row["forecast_compound"]),
+                projected_lap_times_s=_optional_float_tuple_from_json(
+                    row["projected_lap_times_json"]
+                ),
             )
 
     # ------------------------------------------------------------------
@@ -1098,6 +1272,7 @@ def _session_from_row(row: sqlite3.Row) -> SessionInfo:
         weekend_id=_optional_int(row["weekend_id"]),
         profile_json=_optional_str(row["profile_json"]),
         profile_hash=_optional_str(row["profile_hash"]),
+        strategy_fingerprint=_optional_str(row["strategy_fingerprint"]),
     )
 
 
@@ -1177,6 +1352,24 @@ def _optional_int(value: Any) -> int | None:
 
 def _optional_float(value: Any) -> float | None:
     return None if value is None else float(value)
+
+
+def _optional_float_tuple_from_json(value: Any) -> tuple[float, ...] | None:
+    if value is None:
+        return None
+    try:
+        parsed = json.loads(str(value))
+    except json.JSONDecodeError as exc:
+        raise StoreError("La proyección de vueltas guardada no es JSON válido.") from exc
+    if not isinstance(parsed, list) or any(
+        isinstance(item, bool)
+        or not isinstance(item, (int, float))
+        or not math.isfinite(item)
+        or item <= 0.0
+        for item in parsed
+    ):
+        raise StoreError("La proyección de vueltas guardada contiene valores no válidos.")
+    return tuple(float(item) for item in parsed)
 
 
 def _optional_str(value: Any) -> str | None:

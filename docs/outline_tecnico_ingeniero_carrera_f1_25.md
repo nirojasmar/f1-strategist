@@ -287,8 +287,20 @@ posteriores del fin de semana. El esquema v5 y sus tablas (`weekends`,
 Responsabilidad: comparar planes posibles y devolver resultados
 estructurados.
 
+La implementación está en `src/f1_strategist/strategy/` (modelo de ritmo,
+pérdida en boxes, alternativas, decisión y motor) y el detalle del modelo,
+las fórmulas y la lectura de una evaluación en
+[`estrategia_modelo.md`](estrategia_modelo.md).
+
 Primera versión: - Plan actual. - Parar ahora. - Parar dentro de N
 vueltas. - Mantenerse fuera bajo el plan actual.
+
+Estas cuatro posibilidades se publican como `NO_CHANGE`, `PIT_NOW`,
+`PIT_IN` (con la vuelta de parada) e `INSUFFICIENT_DATA`. Cada evaluación
+incluye la alternativa base `stay_out`, las alternativas calculadas
+(compuesto, juego, vuelta, tiempo restante, ganancia y reincorporación),
+supuestos, riesgos, `sensitive_to`, intervalo de ganancia, confianza,
+calidades, `inputs_hash` y `profile_hash`.
 
 Modelo conceptual:
 
@@ -302,6 +314,15 @@ estimated_total_time(plan) =
 
 La implementación real debe evitar contar dos veces los mismos costes y
 documentar los supuestos.
+
+La pérdida en boxes usa primero fuentes de la sesión (anulación, observaciones,
+perfil y tiempo de carril) y deja el CSV de circuitos como último prior. La
+columna `Calendars` no filtra la selección: se resuelve por circuito, con alias
+explícitos y sin sustituciones aproximadas. El resultado conserva origen,
+calidad y banda; VSC/SC se identifican como estimaciones y solo se publica la
+incertidumbre SC indicada por la fuente. La posición de reincorporación incluye
+un rango derivado de esa banda y de los huecos conocidos. El bloqueo de
+recomendaciones bajo SC/VSC se mantiene.
 
 Salida sugerida:
 
@@ -337,7 +358,17 @@ Los valores son ilustrativos. La salida real debe basarse en cálculos
 propios.
 
 El motor debe poder responder `NO_CHANGE` o `INSUFFICIENT_DATA`, no
-forzar siempre una acción.
+forzar siempre una acción. Para que esa respuesta sea legible, el panel de
+estrategia distingue tres situaciones y no usa un mismo guion para todas:
+un campo sin datos se muestra como `Desconocido`; un campo que no aplica a
+la acción recomendada (compuesto, juego, vuelta de parada o ganancias bajo
+`NO_CHANGE` e `INSUFFICIENT_DATA`) se muestra como `No aplica`; y una parada
+calculada que no es la recomendación se presenta en su propia fila como
+alternativa, nunca como recomendación. Toda posición de reincorporación
+declara si corresponde a la recomendación o a una alternativa, y la falta de
+pérdida en boxes o de modelo de compuesto mantiene una causa visible en vez
+de fabricar un valor. Un tiempo de carril parcial, como el de una vuelta de
+entrada que aún no ha salido del pit lane, no se acepta como pérdida completa.
 
 ### 3.6 Event Detector
 

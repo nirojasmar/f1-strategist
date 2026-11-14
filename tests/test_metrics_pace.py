@@ -55,7 +55,7 @@ def _record(
         lap_time_source="session_history",
         valid=True,
         fuel_start_kg=fuel,
-        flags=flags,
+        flags=flags | ({"first_lap"} if lap == 1 else set()),
         track_status_seen=track_status,
         traffic_fraction=traffic,
         closed=True,

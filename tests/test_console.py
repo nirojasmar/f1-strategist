@@ -4,6 +4,7 @@ from dataclasses import replace
 from io import StringIO
 from pathlib import Path
 
+import pytest
 from rich.console import Console
 
 import f1_strategist.console as console_module
@@ -23,6 +24,14 @@ from f1_strategist.parser import (
 )
 from f1_strategist.race_state import CarSnapshot, RaceEvent
 from f1_strategist.session import CaptureSession
+from f1_strategist.strategy.types import (
+    STRATEGY_SCHEMA_VERSION,
+    StrategyAction,
+    StrategyAlternative,
+    StrategyEvaluation,
+    StrategyRecommendation,
+    StrategySnapshot,
+)
 
 
 def test_console_renders_race_summary_fields() -> None:
@@ -221,6 +230,101 @@ def test_console_metrics_panel_renders_empty_snapshot_with_dashes() -> None:
         assert "—" in line
 
 
+def test_console_strategy_panel_renders_recommendation_and_assumptions(
+    monkeypatch,
+) -> None:
+    config = AppConfig()
+    session = CaptureSession(config)
+    evaluation = StrategyEvaluation(
+        revision=1,
+        session_uid="123",
+        lap=5,
+        laps_remaining=10.0,
+        baseline="stay_out",
+        recommendation=StrategyRecommendation(
+            action=StrategyAction.PIT_IN,
+            key="pit_in:hard",
+            pit_lap=8,
+            compound="hard",
+            gain_vs_baseline_s=2.0,
+            gain_interval_s=(1.0, 3.0),
+            confidence=0.75,
+        ),
+        alternatives=(
+            StrategyAlternative(
+                key="pit_in:hard",
+                remaining_time_s=900.0,
+                gain_vs_baseline_s=2.0,
+                rejoin_position=4,
+            ),
+        ),
+        assumptions=("fuel_effect_not_separated",),
+        risks=("damage_not_modelled",),
+        sensitive_to=("pit_loss_s",),
+        data_quality=Quality.OK,
+        inputs_hash="a" * 64,
+        schema_version=STRATEGY_SCHEMA_VERSION,
+    )
+    monkeypatch.setattr(
+        session,
+        "strategy_snapshot",
+        lambda: StrategySnapshot(evaluation=evaluation),
+    )
+
+    output = StringIO()
+    Console(file=output, width=180, no_color=True).print(render(config, session, now=2.0))
+    text = output.getvalue()
+
+    assert "Estrategia" in text
+    assert "Parar más adelante" in text
+    assert "Vuelta 8" in text
+    assert "2.00 s" in text
+    assert "1.00 a 3.00 s" in text
+    assert "75%" in text
+    assert "Posición 4" in text
+    assert "Efecto del combustible no separado" in text
+    assert "Daños del coche no modelados" in text
+    assert "Pérdida en boxes" in text
+
+
+def test_console_strategy_panel_explains_insufficient_data_and_disabled_recording(
+    monkeypatch,
+) -> None:
+    config = AppConfig.model_validate({"recording": {"enabled": False}})
+    session = CaptureSession(config)
+    evaluation = StrategyEvaluation(
+        revision=0,
+        session_uid="123",
+        lap=5,
+        laps_remaining=None,
+        baseline="stay_out",
+        recommendation=StrategyRecommendation(
+            action=StrategyAction.INSUFFICIENT_DATA,
+            key="stay_out",
+        ),
+        alternatives=(),
+        assumptions=(),
+        risks=(),
+        sensitive_to=(),
+        data_quality=Quality.INSUFFICIENT,
+        inputs_hash="a" * 64,
+        schema_version=STRATEGY_SCHEMA_VERSION,
+    )
+    monkeypatch.setattr(
+        session,
+        "strategy_snapshot",
+        lambda: StrategySnapshot(evaluation=evaluation),
+    )
+
+    output = StringIO()
+    Console(file=output, width=180, no_color=True).print(render(config, session, now=2.0))
+    text = output.getvalue()
+
+    assert "Datos insuficientes" in text
+    assert "No se pudieron evaluar alternativas" in text
+    assert "La estrategia está activa, pero el registro está desactivado" in text
+
+
 def test_console_explains_required_samples_for_insufficient_metrics(monkeypatch) -> None:
     config = AppConfig()
     session = CaptureSession(config)
@@ -270,6 +374,191 @@ def test_metrics_update_error_renders_in_spanish() -> None:
 
     assert "métricas" in rendered
     assert "boom" in rendered
+
+
+@pytest.mark.parametrize(
+    ("key", "label"),
+    [
+        ("pace_quality_insufficient", "modelo de ritmo"),
+        ("pit_loss_unavailable", "Pérdida en boxes"),
+        ("data_stale", "Datos obsoletos"),
+    ],
+)
+def test_strategy_reason_keys_render_in_spanish(key: str, label: str) -> None:
+    from f1_strategist.console_messages import _render_strategy_keys
+
+    assert label in _render_strategy_keys((key,))
+
+
+def test_strategy_engine_error_renders_its_cause_in_spanish() -> None:
+    rendered = render_diagnostic(message("strategy_engine_error", error="ValueError: boom"))
+
+    assert "estrategia" in rendered
+    assert "ValueError: boom" in rendered
+
+
+def _strategy_evaluation(
+    *,
+    recommendation: StrategyRecommendation,
+    alternatives: tuple[StrategyAlternative, ...],
+    baseline: str = "stay_out",
+) -> StrategyEvaluation:
+    return StrategyEvaluation(
+        revision=1,
+        session_uid="123",
+        lap=13,
+        laps_remaining=7.0,
+        baseline=baseline,
+        recommendation=recommendation,
+        alternatives=alternatives,
+        assumptions=(),
+        risks=(),
+        sensitive_to=(),
+        data_quality=Quality.OK,
+        inputs_hash="a" * 64,
+        schema_version=STRATEGY_SCHEMA_VERSION,
+    )
+
+
+def test_strategy_rows_mark_not_applicable_and_alternative_reference() -> None:
+    from f1_strategist.console_messages import render_strategy_rows
+
+    evaluation = _strategy_evaluation(
+        recommendation=StrategyRecommendation(
+            action=StrategyAction.NO_CHANGE,
+            key="stay_out",
+            notes=("decision_default_no_change",),
+        ),
+        alternatives=(
+            StrategyAlternative(key="stay_out", remaining_time_s=1000.0, gain_vs_baseline_s=0.0),
+            StrategyAlternative(
+                key="pit_now:hard:set1",
+                remaining_time_s=1004.0,
+                gain_vs_baseline_s=-4.0,
+                rejoin_position=11,
+            ),
+        ),
+    )
+
+    rows = dict(render_strategy_rows(evaluation))
+
+    assert rows["Compuesto"] == "No aplica"
+    assert rows["Vuelta de parada"] == "No aplica"
+    assert rows["Reincorporación"] == "Posición 11 (alternativa, no recomendación)"
+    assert rows["Mejor parada calculada"] == "hard, -4.00 s (alternativa, no recomendada)"
+
+
+def test_strategy_rows_never_present_an_alternative_rejoin_as_recommendation() -> None:
+    from f1_strategist.console_messages import render_strategy_rows
+
+    evaluation = _strategy_evaluation(
+        recommendation=StrategyRecommendation(
+            action=StrategyAction.INSUFFICIENT_DATA,
+            key="pit_now:c3:set5",
+            notes=("stay_out_unavailable",),
+        ),
+        alternatives=(
+            StrategyAlternative(
+                key="pit_now:c3:set5",
+                remaining_time_s=900.0,
+                gain_vs_baseline_s=0.0,
+                rejoin_position=19,
+            ),
+        ),
+    )
+
+    rows = dict(render_strategy_rows(evaluation))
+
+    assert rows["Compuesto"] == "No aplica"
+    assert rows["Reincorporación"] == "Posición 19 (alternativa, no recomendación)"
+
+
+def test_strategy_rows_mark_unknown_fields_for_insufficient_data_without_alternatives() -> None:
+    from f1_strategist.console_messages import render_strategy_rows
+
+    evaluation = _strategy_evaluation(
+        recommendation=StrategyRecommendation(
+            action=StrategyAction.INSUFFICIENT_DATA,
+            key="stay_out",
+            notes=("pit_loss_unavailable",),
+        ),
+        alternatives=(),
+    )
+
+    rows = dict(render_strategy_rows(evaluation))
+
+    assert rows["Vuelta de parada"] == "No aplica"
+    assert rows["Reincorporación"] == "No aplica"
+    assert rows["Mejor parada calculada"] == "Ninguna calculada"
+    assert rows["Vueltas restantes"] == "7.0"
+
+
+def test_strategy_rows_show_estimated_circuit_loss_and_rejoin_uncertainty() -> None:
+    from f1_strategist.console_messages import render_strategy_rows
+
+    evaluation = _strategy_evaluation(
+        recommendation=StrategyRecommendation(
+            action=StrategyAction.NO_CHANGE,
+            key="stay_out",
+        ),
+        alternatives=(
+            StrategyAlternative(key="stay_out", remaining_time_s=1000.0, gain_vs_baseline_s=0.0),
+            StrategyAlternative(
+                key="pit_now:hard",
+                remaining_time_s=1004.0,
+                gain_vs_baseline_s=-4.0,
+                rejoin_position=11,
+            ),
+        ),
+    )
+    evaluation = replace(
+        evaluation,
+        pit_loss_s=10.0,
+        pit_loss_band_s=0.5,
+        pit_loss_source="circuit",
+        pit_loss_quality=Quality.LOW,
+        pit_loss_notes=(
+            "circuit_pit_loss_prior",
+            "circuit_sc_pit_loss_estimate",
+            "circuit_sc_uncertainty",
+        ),
+        rejoin_position_range=(10, 12),
+        rejoin_quality=Quality.LOW,
+    )
+
+    rows = dict(render_strategy_rows(evaluation))
+
+    assert rows["Reincorporación"] == (
+        "Posición 11 (estimada; rango 10 a 12; calidad low (bajo); alternativa, no recomendación)"
+    )
+    assert "10.00 s (±0.50 s)" in rows["Pérdida en boxes"]
+    assert "prior de circuito (estimación)" in rows["Pérdida en boxes"]
+    assert "Pérdida en boxes estimada bajo SC" in rows["Pérdida en boxes"]
+
+
+def test_strategy_rows_mark_unknown_values_for_a_stop_without_details() -> None:
+    from f1_strategist.console_messages import render_strategy_rows
+
+    evaluation = _strategy_evaluation(
+        recommendation=StrategyRecommendation(
+            action=StrategyAction.PIT_NOW,
+            key="pit_now:hard",
+        ),
+        alternatives=(
+            StrategyAlternative(
+                key="pit_now:hard",
+                remaining_time_s=900.0,
+                gain_vs_baseline_s=0.0,
+            ),
+        ),
+    )
+
+    rows = dict(render_strategy_rows(evaluation))
+
+    assert rows["Compuesto"] == "Desconocido"
+    assert rows["Juego"] == "Desconocido"
+    assert rows["Reincorporación"] == "Desconocido"
+    assert rows["Confianza"] == "Desconocido"
 
 
 def test_metrics_panel_marks_live_rows_stale_when_lap_data_ages(monkeypatch) -> None:

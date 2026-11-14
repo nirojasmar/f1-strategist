@@ -13,7 +13,7 @@ from f1_strategist.metrics.types import Quality
 def _lap(
     lap: int,
     *,
-    compound: str = "soft",
+    compound: str | None = "soft",
     tyre_age_start: int | None = None,
     lap_time_s: float | None = None,
     fuel_start_kg: float | None = None,
@@ -41,7 +41,7 @@ def _lap(
         tyre_wear_end_pct=None if wear_end is None else (wear_end,) * 4,
         track_temperature_c=track_temperature_c,
         weather_seen=weather,
-        flags=flags,
+        flags=flags | ({"first_lap"} if lap == 1 else set()),
         pit_entry=pit_entry,
         pit_exit=pit_exit,
         closed=closed,
@@ -190,7 +190,6 @@ def test_a_short_stint_without_clean_laps_is_insufficient() -> None:
         _lap(1, tyre_age_start=0, lap_time_s=91.0, fuel_end_kg=99.0, pit_exit=True),
         _lap(
             2,
-            tyre_age_start=0,
             lap_time_s=88.0,
             fuel_start_kg=97.5,
             flags=frozenset({"incomplete"}),
@@ -261,7 +260,11 @@ def test_empty_inputs_return_an_empty_tuple() -> None:
     assert summarize_stints((), (), MetricsConfig()) == ()
     assert summarize_stints((), (TyreStint(compound="soft", start_lap=1),), MetricsConfig()) == ()
     laps = _green_stint(1, 3, compound="soft")
-    assert summarize_stints(laps, (), MetricsConfig()) == ()
+    observed = summarize_stints(laps, (), MetricsConfig())
+    assert len(observed) == 1
+    assert observed[0].laps == 3
+    assert observed[0].compound == "soft"
+    assert observed[0].quality is Quality.LOW
 
 
 def test_laps_outside_any_stint_are_ignored() -> None:
@@ -273,6 +276,59 @@ def test_laps_outside_any_stint_are_ignored() -> None:
     assert len(summaries) == 1
     assert (summaries[0].start_lap, summaries[0].end_lap) == (3, 6)
     assert summaries[0].laps == 4
+
+
+def test_laps_between_declared_stints_are_not_included() -> None:
+    laps = _green_stint(1, 8, compound="soft")
+    stints = (
+        TyreStint(compound="soft", start_lap=1, end_lap=2),
+        TyreStint(compound="hard", start_lap=5, end_lap=6),
+    )
+
+    summaries = summarize_stints(laps, stints, MetricsConfig())
+
+    assert [(item.start_lap, item.end_lap, item.laps) for item in summaries] == [
+        (1, 2, 2),
+        (5, 6, 2),
+    ]
+
+
+def test_observed_compound_change_survives_a_missing_compound_record() -> None:
+    laps = (
+        _lap(1, compound="soft", tyre_age_start=0),
+        _lap(2, compound=None, tyre_age_start=1),
+        _lap(3, compound="hard", tyre_age_start=2),
+    )
+
+    summaries = summarize_stints(laps, (), MetricsConfig())
+
+    assert [(item.start_lap, item.compound) for item in summaries] == [
+        (1, "soft"),
+        (3, "hard"),
+    ]
+
+
+def test_final_declared_stint_without_laps_does_not_leave_previous_period_open() -> None:
+    laps = _green_stint(1, 3, compound="soft")
+    stints = (
+        TyreStint(compound="soft", start_lap=1, end_lap=3),
+        TyreStint(compound="hard", start_lap=4),
+    )
+
+    summaries = summarize_stints(laps, stints, MetricsConfig())
+
+    assert len(summaries) == 1
+    assert summaries[0].end_lap == 3
+
+
+def test_declared_visual_compound_is_ignored_when_observed_compound_disagrees() -> None:
+    laps = _green_stint(1, 3, compound="c5")
+    stints = (TyreStint(compound="medium", visual_compound="c2", start_lap=1),)
+
+    summaries = summarize_stints(laps, stints, MetricsConfig())
+
+    assert summaries[0].compound == "c5"
+    assert summaries[0].visual_compound == "c5"
 
 
 def test_the_result_does_not_depend_on_the_input_order() -> None:
@@ -302,3 +358,199 @@ def test_open_stint_without_end_lap_is_summarized_up_to_the_last_lap() -> None:
     assert len(summaries) == 1
     assert summaries[0].end_lap is None
     assert summaries[0].laps == 4
+
+
+def test_practice_in_lap_stays_in_the_previous_compound() -> None:
+    """SessionHistory cierra C2 en la 5, pero la in-lap 6 todavía es C2."""
+    c2 = _green_stint(1, 6, compound="medium", base_time_s=91.0, wear_per_lap=0.5)
+    c2[-1] = _lap(
+        6,
+        compound="medium",
+        tyre_age_start=5,
+        lap_time_s=95.0,
+        fuel_start_kg=92.5,
+        fuel_end_kg=91.0,
+        wear_start=2.5,
+        wear_end=3.0,
+        pit_entry=True,
+    )
+    c1 = _green_stint(
+        7,
+        11,
+        compound="hard",
+        base_time_s=89.5,
+        wear_per_lap=0.4,
+        out_lap=True,
+    )
+    stints = (
+        TyreStint(compound="medium", visual_compound="medium", start_lap=1, end_lap=5),
+        TyreStint(compound="hard", visual_compound="hard", start_lap=6),
+    )
+
+    summaries = summarize_stints((*c2, *c1), stints, MetricsConfig())
+
+    assert [(item.compound, item.start_lap, item.end_lap) for item in summaries] == [
+        ("medium", 1, 6),
+        ("hard", 7, None),
+    ]
+    assert summaries[0].laps == 6
+    # La salida de boxes y la primera vuelta no cuentan; quedan 4 limpias de C1.
+    assert summaries[1].clean_laps == 4
+    assert summaries[1].laps == 5
+    assert summaries[1].wear_rate_pct_per_lap == pytest.approx(0.4)
+
+
+def test_race_in_lap_does_not_contaminate_the_next_compound() -> None:
+    """SessionHistory cierra C3 en la 1, pero la parada real es en la 2."""
+    c3 = _green_stint(1, 2, compound="soft", base_time_s=91.0, wear_per_lap=0.6)
+    c3[-1] = _lap(
+        2,
+        compound="soft",
+        tyre_age_start=1,
+        lap_time_s=96.0,
+        fuel_start_kg=97.0,
+        fuel_end_kg=95.5,
+        wear_start=0.6,
+        wear_end=1.2,
+        pit_entry=True,
+    )
+    c1 = _green_stint(3, 12, compound="hard", base_time_s=90.0, wear_per_lap=0.3, out_lap=True)
+    stints = (
+        TyreStint(compound="soft", visual_compound="soft", start_lap=1, end_lap=1),
+        TyreStint(compound="hard", visual_compound="hard", start_lap=2),
+    )
+
+    summaries = summarize_stints((*c3, *c1), stints, MetricsConfig())
+
+    assert [(item.compound, item.start_lap, item.end_lap) for item in summaries] == [
+        ("soft", 1, 2),
+        ("hard", 3, None),
+    ]
+    assert summaries[0].laps == 2
+    assert summaries[1].clean_laps == 9
+
+
+def test_age_reset_starts_a_new_stint_without_compound_change() -> None:
+    laps = (
+        *_green_stint(1, 3, compound="soft"),
+        _lap(4, compound="soft", tyre_age_start=0, wear_end=0.5),
+        _lap(5, compound="soft", tyre_age_start=1, wear_end=1.0),
+    )
+
+    summaries = summarize_stints(
+        laps, (TyreStint(compound="soft", start_lap=1, end_lap=5),), MetricsConfig()
+    )
+
+    assert [(item.start_lap, item.end_lap) for item in summaries] == [(1, 3), (4, 5)]
+
+
+def test_two_pit_stops_produce_three_stints() -> None:
+    laps = (
+        *_green_stint(1, 4, compound="soft"),
+        *_green_stint(5, 8, compound="medium", out_lap=True),
+        *_green_stint(9, 12, compound="hard", out_lap=True),
+    )
+    stints = (
+        TyreStint(compound="soft", start_lap=1, end_lap=4),
+        TyreStint(compound="medium", start_lap=5, end_lap=8),
+        TyreStint(compound="hard", start_lap=9),
+    )
+
+    summaries = summarize_stints(laps, stints, MetricsConfig())
+
+    assert [(item.compound, item.start_lap, item.end_lap) for item in summaries] == [
+        ("soft", 1, 4),
+        ("medium", 5, 8),
+        ("hard", 9, None),
+    ]
+
+
+def test_a_late_session_history_cannot_move_observed_stint_boundaries() -> None:
+    laps = (
+        *_green_stint(1, 5, compound="soft"),
+        *_green_stint(6, 10, compound="hard", out_lap=True),
+    )
+    incomplete = (TyreStint(compound="soft", start_lap=1),)
+    complete = (
+        TyreStint(compound="soft", start_lap=1, end_lap=5),
+        TyreStint(compound="hard", start_lap=6),
+    )
+
+    before = summarize_stints(laps, incomplete, MetricsConfig())
+    after = summarize_stints(laps, complete, MetricsConfig())
+
+    expected = [("soft", 1, 5), ("hard", 6, None)]
+    assert [(item.compound, item.start_lap, item.end_lap) for item in before] == expected
+    assert [(item.compound, item.start_lap, item.end_lap) for item in after] == expected
+
+
+def test_declared_boundaries_are_used_when_observed_data_is_missing() -> None:
+    laps = (
+        LapRecord(car_index=0, lap_number=1, closed=True),
+        LapRecord(car_index=0, lap_number=2, closed=True),
+        LapRecord(car_index=0, lap_number=3, closed=True, compound="hard"),
+    )
+    stints = (
+        TyreStint(compound="soft", start_lap=1, end_lap=2),
+        TyreStint(compound="hard", start_lap=3),
+    )
+
+    summaries = summarize_stints(laps, stints, MetricsConfig())
+
+    assert [(item.compound, item.start_lap, item.end_lap) for item in summaries] == [
+        ("soft", 1, 2),
+        ("hard", 3, None),
+    ]
+
+
+def test_declared_boundary_splits_same_compound_without_observed_age() -> None:
+    laps = (
+        LapRecord(car_index=0, lap_number=1, closed=True, compound="soft"),
+        LapRecord(car_index=0, lap_number=2, closed=True, compound="soft"),
+        LapRecord(car_index=0, lap_number=3, closed=True, compound="soft"),
+    )
+    stints = (
+        TyreStint(compound="soft", start_lap=1, end_lap=2),
+        TyreStint(compound="soft", start_lap=3),
+    )
+
+    summaries = summarize_stints(laps, stints, MetricsConfig())
+
+    assert [(item.start_lap, item.end_lap) for item in summaries] == [(1, 2), (3, None)]
+
+
+def test_repeated_tyre_age_does_not_fragment_the_stint() -> None:
+    laps = tuple(
+        _lap(lap, compound="c1", tyre_age_start=1, lap_time_s=90.0 + lap * 0.1)
+        for lap in range(1, 6)
+    )
+
+    summaries = summarize_stints(laps, (), MetricsConfig())
+
+    assert len(summaries) == 1
+    assert summaries[0].laps == 5
+
+
+def test_a_real_age_decrease_opens_a_new_stint() -> None:
+    laps = (
+        _lap(1, compound="c1", tyre_age_start=5),
+        _lap(2, compound="c1", tyre_age_start=0),
+    )
+
+    summaries = summarize_stints(laps, (), MetricsConfig())
+
+    assert len(summaries) == 2
+
+
+def test_declared_stints_keep_full_quality() -> None:
+    laps = tuple(
+        _lap(lap, compound="soft", tyre_age_start=lap - 1, lap_time_s=90.0) for lap in range(1, 6)
+    )
+
+    declared = summarize_stints(
+        laps, (TyreStint(compound="soft", start_lap=1, end_lap=5),), MetricsConfig()
+    )
+    observed = summarize_stints(laps, (), MetricsConfig())
+
+    assert declared[0].quality is Quality.OK
+    assert observed[0].quality is Quality.LOW

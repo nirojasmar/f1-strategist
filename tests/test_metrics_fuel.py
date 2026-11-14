@@ -30,7 +30,7 @@ def _record(
         fuel_start_kg=start,
         fuel_end_kg=end,
         closed=closed,
-        flags=flags,
+        flags=flags | ({"first_lap"} if lap == 1 else set()),
         track_status_seen=track_status,
         compound=compound,
         pit_exit=pit_exit,

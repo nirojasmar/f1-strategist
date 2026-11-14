@@ -1,6 +1,6 @@
 # Progreso del proyecto --- F1 Strategist
 
-**Última actualización:** 2026-11-09
+**Última actualización:** 2026-11-12
 **Propósito de este archivo:** llevar trazabilidad del avance importante y dejar el contexto
 necesario para que cualquier persona o agente que llegue al proyecto entienda dónde estamos, qué
 está decidido, qué está verificado y qué falta.
@@ -45,7 +45,7 @@ Documentos de diseño:
 | Lenguaje y entorno | Python 3.12+, `uv`, `ruff`, `pyright`, `pytest` | Acordado (2026-10-31) |
 | Modelos y configuración | `pydantic` v2 y TOML | Acordado |
 | LLM | Cliente HTTP a API compatible con OpenAI, adaptador intercambiable | Acordado; modelo concreto pendiente |
-| Almacenamiento | Captura binaria cruda (`.f1cap`) + SQLite para derivados | Implementado; esquema actual v5 documentado en `docs/almacenamiento_sqlite.md` |
+| Almacenamiento | Captura binaria cruda (`.f1cap`) + SQLite para derivados | Implementado; esquema actual v7 documentado en `docs/almacenamiento_sqlite.md` |
 | Grabación e ingesta | Grabador en vivo con hilo y cola acotada; `ingest` offline idempotente | Implementado (G5); la cola del vivo no bloquea y la ingesta espera al escritor para no perder lotes |
 | Replay y huella | Replay interno (`play`) y reemisión UDP (`replay`); huella canónica compartida por `verify` e `ingest` | Implementado (G2, G4, G5); la velocidad no cambia el tiempo simulado y la captura truncada se marca incompleta |
 | Perfil del fin de semana | Se construye al empezar la carrera y se registra en la sesión (`profile_json` + `profile_hash`); la reproducción usa el registrado | Implementado (Fase 3.5, P1--P8); sin fin de semana enlazado no hay perfil y la captura continúa |
@@ -61,16 +61,21 @@ Documentos de diseño:
 
 | Fase | Estado | Notas |
 | --- | --- | --- |
-| 0. Definición y entorno | Parcial | Repo, CI definido, config, receptor y guía de firewall listos. Falta validar la recepción desde otro PC de la red local y en Linux real. |
+| 0. Definición y entorno | Parcial | Repo, CI definido, config, receptor y guía de firewall listos. Validada la recepción desde otro PC de la red local y en Linux real. |
 | 1. Receptor, parser y estado | Implementada; CI verde | Snapshots inmutables de sesión y coches, daños, frescura por grupo, eventos y resumen de consola. |
 | 2. Métricas e histórico | Implementada; validación parcial | A1--A4, B1--B3, C1--C4/C2b, D1--D9, E1--E4 y F2--F4 implementados. F3 y la documentación se actualizaron según O5; la semántica/tolerancia del MFD sigue abierta aunque la validación local actual pasa. |
-| 3. Grabación y replay | Implementada; validación local completa | G1--G8 implementados sobre SQLite versionado (actualmente v5 tras las migraciones de Fase 3.5), `play`/`replay`, datasets, huella y `verify`, grabador en vivo e `ingest`, inspección con `sessions`, pruebas E2E y benchmarks. Documentación en `docs/almacenamiento_sqlite.md`. Queda repetir CI en Linux y macOS. |
+| 3. Grabación y replay | Implementada; validación local completa | G1--G8 implementados sobre SQLite versionado (v7 tras las migraciones de Fase 4), `play`/`replay`, datasets, huella y `verify`, grabador en vivo e `ingest`, inspección con `sessions`, pruebas E2E y benchmarks. Documentación en `docs/almacenamiento_sqlite.md`. Queda repetir CI en Linux y macOS. |
 | 3.5. Perfil del fin de semana | Implementada; validación local Windows | P1--P8 implementadas. Esquema SQLite v5, enlace de sesiones, resúmenes de tandas, inventario, perfil versionado y métricas `profile.*`; la prueba integrada cubre práctica, clasificación, carrera y reingesta con huella estable. Validación Linux por CI pendiente. |
-| 4--10 | No iniciadas | |
+| 4. Motor de estrategia | Implementada; validación local Windows | Ola 0 cerrada; S5--S8 cubren evaluación, decisión, motor integrado y registro SQLite; S9 añade panel y comandos; S12 corrige los hallazgos de Sakhir (vida del neumático, carril parcial y estados del HUD); S13 incorpora prior por circuito y rango de reincorporación; S10 añade pruebas analíticas, de captura real y de rendimiento; S11 documenta el modelo. Quedan las incidencias S10-R1 (rendimiento) y S10-H1 (huella entre velocidades) y repetir CI en Linux. |
+| 5--10 | No iniciadas | |
 
 ## 5. Qué está verificado y qué no
 
 **Verificado:**
+
+-   S13: el prior de circuito se evalúa después de las fuentes de sesión y conserva su fuente, banda y calidad;
+    el cálculo publica rango de reincorporación. Validación Windows: `uv run pytest -q` (938 aprobadas,
+    4 deseleccionadas), Ruff lint/formato, Pyright (0 errores), `git diff --check` y wheel con el CSV incluido.
 
 -   La suite `pytest` (567 pruebas funcionales, 3 benchmarks excluidos por defecto), Ruff (lint y formato,
     96 archivos) y Pyright (0 errores) pasan en Windows (2026-11-08). Incluye las pruebas de captura real
@@ -214,6 +219,46 @@ Documentos de diseño:
 -   Validación Windows de la Fase 3.5: `uv run pytest -q` (662 aprobadas, 4 benchmarks excluidos),
     Ruff (lint y formato, 105 archivos), Pyright (0 errores) y `git diff --check` pasan, con rondas
     intermedias de 625 pruebas en P5, 646 en P6 y 659 en P7.
+-   Fase 4, ola 0 (H1, H2 y S1--S4): los tipos del contrato (`strategy/types.py`) son inmutables y se
+    serializan de forma canónica; `StrategyConfig` valida la sección `[strategy]` del TOML y existe el
+    stub `strategy_snapshot()` en `CaptureSession` y `PlaybackSession`. Los modelos de ritmo, pérdida en
+    boxes y neumáticos son puros, no inventan valores sin datos y declaran sus notas y calidades. Los 13
+    hallazgos de `review_fase_4_ola_0.md` están corregidos con pruebas de regresión (detalle en la
+    bitácora del 2026-11-11).
+-   Validación Windows de la ola 0: `uv run pytest -q` (790 aprobadas, 4 benchmarks excluidos), Ruff
+    (lint y formato, 116 archivos) y Pyright (0 errores) pasan. La suite partió de 768 pruebas antes de
+    los fixes de la revisión.
+-   S8: SQLite v6 migra desde v5 sin perder sesiones, guarda evaluaciones por vuelta y cambio de revisión
+    en vivo y en `ingest`, y conserva una huella canónica de estrategia separada de `fingerprint`.
+    La suite completa actual pasa (859 pruebas; 4 benchmarks excluidos), Ruff y Pyright (0 errores).
+-   S9: SQLite v7 guarda el coche, compuesto y pronóstico de tiempos por vuelta. El panel de estrategia y
+    `strategy show`, `export` (JSON/CSV) y `review` usan la lectura de sesiones; `review` compara el error
+    absoluto medio por horizonte y omite datos históricos sin proyección. La lectura v6 permanece disponible.
+    Verificación Windows: 878 pruebas aprobadas, 4 benchmarks excluidos; Ruff y Pyright (0 errores).
+-   Revisión de la ola 1: se corrigieron H1, H2 y H4--H10 (identidad de juegos, línea base obligatoria,
+    bloqueo por calidad/condiciones, cadencia, revisión de errores, proyección fraccionaria, vida de neumáticos,
+    `review` y formato). H3 bloquea lluvia, SC/VSC y los eventos observables de bandera roja; la telemetría no
+    expone un indicador directo y persistente de bandera roja activa, por lo que queda pendiente validación real.
+    La reproducción de Suzuka ya termina correctamente con claves únicas. Validación Windows: 899 aprobadas,
+    4 benchmarks excluidos; Ruff lint/formato y Pyright pasan.
+-   S12: la vida del neumático distingue el límite recomendado (`usableLife`, edad total) de las vueltas
+    restantes del juego (`lifeSpan`, que se suman a la edad actual); una vuelta de entrada con tiempo de
+    carril parcial ya no se acepta como pérdida completa; el panel separa campo desconocido (`Desconocido`),
+    campo que no aplica a la acción (`No aplica`) y parada calculada sin recomendación, y etiqueta cada
+    reincorporación como recomendación o alternativa. Regresiones con los valores de Sakhir en las vueltas
+    14--15, carril parcial/completo, C1 al inicio de tanda y render del HUD.
+-   S10: `tests/test_strategy_integration.py` cubre once escenarios analíticos con tolerancia de 1e-6 s
+    (ganancia de 133,90 s, intervalo de 38 a 42 s, mantener, última vuelta, dos vueltas limpias, inventario
+    ausente, datos obsoletos, regla de dos compuestos, tráfico sin coste, perfil ausente y huella repetida).
+    `tests/test_strategy_real_capture.py` recorre las cinco carreras del manifiesto con el marcador
+    `real_capture`: sin excepciones, acciones válidas, motivo visible en `INSUFFICIENT_DATA`, como máximo dos
+    cambios de acción por ventana de cinco vueltas y determinismo entre repeticiones y velocidades 0x, 1x y 4x.
+    `tests/test_strategy_performance.py` mide el coste por evaluación con el marcador `benchmark`.
+    Validación Windows: 956 aprobadas, 6 deseleccionadas y 1 `xfail` declarado; Ruff lint/formato (129
+    archivos) y Pyright (0 errores).
+-   S11: `docs/estrategia_modelo.md` documenta el modelo, las fórmulas, los supuestos, los riesgos y cómo
+    leer una evaluación; el outline (§3.5), el roadmap (Fase 4, incluido su estado medido) y
+    `docs/almacenamiento_sqlite.md` quedan alineados con el contrato real.
 
 **No verificado todavía:**
 
@@ -225,6 +270,10 @@ Documentos de diseño:
 -   La Fase 3.5 solo está validada en Windows: CI en Linux y macOS queda pendiente (Docker no tiene
     daemon disponible y WSL solo muestra la distribución interna `docker-desktop`). El perfil del fin de
     semana tampoco se ha probado todavía contra capturas reales de un fin de semana completo.
+-   La Fase 4 aún requiere validar el motor con capturas reales y completar E2E/rendimiento de S10. La nueva
+    captura de Sakhir contiene alta degradación y safety car, pero las observaciones del HUD no identifican
+    por sí solas la causa de los datos faltantes ni validan las decisiones del motor; tampoco se ha medido
+    el requisito de rendimiento de S7 (<1 ms medio).
 -   Queda volver a ejecutar CI de GitHub Actions después de la Ola 5.
 
 ## 6. Bitácora
@@ -573,6 +622,208 @@ Detalle de las tareas P1--P8 de la Fase 3.5, en el orden en que se cerraron. La 
         formato, 105 archivos), Pyright (0 errores) y `git diff --check` pasan. Linux queda pendiente:
         Docker no tiene daemon disponible y WSL solo muestra la distribución interna `docker-desktop`.
 
+### 2026-11-11
+
+Ola 0 de la Fase 4 (motor de estrategia), cerrada en la rama `f4-wave-0-baseline` con siete commits:
+H1 (`6aceba9`), H2 (`c396cd7`), S1 (`b86cbca`), S2 (`7c49356`), S3 (`b2c9ed0`), S4 (`a473d4d`) y los
+fixes de la revisión (`0b3bd76`).
+
+-   **H1 --- Reconciliar compuesto por vuelta y límites de tanda** (`6aceba9`). Cada vuelta se asigna a
+    su tanda por el compuesto y la edad **observados al cerrar la vuelta**; los límites declarados de
+    `SessionHistory` quedan como respaldo cuando falta el dato observado. Se documentó la causa del
+    desfase de una vuelta observado en el informe de Suzuka (práctica y carrera). Toca
+    `metrics/history_ingest.py` y `metrics/stint_summary.py`, con pruebas del desfase sintético,
+    tandas sin cambio de compuesto, dos paradas y `SessionHistory` tardío.
+-   **H2 --- Primera vuelta rápida tras boxes y `first_lap`** (`c396cd7`). El cruce de la línea de meta
+    al salir de boxes (caída de distancia desde ~la longitud del circuito hasta casi cero con reinicio
+    del tiempo de vuelta) ya no se clasifica como *flashback*: la vuelta rápida de 96,099 s conserva su
+    tiempo oficial y sigue marcada como salida de boxes. El tramo de salida se separa del cronometrado y
+    `first_lap` se limita al inicio de una carrera. Toca `metrics/comparability.py` y
+    `metrics/lap_tracker.py`.
+-   **S1 --- Tipos, configuración y esqueleto del motor** (`b86cbca`). Nuevo `strategy/types.py` con el
+    contrato inmutable de acciones, alternativas, evaluación y snapshot, serialización JSON canónica
+    (`schema_version`, `inputs_hash` estable) y constantes de supuestos y riesgos. `StrategyConfig` en
+    `config.py` con validación, anulaciones por circuito y sección `[strategy]` del TOML de ejemplo;
+    stub `strategy_snapshot()` en `SessionPort`, `CaptureSession` y `PlaybackSession`; grupo
+    `f1-strategist strategy` en la CLI. Decisión D3: `RecordingConfig.enabled` pasa a `True` por
+    defecto y las pruebas que no quieren escribir en disco lo desactivan explícitamente.
+-   **S2 --- Modelo de ritmo y desgaste por compuesto** (`7c49356`). `strategy/pace_model.py` con
+    `build_compound_models` y `project_lap_times`: regresión sobre vueltas limpias del stint actual,
+    mezcla con el prior del fin de semana por número de muestras, compuestos no probados por delta de
+    ritmo del perfil o del juego y juego usado por desgaste inicial. Cada modelo publica `source`,
+    muestras, calidad y notas; sin datos no hay modelo.
+-   **S3 --- Pérdida en boxes y reincorporación** (`b2c9ed0`). `strategy/pit_model.py` con
+    `estimate_pit_loss` (orden de fuentes: anulación de configuración, mediana del campo, prior del fin
+    de semana y carril de boxes; sin fuente queda `none`, nunca 0) y `estimate_rejoin` (posición,
+    coches cercanos, `traffic_risk` y contraste con `pit_rejoin_position` del juego), con dispersión
+    robusta y banda. Declara explícitamente el supuesto de que los rivales no paran.
+-   **S4 --- Inventario y reglas de neumáticos** (`a473d4d`). `strategy/tyre_options.py` con
+    `tyre_options`: juegos elegibles por compuesto y vida útil, compuestos secos ya usados, obligación
+    por la regla de dos compuestos (o pendiente si no puede evaluarse) y aviso de lluvia. Sin inventario
+    devuelve «sin opciones» con nota explícita; intermedios y mojado quedan fuera de alcance.
+-   **Fixes de `review_fase_4_ola_0.md`** (`0b3bd76`), 13 hallazgos sin cambios de contrato:
+    -   H01/H06 (`tyre_options`): solo se ofrecen juegos con disponibilidad confirmada (`is True`); un
+        `None` produce la nota `inventory_availability_unknown` y, si no queda nada, calidad
+        insuficiente. El horizonte del pronóstico se deriva de las vueltas de la ventana de parada y el
+        ritmo del jugador (respaldo de 30 min con `forecast_horizon_assumed`; ritmo sin filtrar con
+        `forecast_lap_time_approximate`).
+    -   H02/H10/H13 (`types`): `set_index` es índice cero-based; el hash de entradas admite cualquier
+        `Mapping` (incluidos los `MappingProxyType` del histórico) y no depende del orden; supuestos,
+        riesgos y sensibilidades se canonizan como conjuntos, las alternativas se ordenan por clave con
+        validación de duplicados y los tipos serializables ganan `from_dict`/`from_json`.
+    -   H03/H04 (`pace_model`): un compuesto sin vueltas de carrera se ancla siempre al ritmo de carrera
+        ancla más el delta (nunca al ritmo absoluto de práctica) y el desgaste se mezcla con el prior
+        (`wear_blended_with_prior`); un modelo solo-prior queda no proyectable en lugar de inventar
+        pendiente.
+    -   H05/H12 (`pit_model`): `did_not_finish`, `disqualified` y `not_classified` excluyen del cálculo
+        de reincorporación; las muestras negativas de pérdida se descartan con nota
+        (`negative_pit_loss_samples_discarded`) y el estimador cae a perfil o carril en lugar de fallar.
+    -   H07/H08/H11 (`lap_tracker`): el cruce de meta exige salida de boxes (sin ella el retroceso es
+        *flashback*, que ya no se descarta); la evidencia de la vuelta de salida se conserva en el
+        registro único por vuelta; `first_lap` cubre `race`, `race_2` y `race_3`, con reconciliación si
+        el tipo de sesión llega tarde.
+    -   H09 (`stint_summary`): sin tandas declaradas se resumen las observaciones (calidad `low`) y una
+        edad de neumático repetida ya no fragmenta la tanda; solo un descenso real de edad abre una
+        nueva.
+-   Validación local Windows del cierre: `uv run pytest -q` (790 aprobadas, 4 benchmarks excluidos),
+    Ruff (lint y formato, 116 archivos) y Pyright (0 errores) pasan. La suite partió de 768 pruebas
+    antes de los fixes (+22 nuevas). `git diff --check` limpio. CI remota no se ejecutó.
+
+### 2026-11-12
+
+**S8 --- Registro de evaluaciones en SQLite, esquema v6.**
+
+-   Migración v6 añade `sessions.strategy_fingerprint` y `strategy_evaluations`, conservando las bases
+    v5 y sus datos. El almacén expone escritura idempotente por `(session_id, seq)` y lectura ordenada.
+-   `SessionRecorder.record_strategy` encola evaluaciones sin acceso síncrono a SQLite; persiste una por
+    vuelta y cada cambio de revisión. La sesión en vivo y la ingesta offline usan la misma ruta.
+-   La huella independiente cubre la configuración de estrategia en JSON canónico y no depende del
+    orden de claves ni del sistema operativo; la huella existente de captura no cambia.
+-   Verificación Windows: 859 pruebas aprobadas, 4 benchmarks excluidos; Ruff y Pyright (0 errores).
+
+**UE1 y UE3 --- fixtures reales y regla de neumáticos.**
+
+-   UE1: se añadieron los fixtures anonimizados de práctica y carrera de Suzuka al manifiesto; los cinco
+    escenarios del manifiesto se verifican correctamente.
+-   UE3: `tyre_options` exige en carreras normales secas dos compuestos distintos, con al menos un juego
+    visualmente medio o duro. La regla no se impone con lluvia ni en Sprint; una sesión `race` sin
+    `weekend_structure` queda sin clasificar y no activa la regla prematuramente.
+-   La captura de China confirma el Sprint por `short_sprint_shootout` en `weekend_structure` (`race`) y la
+    carrera principal como `race_2`. En algunos paquetes de esta última, la telemetría registra ventana
+    ideal/límite 9/17; queda pendiente confirmar visualmente el texto del HUD.
+-   Validación: 866 pruebas aprobadas, 4 benchmarks excluidos; pruebas de neumáticos (31), Ruff y Pyright
+    pasan.
+
+**S9 --- Panel de consola y comandos `strategy`, esquema v7.**
+
+-   El panel y `strategy show` presentan la recomendación, confianza, ganancia, supuestos, riesgos y calidad;
+    `strategy export` admite JSON/CSV y `strategy review` calcula el error absoluto medio por horizonte.
+-   SQLite v7 conserva el coche, compuesto y tiempos proyectados por vuelta para comparar contra vueltas
+    reales válidas posteriores. Las bases v6 siguen siendo consultables, pero sus evaluaciones sin pronóstico
+    no contribuyen a `review`.
+-   Verificación Windows inicial: 878 pruebas aprobadas, 4 benchmarks excluidos; Ruff y Pyright (0 errores).
+
+**Revisión de la ola 1 --- correcciones posteriores a S9.**
+
+-   H1: las alternativas y recomendaciones identifican el juego de neumáticos; se comprobó la reproducción
+    original sobre Suzuka, que ahora emite JSON con código 0 y alternativas únicas.
+-   H2: la línea base obligatoria usa la ventana ideal o, si no está disponible, la última parada viable;
+    una parada obligatoria se recomienda aunque no haya ganancia robusta frente a ese plan.
+-   H3: lluvia actual/pronosticada y SC/VSC bloquean recomendaciones. Los eventos observables de bandera roja
+    mantienen el bloqueo hasta cerrar una vuelta normal tras la reanudación; la detección en vivo requiere una
+    captura real, pues el protocolo no publica una señal directa de bandera roja activa.
+-   H4--H8: se incorporan calidad e identidad del juego al contrato de evaluación v3; el motor reevalúa cambios
+    de historial, inventario, distancia y frescura, reintenta fallos con cadencia mínima e incrementa revisión
+    al entrar/salir de error. Las fracciones se proyectan cronológicamente y el riesgo de vida se limita al plan
+    seleccionado y considera ambos juegos.
+-   H9--H10: `review` omite vueltas inválidas/ausentes sin truncar horizontes posteriores, pero se detiene ante
+    paradas o cambio de compuesto; el formato completo exigido por CI pasa.
+-   Validación Windows: 899 pruebas aprobadas, 4 benchmarks excluidos; Ruff lint/formato y Pyright (0 errores).
+
+**UE2 parcial --- captura real de Sakhir.**
+
+-   La captura `captures/session-20261112-162235.f1cap` incluye práctica 1, clasificación corta y carrera de
+    20 vueltas. Se añadieron al manifiesto los recortes anonimizados de práctica y carrera; la carrera conserva
+    el evento de safety car y señales de alta degradación. Informe: `docs/example/informe_sakhir_20261112.md`.
+-   El piloto inició con C3 blando, paró en la vuelta 9 y montó C1 duro; el desgaste medio registrado al
+    cierre de la vuelta 8 fue 46,25 %. El juego mostró dos planes (blando→medio, parada en 10; blando→duro,
+    parada en 9). Falta grabar el caso opuesto donde mantener sea claramente mejor.
+-   Observaciones del HUD: predominó «datos insuficientes», «mantener» apareció unas cuatro vueltas desde
+    aproximadamente la 10 y luego volvió la falta de datos; la reincorporación desapareció cerca de dos vueltas
+    tras las paradas. Compuesto, juego, vuelta, ganancia contra la línea base e intervalo de ganancia quedaron
+    como «—». Causa no determinada; no se atribuye al motor sin registro de la evaluación mostrada.
+-   El safety car se desplegó en la vuelta 17 y se retiró en la 18; su modelado sigue fuera del MVP y debe
+    priorizarse después. Se registra también investigar un prior externo de posición de reincorporación cuando
+    aún nadie haya parado, refinable a cálculo con huecos/posiciones en vivo.
+
+### 2026-11-14
+
+**S12 --- Correcciones de hallazgos del informe de Sakhir.**
+
+-   Vida del neumático: `_usable_life` mezclaba dos unidades distintas. Ahora `usable_life_laps` se toma como
+    edad máxima recomendada y las vueltas restantes del juego (`lifespan_laps`) se convierten a edad total
+    sumándolas a la edad actual antes de compararlas con `edad + vueltas restantes`. En la vuelta 15 de Sakhir
+    (edad 6, juego con 11 vueltas restantes, máximo 16) el límite es 16 y mantener deja de descartarse; en la
+    14 también sigue siendo viable.
+-   Pérdida en boxes: una vuelta de entrada con tiempo de carril parcial (1,933 s en la vuelta 9) ya no se
+    acepta como pérdida completa. La fuente `lane` exige la vuelta de salida cerrada, que es la que acumula el
+    tiempo completo (23,933 s en la misma parada). Sin muestra completa se mantiene la causa visible
+    (`no_pit_loss_source`) en lugar de fabricar una pérdida.
+-   Panel de estrategia: compuesto, juego, vuelta de parada, ganancia e intervalo solo se rellenan cuando la
+    acción recomienda parar; en otro caso se muestran como `No aplica` y un dato ausente como `Desconocido`.
+    La mejor parada calculada se publica en su propia fila como alternativa no recomendada, y toda posición de
+    reincorporación indica si corresponde a la recomendación o a una alternativa.
+-   Regresiones añadidas: vida con ambos campos en las vueltas 14--15 de Sakhir, límite recomendado que aún
+    descarta mantener, C1 al inicio de tanda sin modelo hasta acumular vueltas utilizables, carril parcial
+    frente a carril completo y cuatro casos de render del panel.
+-   Reproducción sobre el recorte real de Sakhir: vuelta 9 `INSUFFICIENT_DATA`/`pit_loss_unavailable`; vueltas
+    10 y 12 `INSUFFICIENT_DATA`/`stay_out_unavailable`; vueltas 14, 15 y 16 `NO_CHANGE`; vuelta 19 bloqueada
+    por el safety car.
+
+**S10 --- Validación de extremo a extremo y rendimiento.**
+
+-   `tests/test_strategy_integration.py`: once escenarios sintéticos con solución analítica y tolerancia de
+    1e-6 s, entre ellos ganancia clara de parar (133,90 s), intervalo de ganancia exacto (38 a 42 s), mantener
+    mejor, última vuelta sin recomendar parada, dos vueltas limpias insuficientes, inventario ausente, datos
+    obsoletos, parada obligatoria por la regla de dos compuestos secos, tráfico declarado sin coste inventado,
+    perfil ausente y huella idéntica en ejecuciones repetidas.
+-   `tests/test_strategy_real_capture.py`: recorre las cinco carreras del manifiesto (Monza, Suzuka, Baku con
+    VSC, Melbourne y Sakhir con safety car) con el marcador `real_capture`. Comprueba ausencia de excepciones,
+    acciones y claves válidas, motivo visible en `INSUFFICIENT_DATA`, como máximo dos cambios de acción por
+    ventana de cinco vueltas, determinismo entre repeticiones y entre velocidades 0x, 1x y 4x.
+-   `tests/test_strategy_performance.py`: mide el coste por evaluación con el marcador `benchmark`, excluido de
+    la suite funcional. Con 12 juegos y unas 100 alternativas la evaluación cuesta ~13,3 ms de media y ~16 ms
+    en el p99, por encima del objetivo de la sección 11 (<1 ms de media y <5 ms de p99); la prueba del criterio
+    queda como `xfail` declarado y la de no regresión pasa.
+-   Incidencia S10-H1: `inputs_hash` incluye relojes monotónicos de la frescura, así que difiere entre
+    reproducciones a 0x, 1x y 4x aunque la recomendación sea idéntica. Queda registrada como `xfail` y no se
+    corrige en esta tarea, que no cambia código de producción.
+-   Validación Windows: `uv run pytest -q` (956 aprobadas, 6 deseleccionadas, 1 `xfail`), `uv run pytest -m
+    benchmark` (1 aprobada, 1 `xfail`), Ruff lint/formato (129 archivos) y Pyright (0 errores).
+
+**S11 --- Documentación y `progress.md`.**
+
+-   Nuevo `docs/estrategia_modelo.md` con el flujo de `evaluate_once`, el modelo de ritmo y la mezcla con el
+    prior, la proyección de tiempos, las alternativas y la fórmula del tiempo restante, las seis fuentes de
+    pérdida en boxes, la reincorporación, las reglas de decisión, los estados y motivos, la tabla de
+    `StrategyConfig` y las limitaciones medidas.
+-   Actualizados la sección 3.5 del outline (contrato real de acciones y estados del panel), la Fase 4 del
+    roadmap (con el criterio de salida medido y las incidencias abiertas) y `docs/almacenamiento_sqlite.md`
+    (campos de pérdida y reincorporación conservados en el JSON de la evaluación).
+
+**S13 --- Prior de pérdida en boxes y reincorporación por circuito.**
+
+-   El CSV se carga como recurso empaquetado. El prior es el último recurso tras anulación, muestras de carrera,
+    perfil del fin de semana y tiempo de carril. El año de calendario no se usa como filtro; se excluye Sepang
+    porque no está disponible en F1 25 ni en su DLC 2026.
+-   SC/VSC usan sus columnas específicas; se conserva ±0,5 s para SC solo donde la fuente lo indica. El HUD y
+    la evaluación muestran fuente, banda, calidad y la estimación/rango de posición; la neutralización sigue
+    bloqueando la recomendación. Sin circuito o valor aplicable, el resultado queda no disponible.
+-   La captura de Madring proporcionada confirma `track_id=42` en 1.089 paquetes de sesión; el parser ahora lo
+    expone como `madring` y el prior real observado es 31,1 s. La fila advierte que no es una cifra oficial.
+-   Validación Windows: 938 pruebas aprobadas, 4 deseleccionadas; Ruff lint/formato, Pyright (0 errores),
+    `git diff --check` y wheel construido con el CSV incluido.
+
 ## 7. Hallazgos de la primera captura real
 
 Captura: 68 541 paquetes, ~66 MB, 795,5 s entre el primer y el último paquete. Salida de `inspect`:
@@ -694,6 +945,7 @@ src/f1_strategist/
   console_messages.py  Renderizado en español de los diagnósticos
   cli.py          Comandos run, play, replay, inspect, trim, metrics, verify, datasets, ingest, sessions,
                   weekends y weekend
+  strategy/       Tipos del contrato, modelo de ritmo y desgaste, pérdida en boxes y reglas de neumáticos
   metrics/        Tipos, configuración, histórico, resúmenes de tanda, módulos, motor y exportación
   store/          SQLite versionado, consultas de sesiones y exportación fiel a metrics
 tests/            Pruebas unitarias, de integración y de extremo a extremo
@@ -737,7 +989,10 @@ La Fase 3 está implementada y documentada. El criterio de salida se verificó l
 repetir CI en Linux y macOS. La Fase 2 mantiene abierta la semántica del indicador de combustible del MFD
 y el fixture de Monza acredita solo los escenarios observados localmente. El siguiente trabajo es:
 
-1.  **Fase 4:** motor de estrategia mínimo, empezando por la decisión de mantener el plan o parar.
+1.  **Fase 4:** S1--S13 implementadas y documentadas (panel, registro SQLite v7, prior por circuito,
+    correcciones de Sakhir, validación de extremo a extremo y modelo en `docs/estrategia_modelo.md`).
+    Quedan las incidencias S10-R1 (coste por evaluación) y S10-H1 (huella entre velocidades), y repetir la
+    validación en CI Linux.
 2.  **CI:** volver a ejecutar GitHub Actions después de la Ola 2.
 3.  **Calibración diferida:** ajustar los parámetros que hoy no tienen valor universal y ampliar la
     validación a capturas con lluvia, safety car y otras condiciones.
@@ -745,6 +1000,9 @@ y el fixture de Monza acredita solo los escenarios observados localmente. El sig
 ## 11. Pendientes y decisiones abiertas
 
 -   Captura más variada: safety car y, si es posible, lluvia.
+-   Incidencias del motor de estrategia: reducir el coste por evaluación (S10-R1) y excluir los relojes
+    monotónicos de la huella de entradas para que sea idéntica entre velocidades de reproducción (S10-H1).
+-   Completar UE2 con una carrera donde mantener sea claramente mejor que parar.
 -   Probar la topología de red local con dos PC; decidir envío dirigido o broadcast y política de
     filtrado por IP de origen.
 -   Modelo local concreto del LLM; voz; framework del front-end de la GUI; empaquetado de escritorio;

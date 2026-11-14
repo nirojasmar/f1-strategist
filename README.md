@@ -8,8 +8,10 @@ recibe y graba telemetría UDP, decodifica los nueve tipos de paquete F1 25, man
 inmutables de la sesión y los coches, calcula métricas derivadas y permite reproducir sesiones
 de forma determinista. La grabación SQLite está desactivada por defecto y se activa con
 `recording.enabled = true` en el TOML. Incluye captura `.f1cap`, replay interno y por UDP,
-ingesta offline, exportación de métricas y consultas de sesiones. La estrategia y el LLM
-llegan en fases posteriores. Queda repetir CI en Linux y macOS después de la Ola 2.
+ingesta offline, exportación de métricas y consultas de sesiones. El motor de estrategia está
+en desarrollo; `f1-strategist strategy at` consulta su evaluación actual sobre una captura.
+La integración con LLM para comunicarse con el piloto sigue pendiente. Queda repetir CI en
+Linux y macOS después de la Ola 2.
 
 La documentación de diseño está en [`docs/`](docs/): requerimientos, outline técnico y roadmap.
 
@@ -49,6 +51,9 @@ uv run f1-strategist play captures/session-YYYYMMDD-HHMMSS.f1cap --speed 4
 
 # Calcular y exportar métricas sin red
 uv run f1-strategist metrics captures/session-YYYYMMDD-HHMMSS.f1cap --format json
+
+# Consultar la evaluación actual del motor de estrategia en desarrollo (sin integración LLM)
+uv run f1-strategist strategy at captures/session-YYYYMMDD-HHMMSS.f1cap --lap 12 --json
 
 # Comprobar la huella determinista de una captura
 uv run f1-strategist verify captures/session-YYYYMMDD-HHMMSS.f1cap

@@ -9,8 +9,19 @@ from .packets import packet_name
 from .parser import ParseIssue
 from .race_state import CarSnapshot, RaceEvent, RaceStateSnapshot
 from .receiver import PacketSequenceStats
+from .strategy.types import (
+    BASELINE_STAY_OUT,
+    StrategyAction,
+    StrategyAlternative,
+    StrategyEvaluation,
+)
 
 METRICS_PANEL_TITLE = "Métricas"
+STRATEGY_PANEL_TITLE = "Estrategia"
+
+#: Marcadores del panel: distinguen «no disponible» de «no aplica a la acción».
+_STRATEGY_UNKNOWN = "Desconocido"
+_STRATEGY_NOT_APPLICABLE = "No aplica"
 
 _METRIC_ROWS = (
     ("progress.laps_remaining", "Vueltas restantes"),
@@ -45,6 +56,57 @@ _LIVE_METRIC_KEYS = frozenset(
         "gap.behind_s",
     }
 )
+
+_STRATEGY_ACTION_LABELS = {
+    StrategyAction.NO_CHANGE: "Mantener",
+    StrategyAction.PIT_NOW: "Parar ahora",
+    StrategyAction.PIT_IN: "Parar más adelante",
+    StrategyAction.INSUFFICIENT_DATA: "Datos insuficientes",
+}
+
+_STRATEGY_KEY_LABELS = {
+    "fuel_effect_not_separated": "Efecto del combustible no separado",
+    "rivals_do_not_pit": "Se supone que los rivales no paran",
+    "rejoin_current_gaps_not_projected": (
+        "La reincorporación usa huecos actuales; no proyecta el tráfico hasta la vuelta futura"
+    ),
+    "rival_gap_unavailable": (
+        "Faltan huecos de uno o más rivales; no se publica un rango de reincorporación"
+    ),
+    "profile_prior_used": "Se usó el perfil del fin de semana como prior",
+    "damage_not_modelled": "Daños del coche no modelados",
+    "tyre_damage_not_modelled": "Daño de neumáticos no modelado",
+    "traffic_not_priced": "Coste del tráfico no cuantificado",
+    "tyre_life_exceeded": "La vida útil de un juego puede ser insuficiente",
+    "wet_conditions": "Condiciones de lluvia fuera del modelo",
+    "safety_car_conditions": "Neutralización fuera del modelo",
+    "red_flag_conditions": "Bandera roja fuera del modelo",
+    "unmodeled_condition": "Condición fuera del modelo; recomendación suspendida",
+    "mandatory_stop": "Parada obligatoria; se muestra el plan de referencia",
+    "stay_out_unavailable": "No se pudo evaluar continuar con el juego montado",
+    "alternative_quality_insufficient": "Calidad insuficiente en las opciones de parada",
+    "pace_quality_insufficient": "Calidad insuficiente en el modelo de ritmo",
+    "pit_loss_unavailable": "Pérdida en boxes no disponible",
+    "no_pit_loss_source": "Pérdida en boxes no disponible",
+    "fixed_band": "Banda de incertidumbre configurada",
+    "circuit_pit_loss_prior": "Prior de pérdida por circuito",
+    "circuit_pit_loss_not_official": "El valor del CSV no es oficial; se presenta como estimación",
+    "circuit_vsc_pit_loss_estimate": "Pérdida en boxes estimada bajo VSC",
+    "circuit_sc_pit_loss_estimate": "Pérdida en boxes estimada bajo SC",
+    "circuit_sc_uncertainty": "La fuente indica la incertidumbre de SC",
+    "data_stale": "Datos obsoletos",
+    "wear_slope": "Pendiente de desgaste",
+    "pit_loss_s": "Pérdida en boxes",
+}
+
+_PIT_LOSS_SOURCE_LABELS = {
+    "override": "anulación de configuración",
+    "field": "muestras de carrera",
+    "profile": "perfil del fin de semana",
+    "lane": "tiempo de carril de boxes",
+    "circuit": "prior de circuito (estimación)",
+    "none": "sin fuente",
+}
 
 
 def _number(item: DiagnosticMessage, name: str) -> float:
@@ -141,6 +203,200 @@ def render_metrics_rows(
     return tuple(rows)
 
 
+def _strategy_reference_stop(
+    evaluation: StrategyEvaluation,
+) -> StrategyAlternative | None:
+    """Mejor parada calculada cuando la acción no recomienda ninguna."""
+    return min(
+        (item for item in evaluation.alternatives if item.key != BASELINE_STAY_OUT),
+        key=lambda item: (item.remaining_time_s, item.key),
+        default=None,
+    )
+
+
+def _strategy_reference_text(alternative: StrategyAlternative) -> str:
+    """Describe una parada calculada que no es la recomendación."""
+    parts = alternative.key.split(":")
+    compound = parts[1] if len(parts) > 1 else alternative.key
+    detail = f"{compound}, {alternative.gain_vs_baseline_s:+.2f} s"
+    return f"{detail} (alternativa, no recomendada)"
+
+
+def render_strategy_rows(
+    evaluation: StrategyEvaluation,
+) -> tuple[tuple[str, str], ...]:
+    """Devuelve las etiquetas y explicaciones del panel de estrategia.
+
+    Los campos de parada solo se rellenan cuando la acción recomienda una.
+    Para ``NO_CHANGE`` e ``INSUFFICIENT_DATA`` se marcan como no aplicables y
+    se muestra aparte la mejor parada calculada, identificada como alternativa
+    sin recomendación; así el panel distingue «no disponible» de «no aplica».
+    """
+    recommendation = evaluation.recommendation
+    action = recommendation.action
+    stop_action = action in {StrategyAction.PIT_NOW, StrategyAction.PIT_IN}
+    if action is StrategyAction.NO_CHANGE:
+        explanation = "Ninguna parada superó el mínimo de ganancia considerando la incertidumbre."
+    elif action is StrategyAction.INSUFFICIENT_DATA:
+        explanation = (
+            "No se puede recomendar con los datos críticos disponibles."
+            if evaluation.alternatives
+            else "No se pudieron evaluar alternativas."
+        )
+    elif action is StrategyAction.PIT_NOW:
+        explanation = "La parada recomendada es ahora."
+    else:
+        explanation = "La parada recomendada es en la vuelta indicada."
+
+    interval = recommendation.gain_interval_s
+    alternative = next(
+        (item for item in evaluation.alternatives if item.key == recommendation.key),
+        None,
+    )
+    reference = None if stop_action else _strategy_reference_stop(evaluation)
+    if stop_action:
+        if alternative is not None and alternative.rejoin_position is not None:
+            rejoin = _render_rejoin_position(
+                alternative.rejoin_position, "recomendación", evaluation
+            )
+        else:
+            rejoin = _STRATEGY_UNKNOWN
+    elif reference is None:
+        rejoin = _STRATEGY_NOT_APPLICABLE
+    elif reference.rejoin_position is None:
+        rejoin = f"{_STRATEGY_UNKNOWN} (alternativa, no recomendación)"
+    else:
+        rejoin = _render_rejoin_position(
+            reference.rejoin_position, "alternativa, no recomendación", evaluation
+        )
+
+    rows: list[tuple[str, str]] = [
+        ("Recomendación", _STRATEGY_ACTION_LABELS[action]),
+        ("Explicación", explanation),
+        (
+            "Compuesto",
+            (recommendation.compound or _STRATEGY_UNKNOWN)
+            if stop_action
+            else _STRATEGY_NOT_APPLICABLE,
+        ),
+        (
+            "Juego",
+            (
+                _STRATEGY_UNKNOWN
+                if recommendation.set_index is None
+                else str(recommendation.set_index)
+            )
+            if stop_action
+            else _STRATEGY_NOT_APPLICABLE,
+        ),
+        (
+            "Vuelta de parada",
+            (
+                "Ahora"
+                if action is StrategyAction.PIT_NOW
+                else f"Vuelta {recommendation.pit_lap}"
+                if recommendation.pit_lap is not None
+                else _STRATEGY_UNKNOWN
+            )
+            if stop_action
+            else _STRATEGY_NOT_APPLICABLE,
+        ),
+        (
+            "Ganancia vs. línea base",
+            (
+                _STRATEGY_UNKNOWN
+                if recommendation.gain_vs_baseline_s is None
+                else f"{recommendation.gain_vs_baseline_s:.2f} s"
+            )
+            if stop_action
+            else _STRATEGY_NOT_APPLICABLE,
+        ),
+        (
+            "Intervalo de ganancia",
+            (_STRATEGY_UNKNOWN if interval is None else f"{interval[0]:.2f} a {interval[1]:.2f} s")
+            if stop_action
+            else _STRATEGY_NOT_APPLICABLE,
+        ),
+        (
+            "Confianza",
+            _STRATEGY_UNKNOWN
+            if recommendation.confidence is None
+            else f"{recommendation.confidence:.0%}",
+        ),
+        ("Reincorporación", rejoin),
+        ("Pérdida en boxes", _render_pit_loss_estimate(evaluation)),
+    ]
+    if reference is not None:
+        rows.append(("Mejor parada calculada", _strategy_reference_text(reference)))
+    elif not stop_action and not evaluation.alternatives:
+        rows.append(("Mejor parada calculada", "Ninguna calculada"))
+    rows.extend(
+        (
+            ("Calidad de datos", _QUALITY_LABELS[evaluation.data_quality]),
+            ("Motivo", _render_strategy_keys(recommendation.notes)),
+            (
+                "Vueltas restantes",
+                _STRATEGY_UNKNOWN
+                if evaluation.laps_remaining is None
+                else f"{evaluation.laps_remaining:.1f}",
+            ),
+            ("Supuestos", _render_strategy_keys(evaluation.assumptions)),
+            ("Riesgos", _render_strategy_keys(evaluation.risks)),
+            ("Sensibilidad", _render_strategy_keys(evaluation.sensitive_to)),
+        )
+    )
+    return tuple(rows)
+
+
+def _render_rejoin_position(
+    position: int,
+    role: str,
+    evaluation: StrategyEvaluation,
+) -> str:
+    if evaluation.rejoin_position_range is None and evaluation.rejoin_quality is None:
+        return f"Posición {position} ({role})"
+    details = ["estimada"]
+    if evaluation.rejoin_position_range is not None:
+        low, high = evaluation.rejoin_position_range
+        details.append(f"rango {low} a {high}")
+    if evaluation.rejoin_quality is not None:
+        details.append(f"calidad {_QUALITY_LABELS[evaluation.rejoin_quality]}")
+    details.append(role)
+    return f"Posición {position} ({'; '.join(details)})"
+
+
+def _render_pit_loss_estimate(evaluation: StrategyEvaluation) -> str:
+    source = evaluation.pit_loss_source
+    if source is None:
+        return _STRATEGY_UNKNOWN
+    if evaluation.pit_loss_s is None:
+        value = "No disponible" if source == "none" else _STRATEGY_UNKNOWN
+    else:
+        value = f"{evaluation.pit_loss_s:.2f} s"
+        if evaluation.pit_loss_band_s is not None:
+            value += f" (±{evaluation.pit_loss_band_s:.2f} s)"
+    details = [value, _PIT_LOSS_SOURCE_LABELS.get(source, source.replace("_", " "))]
+    if evaluation.pit_loss_quality is not None:
+        details.append(f"calidad {_QUALITY_LABELS[evaluation.pit_loss_quality]}")
+    notes = _render_strategy_keys(evaluation.pit_loss_notes)
+    if notes != "—":
+        details.append(notes)
+    return "; ".join(details)
+
+
+def render_strategy_recording_warning() -> str:
+    return (
+        "La estrategia está activa, pero el registro está desactivado; "
+        "las evaluaciones no se guardarán."
+    )
+
+
+def _render_strategy_keys(keys: tuple[str, ...]) -> str:
+    if not keys:
+        return "—"
+    return "; ".join(_STRATEGY_KEY_LABELS.get(key, key.replace("_", " ")) for key in keys)
+
+
 def _live_metrics_are_stale(race: RaceStateSnapshot | None, now: float | None) -> bool:
     if race is None or now is None:
         return False
@@ -217,6 +473,8 @@ def render_race_event(event: RaceEvent, cars: tuple[CarSnapshot, ...]) -> str:
 
 def render_diagnostic(item: DiagnosticMessage) -> str:
     key = item.key
+    if key == "strategy_recording_disabled":
+        return render_strategy_recording_warning()
     if key == "rejected_sources":
         ips = item.get("ips")
         if not isinstance(ips, tuple) or not all(isinstance(ip, str) for ip in ips):
@@ -270,6 +528,7 @@ def render_diagnostic(item: DiagnosticMessage) -> str:
         "consumer_parse_error",
         "race_state_update_error",
         "metrics_update_error",
+        "strategy_engine_error",
         "recorder_error",
         "capture_write_error",
         "capture_flush_error",
@@ -281,6 +540,7 @@ def render_diagnostic(item: DiagnosticMessage) -> str:
             "consumer_parse_error": "Error inesperado en el parser UDP",
             "race_state_update_error": "Error inesperado al actualizar el estado de carrera",
             "metrics_update_error": "Error inesperado al actualizar las métricas",
+            "strategy_engine_error": "Error inesperado al actualizar la estrategia",
             "recorder_error": "Error inesperado al grabar la sesión",
             "capture_write_error": "Error al escribir la captura",
             "capture_flush_error": "Error al vaciar la captura",

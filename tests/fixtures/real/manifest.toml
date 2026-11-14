@@ -21,6 +21,40 @@ best_lap_ms = 80038
 game_version = "1.26"
 
 [[scenario]]
+id = "suzuka-practice"
+file = "suzuka-practice.f1cap.gz"
+sha256 = "d1106b972055d0176a3f1119f5ae6c0d1c1e188100c64a7d77f6d513aabccddf"
+bytes = 3919907
+description = "Práctica 1 de Suzuka, 12 vueltas registradas, recortada y anonimizada."
+tags = ["practice", "suzuka", "real_capture", "h1", "h2"]
+
+[scenario.expected]
+track = "suzuka"
+session_type = "practice_1"
+total_laps = 12
+cars = 22
+pit_stops_total = 0
+best_lap_ms = 93427
+game_version = "1.26"
+
+[[scenario]]
+id = "suzuka-19-laps"
+file = "suzuka-19-laps.f1cap.gz"
+sha256 = "88da5c862d3860391a84c3cfa09b93b7d153063b3a689e19ccb8af5ef8e0d072"
+bytes = 10057657
+description = "Carrera de Suzuka de 19 vueltas con una parada por coche, recortada y anonimizada."
+tags = ["race", "suzuka", "real_capture", "h1", "h2", "pit_stops"]
+
+[scenario.expected]
+track = "suzuka"
+session_type = "race"
+total_laps = 19
+cars = 22
+pit_stops_total = 22
+best_lap_ms = 92930
+game_version = "1.26"
+
+[[scenario]]
 id = "baku-13-laps-vsc-retirement"
 file = "baku-13-laps-vsc-retirement.f1cap.gz"
 sha256 = "da470e4c0f79328af8addcbbe5dc60dee72f1ad03b77a11d15f937fa55837c7d"
@@ -52,4 +86,38 @@ total_laps = 20
 cars = 22
 pit_stops_total = 22
 best_lap_ms = 81608
+game_version = "1.26"
+
+[[scenario]]
+id = "sakhir-practice"
+file = "sakhir-practice-12-laps.f1cap.gz"
+sha256 = "cc6e071a0ac4e44f8a026131debd4267af8661324efabba54ea45b2cdedcbbaa"
+bytes = 8803751
+description = "Práctica 1 de Sakhir, 12 vueltas registradas, recortada y anonimizada."
+tags = ["practice", "sakhir", "real_capture", "strategy"]
+
+[scenario.expected]
+track = "sakhir"
+session_type = "practice_1"
+total_laps = 12
+cars = 22
+pit_stops_total = 2
+best_lap_ms = 90291
+game_version = "1.26"
+
+[[scenario]]
+id = "sakhir-20-laps-high-wear"
+file = "sakhir-race-20-laps-high-wear.f1cap.gz"
+sha256 = "81881672dc8f0179454aa1efb7ae2ac10d89ea2b05a8020cadc6e96cae80d4c1"
+bytes = 25132303
+description = "Carrera de Sakhir de 20 vueltas con alta degradación y safety car, recortada y anonimizada."
+tags = ["race", "sakhir", "real_capture", "strategy", "high_wear", "safety_car", "pit_stops"]
+
+[scenario.expected]
+track = "sakhir"
+session_type = "race"
+total_laps = 20
+cars = 22
+pit_stops_total = 22
+best_lap_ms = 91699
 game_version = "1.26"

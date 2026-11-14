@@ -11,7 +11,8 @@ import sqlite3
 from dataclasses import dataclass
 
 #: Versión que entiende este código.
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 7
+MIN_READONLY_SCHEMA_VERSION = 6
 
 
 class StoreError(Exception):
@@ -269,6 +270,36 @@ _V5_STATEMENTS: tuple[str, ...] = (
     "ALTER TABLE sessions ADD COLUMN profile_hash TEXT",
 )
 
+_V6_STATEMENTS: tuple[str, ...] = (
+    "ALTER TABLE sessions ADD COLUMN strategy_fingerprint TEXT",
+    """
+    CREATE TABLE strategy_evaluations (
+        session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        seq INTEGER NOT NULL CHECK (seq > 0),
+        t_sim_s REAL NOT NULL,
+        lap INTEGER NOT NULL CHECK (lap > 0),
+        action TEXT NOT NULL,
+        recommended_key TEXT NOT NULL,
+        gain_vs_baseline_s REAL,
+        gain_low_s REAL,
+        gain_high_s REAL,
+        confidence REAL CHECK (confidence IS NULL OR confidence BETWEEN 0 AND 1),
+        data_quality TEXT NOT NULL,
+        inputs_hash TEXT NOT NULL,
+        profile_hash TEXT,
+        evaluation_json TEXT NOT NULL,
+        PRIMARY KEY (session_id, seq)
+    )
+    """,
+)
+
+_V7_STATEMENTS: tuple[str, ...] = (
+    "ALTER TABLE strategy_evaluations ADD COLUMN forecast_car_index "
+    "INTEGER CHECK (forecast_car_index IS NULL OR forecast_car_index >= 0)",
+    "ALTER TABLE strategy_evaluations ADD COLUMN forecast_compound TEXT",
+    "ALTER TABLE strategy_evaluations ADD COLUMN projected_lap_times_json TEXT",
+)
+
 #: Migraciones ordenadas; el índice 0 lleva el esquema a la versión 1.
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(version=1, statements=_V1_STATEMENTS),
@@ -276,6 +307,8 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration(version=3, statements=_V3_STATEMENTS),
     Migration(version=4, statements=_V4_STATEMENTS),
     Migration(version=5, statements=_V5_STATEMENTS),
+    Migration(version=6, statements=_V6_STATEMENTS),
+    Migration(version=7, statements=_V7_STATEMENTS),
 )
 
 
@@ -328,10 +361,11 @@ def check_supported_version(connection: sqlite3.Connection) -> int:
             f"La base de datos usa el esquema v{current}, más nuevo que el admitido "
             f"por esta versión de f1-strategist (v{SCHEMA_VERSION}). Actualiza la herramienta."
         )
-    if current < SCHEMA_VERSION:
+    if current < MIN_READONLY_SCHEMA_VERSION:
         raise StoreError(
-            f"La base de datos usa el esquema v{current}; se requiere v{SCHEMA_VERSION}. "
-            "Ábrela en modo escritura para aplicar las migraciones antes de leerla."
+            f"La base de datos usa el esquema v{current}; se requiere al menos "
+            f"v{MIN_READONLY_SCHEMA_VERSION} para leerla. Ábrela en modo escritura "
+            "para aplicar las migraciones."
         )
     required_tables = {
         "sessions",
@@ -343,6 +377,7 @@ def check_supported_version(connection: sqlite3.Connection) -> int:
         "weekends",
         "stint_summaries",
         "tyre_inventory_snapshots",
+        "strategy_evaluations",
     }
     existing_tables = {
         str(row[0])

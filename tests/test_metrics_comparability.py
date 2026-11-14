@@ -10,7 +10,15 @@ from f1_strategist.metrics.history import LapRecord
 @pytest.mark.parametrize(
     ("record", "expected"),
     [
-        (LapRecord(car_index=0, lap_number=1), frozenset({"first_lap"})),
+        (LapRecord(car_index=0, lap_number=1), frozenset()),
+        (
+            LapRecord(
+                car_index=0,
+                lap_number=1,
+                flags=frozenset({"first_lap"}),
+            ),
+            frozenset({"first_lap"}),
+        ),
         (LapRecord(car_index=0, lap_number=2, pit_entry=True), frozenset({"in_lap"})),
         (LapRecord(car_index=0, lap_number=2, pit_exit=True), frozenset({"out_lap"})),
         (LapRecord(car_index=0, lap_number=2, valid=False), frozenset({"invalid"})),
@@ -80,7 +88,7 @@ def test_classifies_combined_flags_without_order_dependence() -> None:
         weather_seen=frozenset({"clear", "storm"}),
         damage_max_delta_pct=10.0,
         traffic_fraction=0.8,
-        flags=frozenset({"flashback"}),
+        flags=frozenset({"flashback", "first_lap"}),
     )
     second = LapRecord(
         car_index=0,
@@ -92,7 +100,7 @@ def test_classifies_combined_flags_without_order_dependence() -> None:
         weather_seen=frozenset({"storm", "clear"}),
         damage_max_delta_pct=10.0,
         traffic_fraction=0.8,
-        flags=frozenset({"flashback"}),
+        flags=frozenset({"flashback", "first_lap"}),
     )
     expected = frozenset(
         {

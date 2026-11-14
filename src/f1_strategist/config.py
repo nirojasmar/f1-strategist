@@ -68,7 +68,7 @@ class RecordingConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    enabled: bool = False
+    enabled: bool = True
     database: Path = Path("captures/sessions.db")
     metrics_interval_s: float = Field(default=1.0, gt=0, allow_inf_nan=False)
     queue_size: int = Field(default=1000, ge=1)
@@ -159,6 +159,78 @@ class MetricsConfig(BaseModel):
         return self.min_samples_low, self.min_samples_ok
 
 
+class StrategyTrackOverride(BaseModel):
+    """Anulaciones de ``[strategy]`` para un circuito concreto.
+
+    Solo se declaran los campos que cambian; el resto se hereda de la
+    configuración global.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    evaluation_min_interval_s: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+    min_gain_s: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    wear_slope_band_pct: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+    pit_loss_band_s: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    prior_strength_k: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    max_pit_in_laps: int | None = Field(default=None, ge=1)
+    require_two_dry_compounds: bool | None = None
+    traffic_cost_s_per_lap: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    cliff_penalty_s_per_lap: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    pit_loss_override_s: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+
+
+class StrategyConfig(BaseModel):
+    """Parámetros del motor de estrategia (sección 6 del plan de la Fase 4).
+
+    Los valores marcados como provisionales se calibrarán en la Fase 9. Los
+    campos sin valor universal quedan en ``None``: las funciones que dependen
+    de ellos declaran ``unavailable`` en vez de inventar un número.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    evaluation_min_interval_s: float = Field(default=1.0, gt=0, allow_inf_nan=False)
+    min_gain_s: float = Field(default=1.0, ge=0, allow_inf_nan=False)
+    wear_slope_band_pct: float = Field(default=15.0, gt=0, allow_inf_nan=False)
+    pit_loss_band_s: float = Field(default=2.0, ge=0, allow_inf_nan=False)
+    prior_strength_k: float = Field(default=3.0, ge=0, allow_inf_nan=False)
+    max_pit_in_laps: int = Field(default=10, ge=1)
+    require_two_dry_compounds: bool = True
+    traffic_cost_s_per_lap: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    cliff_penalty_s_per_lap: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    pit_loss_override_s: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    tracks: dict[str, StrategyTrackOverride] = Field(default_factory=dict)
+
+    @field_validator("tracks")
+    @classmethod
+    def _validate_track_names(
+        cls, value: dict[str, StrategyTrackOverride]
+    ) -> dict[str, StrategyTrackOverride]:
+        normalized: dict[str, StrategyTrackOverride] = {}
+        for name, override in value.items():
+            key = name.strip().lower()
+            if not key:
+                raise ValueError("El nombre de circuito no puede estar vacío")
+            if key in normalized:
+                raise ValueError(f"Circuito duplicado en strategy.tracks: {key!r}")
+            normalized[key] = override
+        return normalized
+
+    def for_track(self, track: str | None) -> StrategyConfig:
+        """Devuelve la configuración efectiva para un circuito, sin mutar la original."""
+        if track is None:
+            return self
+        override = self.tracks.get(track.strip().lower())
+        if override is None:
+            return self
+        changes = override.model_dump(exclude_none=True)
+        if not changes:
+            return self
+        return self.model_copy(update=changes)
+
+
 class AppConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -166,6 +238,7 @@ class AppConfig(BaseModel):
     capture: CaptureConfig = Field(default_factory=CaptureConfig)
     metrics: MetricsConfig = Field(default_factory=MetricsConfig)
     recording: RecordingConfig = Field(default_factory=RecordingConfig)
+    strategy: StrategyConfig = Field(default_factory=StrategyConfig)
 
 
 def load_config(path: Path | None) -> AppConfig:

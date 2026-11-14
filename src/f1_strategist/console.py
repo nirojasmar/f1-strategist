@@ -9,19 +9,24 @@ from rich.live import Live
 from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
+from rich.text import Text
 
 from .config import AppConfig
 from .console_messages import (
     METRICS_PANEL_TITLE,
+    STRATEGY_PANEL_TITLE,
     render_diagnostic,
     render_metrics_rows,
     render_race_event,
+    render_strategy_recording_warning,
+    render_strategy_rows,
 )
 from .diagnostics import ConnectionState, connection_state, diagnose
 from .metrics.engine import MetricsSnapshot
 from .packets import packet_name
 from .ports import SessionPort
 from .race_state import RaceStateSnapshot
+from .strategy.types import StrategySnapshot
 
 _STATE_STYLE = {
     ConnectionState.WAITING: "yellow",
@@ -65,7 +70,7 @@ def _render_race_summary(race: RaceStateSnapshot, now: float) -> Panel:
     player = race.player_car
     table = Table.grid(padding=(0, 2))
     table.add_column(style="bold")
-    table.add_column()
+    table.add_column(overflow="fold")
     table.add_row(
         "Sesión",
         f"{_display_enum(race.session.session_type)} · {_display_enum(race.session.track)}",
@@ -129,6 +134,24 @@ def _render_metrics_summary(
     for label, value, quality in render_metrics_rows(metrics, race, now):
         table.add_row(label, value, quality)
     return Panel(table, title=METRICS_PANEL_TITLE, expand=False)
+
+
+def _render_strategy_summary(snapshot: StrategySnapshot, cfg: AppConfig) -> Panel:
+    table = Table.grid(padding=(0, 2))
+    table.add_column(style="bold")
+    table.add_column()
+    if not cfg.strategy.enabled:
+        table.add_row("Estado", Text("desactivada"))
+    elif snapshot.evaluation is None:
+        table.add_row("Estado", Text("Esperando la primera evaluación"))
+    else:
+        for label, value in render_strategy_rows(snapshot.evaluation):
+            table.add_row(label, Text(value))
+    if snapshot.error is not None:
+        table.add_row("Error del motor", Text(snapshot.error))
+    if cfg.strategy.enabled and not cfg.recording.enabled:
+        table.add_row("Registro", Text(render_strategy_recording_warning(), style="yellow"))
+    return Panel(table, title=STRATEGY_PANEL_TITLE, expand=False)
 
 
 def format_bytes(nbytes: int) -> str:
@@ -200,6 +223,7 @@ def render(
         Panel(info, title="F1 Strategist · telemetría UDP", expand=False),
         _render_race_summary(session.race_snapshot(), race_now),
         _render_metrics_summary(session.metrics_snapshot(), session.race_snapshot(), race_now),
+        _render_strategy_summary(session.strategy_snapshot(), cfg),
     ]
     if snap.packets_by_id:
         table = Table(title="Paquetes por tipo · huecos estimados", expand=False)

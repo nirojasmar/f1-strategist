@@ -13,12 +13,13 @@ from pathlib import Path
 from typing import Any
 
 from . import __version__
-from .config import AppConfig, MetricsConfig
+from .config import AppConfig, MetricsConfig, StrategyConfig
 from .metrics.engine import MetricsEngine, MetricsSnapshot
 from .metrics.history import LapHistory, LapHistorySnapshot
 from .offline import OfflineResult, run_capture_offline
 from .parser import PARSER_VERSION, ParsedPacket
 from .race_state import RaceEvent, RaceState, RaceStateSnapshot
+from .strategy.types import STRATEGY_SCHEMA_VERSION
 from .weekend_profile import WeekendProfile
 
 FINGERPRINT_SCHEMA_VERSION = 1
@@ -86,6 +87,15 @@ def build_run_info(
 def compute_config_hash(config: AppConfig | MetricsConfig) -> str:
     """Hash canónico de lo suministrado: toda ``AppConfig`` o solo ``MetricsConfig``."""
     payload = _config_value(config.model_dump())
+    return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()
+
+
+def compute_strategy_fingerprint(config: StrategyConfig) -> str:
+    """Huella de la configuración de estrategia, ajena a la huella de captura."""
+    payload = {
+        "schema_version": STRATEGY_SCHEMA_VERSION,
+        "config": config.model_dump(mode="json"),
+    }
     return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()
 
 
