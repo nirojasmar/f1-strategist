@@ -174,6 +174,18 @@ def test_unknown_enum_and_event_codes_are_preserved_as_unknown() -> None:
     assert decoded_event.detail.raw == b"event bytes!"
 
 
+def test_madring_track_id_from_the_2026_dlc_is_decoded() -> None:
+    fixtures = Path(__file__).parent / "fixtures"
+    session = bytearray((fixtures / "session.bin").read_bytes())
+    session[HEADER_SIZE + 7] = 42
+
+    decoded = parse_packet(bytes(session))
+
+    assert isinstance(decoded, SessionPacket)
+    assert decoded.track_id.raw == 42
+    assert decoded.track_id.name == "madring"
+
+
 def test_session_history_tyre_stints_follow_spec_order_and_count() -> None:
     body = bytearray(SUPPORTED_PACKET_SIZES[11] - HEADER_SIZE)
     body[:7] = bytes([5, 20, 2, 0, 0, 0, 0])

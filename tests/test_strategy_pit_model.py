@@ -11,6 +11,11 @@ from f1_strategist.metrics.history import LapHistorySnapshot, LapRecord, MetricI
 from f1_strategist.metrics.types import Quality
 from f1_strategist.race_state import CarSnapshot, RaceState
 from f1_strategist.strategy.pit_model import (
+    NOTE_CIRCUIT_GREEN_NOT_OFFICIAL,
+    NOTE_CIRCUIT_PRIOR,
+    NOTE_CIRCUIT_SC_ESTIMATE,
+    NOTE_CIRCUIT_SC_UNCERTAINTY,
+    NOTE_CIRCUIT_VSC_ESTIMATE,
     NOTE_FIELD_DISPERSION,
     NOTE_FIXED_BAND,
     NOTE_GAME_REJOIN_MISMATCH,
@@ -73,7 +78,15 @@ def _stop_laps(car_index: int, *, loss_s: float = 20.0) -> tuple[LapRecord, ...]
             pit_stop_time_s=2.5,
             closed=True,
         ),
-        LapRecord(car_index, 3, lap_time_s=entry_lap, valid=True, pit_exit=True, closed=True),
+        LapRecord(
+            car_index,
+            3,
+            lap_time_s=entry_lap,
+            valid=True,
+            pit_exit=True,
+            pit_lane_time_s=25.0,
+            closed=True,
+        ),
         LapRecord(car_index, 4, lap_time_s=90.0, valid=True, closed=True),
         LapRecord(car_index, 5, lap_time_s=90.0, valid=True, closed=True),
     )
@@ -91,7 +104,13 @@ def _profile(pit_loss: ProfileValue | None) -> WeekendProfile:
 
 def test_field_stops_give_the_exact_loss() -> None:
     records = {index: _stop_laps(index) for index in range(3)}
-    estimate = estimate_pit_loss(_inputs(records), StrategyConfig())
+    estimate = estimate_pit_loss(
+        _inputs(
+            records,
+            session_fields={"track": "sakhir", "safety_car_status": "no_safety_car"},
+        ),
+        StrategyConfig(),
+    )
 
     assert estimate.available
     assert estimate.source == "field"
@@ -150,6 +169,97 @@ def test_profile_prior_is_used_without_field_stops() -> None:
     assert NOTE_PROFILE_PRIOR in estimate.notes
 
 
+def test_sakhir_circuit_prior_does_not_require_a_calendar_year() -> None:
+    inputs = _inputs(session_fields={"track": "sakhir", "safety_car_status": "no_safety_car"})
+
+    estimate = estimate_pit_loss(inputs, StrategyConfig())
+
+    assert estimate.source == "circuit"
+    assert estimate.value_s == pytest.approx(22.9)
+    assert estimate.band_s == pytest.approx(2.0)
+    assert estimate.quality is Quality.LOW
+    assert NOTE_CIRCUIT_PRIOR in estimate.notes
+
+
+@pytest.mark.parametrize(
+    ("track", "expected"),
+    [
+        ("suzuka", 23.75),
+        ("Japan, Suzuka", 23.75),
+        ("bahrain", 22.9),
+        ("Las Vegas", 20.0),
+        ("Madring", 31.1),
+    ],
+)
+def test_circuit_aliases_resolve_only_to_their_explicit_row(track: str, expected: float) -> None:
+    inputs = _inputs(session_fields={"track": track, "safety_car_status": "no_safety_car"})
+
+    estimate = estimate_pit_loss(inputs, StrategyConfig())
+
+    assert estimate.source == "circuit"
+    assert estimate.value_s == pytest.approx(expected)
+
+
+@pytest.mark.parametrize(
+    ("status", "expected", "band", "note"),
+    [
+        ("no_safety_car", 22.9, 2.0, NOTE_CIRCUIT_PRIOR),
+        ("virtual_safety_car", 11.9, 2.0, NOTE_CIRCUIT_VSC_ESTIMATE),
+        ("full_safety_car", 10.0, 0.5, NOTE_CIRCUIT_SC_ESTIMATE),
+    ],
+)
+def test_circuit_prior_uses_the_matching_flag_and_preserves_its_band(
+    status: str,
+    expected: float,
+    band: float,
+    note: str,
+) -> None:
+    inputs = _inputs(session_fields={"track": "sakhir", "safety_car_status": status})
+
+    estimate = estimate_pit_loss(inputs, StrategyConfig())
+
+    assert estimate.source == "circuit"
+    assert estimate.value_s == pytest.approx(expected)
+    assert estimate.band_s == pytest.approx(band)
+    assert estimate.quality is Quality.LOW
+    assert note in estimate.notes
+    if status == "full_safety_car":
+        assert NOTE_CIRCUIT_SC_UNCERTAINTY in estimate.notes
+
+
+def test_circuit_prior_is_below_a_weekend_profile_and_skips_sepang() -> None:
+    profile = _profile(ProfileValue(value=24.0, samples=3, quality=Quality.LOW))
+    inputs = _inputs(
+        profile=profile,
+        session_fields={"track": "sakhir", "safety_car_status": "no_safety_car"},
+    )
+    estimate = estimate_pit_loss(inputs, StrategyConfig())
+    unavailable = estimate_pit_loss(
+        _inputs(session_fields={"track": "sepang", "safety_car_status": "no_safety_car"}),
+        StrategyConfig(),
+    )
+    unknown_status = estimate_pit_loss(
+        _inputs(session_fields={"track": "sakhir", "safety_car_status": "unknown"}),
+        StrategyConfig(),
+    )
+
+    assert estimate.source == "profile"
+    assert estimate.value_s == pytest.approx(24.0)
+    assert unavailable.source == "none"
+    assert unavailable.value_s is None
+    assert unknown_status.source == "none"
+    assert unknown_status.value_s is None
+
+
+def test_madrid_prior_discloses_the_missing_official_green_flag_value() -> None:
+    inputs = _inputs(session_fields={"track": "madring", "safety_car_status": "no_safety_car"})
+
+    estimate = estimate_pit_loss(inputs, StrategyConfig())
+
+    assert estimate.value_s == pytest.approx(31.1)
+    assert NOTE_CIRCUIT_GREEN_NOT_OFFICIAL in estimate.notes
+
+
 def test_negative_profile_prior_falls_back_to_lane_time() -> None:
     lane_only = (
         LapRecord(
@@ -157,7 +267,7 @@ def test_negative_profile_prior_falls_back_to_lane_time() -> None:
             4,
             lap_time_s=115.0,
             valid=True,
-            pit_entry=True,
+            pit_exit=True,
             pit_lane_time_s=24.0,
             closed=True,
         ),
@@ -169,25 +279,81 @@ def test_negative_profile_prior_falls_back_to_lane_time() -> None:
     assert estimate.value_s == pytest.approx(24.0)
 
 
-def test_lane_time_is_the_last_resort() -> None:
+def test_lane_time_precedes_the_circuit_prior() -> None:
     lane_only = (
         LapRecord(
             0,
             4,
             lap_time_s=115.0,
             valid=True,
-            pit_entry=True,
+            pit_exit=True,
             pit_lane_time_s=24.0,
             closed=True,
         ),
     )
-    estimate = estimate_pit_loss(_inputs({0: lane_only}), StrategyConfig())
+    estimate = estimate_pit_loss(
+        _inputs(
+            {0: lane_only},
+            session_fields={"track": "sakhir", "safety_car_status": "no_safety_car"},
+        ),
+        StrategyConfig(),
+    )
 
     assert estimate.source == "lane"
     assert estimate.value_s == pytest.approx(24.0)
     assert estimate.sample_count == 1
     assert estimate.quality is Quality.LOW
     assert NOTE_LANE_TIME_ONLY in estimate.notes
+
+
+def test_partial_entry_lane_time_is_not_a_full_pit_loss() -> None:
+    """Una entrada cerrada con 1,933 s de carril no es la pérdida completa."""
+    partial = (
+        LapRecord(
+            0,
+            4,
+            lap_time_s=115.0,
+            valid=True,
+            pit_entry=True,
+            pit_lane_time_s=1.933,
+            closed=True,
+        ),
+    )
+    estimate = estimate_pit_loss(_inputs({0: partial}), StrategyConfig())
+
+    assert not estimate.available
+    assert estimate.value_s is None
+    assert estimate.source == "none"
+    assert estimate.notes == (NOTE_NO_PIT_LOSS,)
+
+
+def test_exit_lap_lane_time_completes_the_partial_entry() -> None:
+    """La vuelta de salida acumula el tiempo completo y sí es una muestra válida."""
+    complete = (
+        LapRecord(
+            0,
+            4,
+            lap_time_s=115.0,
+            valid=True,
+            pit_entry=True,
+            pit_lane_time_s=1.933,
+            closed=True,
+        ),
+        LapRecord(
+            0,
+            5,
+            lap_time_s=92.0,
+            valid=True,
+            pit_exit=True,
+            pit_lane_time_s=23.933,
+            closed=True,
+        ),
+    )
+    estimate = estimate_pit_loss(_inputs({0: complete}), StrategyConfig())
+
+    assert estimate.available
+    assert estimate.source == "lane"
+    assert estimate.value_s == pytest.approx(23.933)
 
 
 def test_no_source_means_unavailable_and_never_zero() -> None:
@@ -266,6 +432,51 @@ def test_rejoin_with_known_gaps() -> None:
     assert NOTE_RIVALS_DO_NOT_PIT in estimate.notes
 
 
+def test_rejoin_position_range_reflects_pit_loss_uncertainty() -> None:
+    inputs = _rejoin_inputs(
+        rivals=(
+            _car(1, position=1, current_lap=20),
+            _rival(2, 2, 5.0),
+            _rival(3, 4, 15.0),
+            _rival(4, 5, 29.0),
+            _rival(5, 6, 35.0),
+        )
+    )
+
+    estimate = estimate_rejoin(
+        inputs,
+        20.0,
+        StrategyConfig(),
+        pit_loss_band_s=2.0,
+    )
+
+    assert estimate.position == 5
+    assert estimate.position_range == (4, 5)
+
+
+def test_rejoin_band_larger_than_the_loss_keeps_the_player_gap_as_lower_bound() -> None:
+    """Una banda mayor que la pérdida no puede mejorar la posición mínima."""
+    inputs = _rejoin_inputs(
+        rivals=(
+            _car(1, position=1, current_lap=20),
+            _rival(2, 2, 5.0),
+            _rival(3, 4, 15.0),
+        )
+    )
+
+    estimate = estimate_rejoin(
+        inputs,
+        2.0,
+        StrategyConfig(),
+        pit_loss_band_s=30.0,
+    )
+
+    assert estimate.position == 3
+    # El suelo es el hueco actual (10 s) con pérdida nula, no 0: los rivales a
+    # 0 y 5 s siguen por delante y el rango inferior no puede ser 1.
+    assert estimate.position_range == (3, 4)
+
+
 def test_rejoin_flags_traffic_risk_when_ahead_is_too_close() -> None:
     inputs = _rejoin_inputs(rivals=(_rival(2, 4, 29.5),))
     estimate = estimate_rejoin(inputs, 20.0, StrategyConfig())
@@ -324,9 +535,10 @@ def test_rejoin_marks_missing_rival_gaps() -> None:
             _car(6, position=7, current_lap=20),
         )
     )
-    estimate = estimate_rejoin(inputs, 20.0, StrategyConfig())
+    estimate = estimate_rejoin(inputs, 20.0, StrategyConfig(), pit_loss_band_s=2.0)
 
     assert estimate.position == 5
+    assert estimate.position_range is None
     assert NOTE_RIVAL_GAP_UNAVAILABLE in estimate.notes
     assert estimate.quality is Quality.LOW
 

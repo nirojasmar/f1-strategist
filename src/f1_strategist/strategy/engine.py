@@ -33,10 +33,16 @@ from .pace_model import (
     canonical_compound,
     project_lap_times,
 )
-from .pit_model import PitLossEstimate, estimate_pit_loss
+from .pit_model import (
+    NOTE_RIVAL_GAP_UNAVAILABLE,
+    PitLossEstimate,
+    estimate_pit_loss,
+    estimate_rejoin,
+)
 from .types import (
     ASSUMPTION_FUEL_EFFECT_NOT_SEPARATED,
     ASSUMPTION_PROFILE_PRIOR_USED,
+    ASSUMPTION_REJOIN_CURRENT_GAPS,
     ASSUMPTION_RIVALS_DO_NOT_PIT,
     BASELINE_STAY_OUT,
     RISK_DAMAGE_NOT_MODELLED,
@@ -262,6 +268,7 @@ def _assumptions(
         notes.append(ASSUMPTION_PROFILE_PRIOR_USED)
     if any(item.rejoin_position is not None for item in alternatives):
         notes.append(ASSUMPTION_RIVALS_DO_NOT_PIT)
+        notes.append(ASSUMPTION_REJOIN_CURRENT_GAPS)
     return tuple(notes)
 
 
@@ -335,15 +342,23 @@ def evaluate_once(
     """
     models = build_compound_models(inputs, cfg)
     pit = estimate_pit_loss(inputs, cfg)
+    rejoin = (
+        estimate_rejoin(inputs, pit.value_s, cfg, pit_loss_band_s=pit.band_s or 0.0)
+        if pit.value_s is not None
+        else None
+    )
     options = tyre_options(inputs, cfg)
     unmodeled_conditions = _unmodeled_conditions(inputs, options)
     quality = _data_quality(inputs, models, pit, cfg, unmodeled_conditions)
     projected_lap_times = _projected_lap_forecast(inputs, models, options, quality)
 
     baseline_key: str | None = None
+    evaluated: dict[Perturbation, tuple[AlternativeResult, ...]] = {}
 
     def evaluate(perturbation: Perturbation) -> tuple[AlternativeResult, ...]:
         nonlocal baseline_key
+        if perturbation in evaluated:
+            return evaluated[perturbation]
         alternatives = evaluate_alternatives(
             models,
             pit,
@@ -355,9 +370,10 @@ def evaluate_once(
         )
         if perturbation == Perturbation() and alternatives:
             baseline_key = alternatives[0].key
+        evaluated[perturbation] = alternatives
         return alternatives
 
-    decision = decide(evaluate, quality, cfg)
+    decision = decide(evaluate, quality, cfg, pit_loss_band_s=pit.band_s)
     alternatives = evaluate(Perturbation())
     baseline = alternatives[0].key if alternatives else BASELINE_STAY_OUT
 
@@ -391,7 +407,12 @@ def evaluate_once(
             for item in alternatives
         ),
         assumptions=_assumptions(models, pit, alternatives),
-        risks=_risks(alternatives, decision, unmodeled_conditions),
+        risks=_risks(alternatives, decision, unmodeled_conditions)
+        + (
+            (NOTE_RIVAL_GAP_UNAVAILABLE,)
+            if rejoin is not None and NOTE_RIVAL_GAP_UNAVAILABLE in rejoin.notes
+            else ()
+        ),
         sensitive_to=decision.sensitive_to,
         data_quality=_worst(
             quality.pace,
@@ -408,6 +429,9 @@ def evaluate_once(
                 "history": inputs.history,
                 "profile": inputs.profile,
                 "car_index": inputs.car_index,
+                "now": inputs.now,
+                "metrics_config": inputs.config.model_dump(mode="json"),
+                "strategy_config": cfg.model_dump(mode="json"),
             }
         ),
         profile_hash=inputs.profile.hash if inputs.profile is not None else None,
@@ -415,6 +439,13 @@ def evaluate_once(
         forecast_car_index=inputs.car_index if projected_lap_times is not None else None,
         forecast_compound=options.current_compound if projected_lap_times is not None else None,
         projected_lap_times_s=projected_lap_times,
+        pit_loss_s=pit.value_s,
+        pit_loss_band_s=pit.band_s,
+        pit_loss_source=pit.source,
+        pit_loss_quality=pit.quality,
+        pit_loss_notes=pit.notes,
+        rejoin_position_range=rejoin.position_range if rejoin is not None else None,
+        rejoin_quality=rejoin.quality if rejoin is not None else None,
     )
 
 
