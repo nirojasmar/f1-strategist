@@ -316,11 +316,49 @@ entrenado. Primero establecer una línea base transparente.
 -   Evaluación estructurada de alternativas.
 -   Escenarios sintéticos y pruebas de regresión.
 -   Registro de las predicciones realizadas.
+-   Modelo documentado en
+    [`estrategia_modelo.md`](estrategia_modelo.md): fórmulas, supuestos,
+    riesgos y cómo leer una evaluación.
 
 ### Criterio de salida
 
 Ante escenarios controlados, el motor compara correctamente las
 alternativas y explica qué supuestos afectan el resultado.
+
+### Estado
+
+Implementada en la ola 2 de la Fase 4. El motor vive en
+`src/f1_strategist/strategy/` (modelo de ritmo, pérdida en boxes,
+alternativas, decisión, motor y opciones de neumático), se integra con
+`session`, `playback` y `console`, y se consulta con `strategy at`,
+`strategy show` y `strategy review` sobre el registro SQLite v7.
+
+Criterio de salida medido:
+
+-   Corrección analítica con tolerancia de 1e-6 s en escenarios sintéticos,
+    incluido el ejemplo de la sección 5.10 del plan.
+-   Honestidad de estados: `INSUFFICIENT_DATA` con motivo visible cuando
+    falta ritmo, pérdida en boxes, vueltas restantes, perfil o datos
+    actualizados; `wet_conditions` bajo lluvia; recomendación suspendida
+    bajo SC/VSC.
+-   Determinismo: mismas acciones, claves y ganancias al repetir la captura
+    y al reproducir a 0x, 1x y 4x.
+-   Estabilidad: no más de dos cambios de acción por ventana de cinco
+    vueltas en las cinco carreras del manifiesto real.
+-   `uv run pytest -q`: 956 pruebas superadas, 6 deseleccionadas y 1
+    `xfail` declarado; `uv run pytest -m benchmark`: 1 superada y 1 `xfail`.
+
+Incidencias abiertas, registradas como medidas y no corregidas:
+
+-   **S10-R1 (rendimiento):** con 12 juegos en el inventario y unas 100
+    alternativas, la evaluación cuesta ~13,3 ms de media y ~16 ms en el
+    p99, por encima del objetivo de <1 ms de media y <5 ms de p99. El coste
+    crece de forma lineal con el número de alternativas.
+-   **S10-H1 (huella):** `inputs_hash` incluye relojes monotónicos, por lo
+    que difiere entre reproducciones a 0x, 1x y 4x aunque la recomendación
+    sea idéntica.
+
+Queda repetir la validación en CI Linux tras la ola 2.
 
 ------------------------------------------------------------------------
 

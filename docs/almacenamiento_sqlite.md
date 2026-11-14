@@ -131,7 +131,9 @@ evaluación. Desde v7 también conserva el índice del coche, compuesto y tiempo
 proyectados desde la siguiente vuelta completa; estas columnas permiten comparar cada
 horizonte con vueltas reales válidas posteriores sin reconstruir el modelo. Las filas v6
 conservan `NULL` en esos campos. La clave `(session_id, seq)` permite reescribir una secuencia
-sin duplicar filas.
+sin duplicar filas. El JSON conserva además la fuente, el valor y la calidad de la pérdida en
+boxes, su banda y notas, y el rango y la calidad de la reincorporación, de modo que
+`strategy show` y `strategy review` reconstruyen la evaluación sin volver a calcularla.
 
 ### Perfil del fin de semana
 

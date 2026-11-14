@@ -66,7 +66,7 @@ Documentos de diseño:
 | 2. Métricas e histórico | Implementada; validación parcial | A1--A4, B1--B3, C1--C4/C2b, D1--D9, E1--E4 y F2--F4 implementados. F3 y la documentación se actualizaron según O5; la semántica/tolerancia del MFD sigue abierta aunque la validación local actual pasa. |
 | 3. Grabación y replay | Implementada; validación local completa | G1--G8 implementados sobre SQLite versionado (v7 tras las migraciones de Fase 4), `play`/`replay`, datasets, huella y `verify`, grabador en vivo e `ingest`, inspección con `sessions`, pruebas E2E y benchmarks. Documentación en `docs/almacenamiento_sqlite.md`. Queda repetir CI en Linux y macOS. |
 | 3.5. Perfil del fin de semana | Implementada; validación local Windows | P1--P8 implementadas. Esquema SQLite v5, enlace de sesiones, resúmenes de tandas, inventario, perfil versionado y métricas `profile.*`; la prueba integrada cubre práctica, clasificación, carrera y reingesta con huella estable. Validación Linux por CI pendiente. |
-| 4. Motor de estrategia | En curso; S1--S9, S12 y S13 implementadas | Ola 0 cerrada; S5--S8 cubren evaluación, decisión, motor integrado y registro SQLite; S9 añade panel y comandos. S13 incorpora prior por circuito y rango de reincorporación; S10 E2E/rendimiento y S11 documentación integral siguen pendientes. |
+| 4. Motor de estrategia | Implementada; validación local Windows | Ola 0 cerrada; S5--S8 cubren evaluación, decisión, motor integrado y registro SQLite; S9 añade panel y comandos; S12 corrige los hallazgos de Sakhir (vida del neumático, carril parcial y estados del HUD); S13 incorpora prior por circuito y rango de reincorporación; S10 añade pruebas analíticas, de captura real y de rendimiento; S11 documenta el modelo. Quedan las incidencias S10-R1 (rendimiento) y S10-H1 (huella entre velocidades) y repetir CI en Linux. |
 | 5--10 | No iniciadas | |
 
 ## 5. Qué está verificado y qué no
@@ -241,6 +241,24 @@ Documentos de diseño:
     expone un indicador directo y persistente de bandera roja activa, por lo que queda pendiente validación real.
     La reproducción de Suzuka ya termina correctamente con claves únicas. Validación Windows: 899 aprobadas,
     4 benchmarks excluidos; Ruff lint/formato y Pyright pasan.
+-   S12: la vida del neumático distingue el límite recomendado (`usableLife`, edad total) de las vueltas
+    restantes del juego (`lifeSpan`, que se suman a la edad actual); una vuelta de entrada con tiempo de
+    carril parcial ya no se acepta como pérdida completa; el panel separa campo desconocido (`Desconocido`),
+    campo que no aplica a la acción (`No aplica`) y parada calculada sin recomendación, y etiqueta cada
+    reincorporación como recomendación o alternativa. Regresiones con los valores de Sakhir en las vueltas
+    14--15, carril parcial/completo, C1 al inicio de tanda y render del HUD.
+-   S10: `tests/test_strategy_integration.py` cubre once escenarios analíticos con tolerancia de 1e-6 s
+    (ganancia de 133,90 s, intervalo de 38 a 42 s, mantener, última vuelta, dos vueltas limpias, inventario
+    ausente, datos obsoletos, regla de dos compuestos, tráfico sin coste, perfil ausente y huella repetida).
+    `tests/test_strategy_real_capture.py` recorre las cinco carreras del manifiesto con el marcador
+    `real_capture`: sin excepciones, acciones válidas, motivo visible en `INSUFFICIENT_DATA`, como máximo dos
+    cambios de acción por ventana de cinco vueltas y determinismo entre repeticiones y velocidades 0x, 1x y 4x.
+    `tests/test_strategy_performance.py` mide el coste por evaluación con el marcador `benchmark`.
+    Validación Windows: 956 aprobadas, 6 deseleccionadas y 1 `xfail` declarado; Ruff lint/formato (129
+    archivos) y Pyright (0 errores).
+-   S11: `docs/estrategia_modelo.md` documenta el modelo, las fórmulas, los supuestos, los riesgos y cómo
+    leer una evaluación; el outline (§3.5), el roadmap (Fase 4, incluido su estado medido) y
+    `docs/almacenamiento_sqlite.md` quedan alineados con el contrato real.
 
 **No verificado todavía:**
 
@@ -738,6 +756,61 @@ fixes de la revisión (`0b3bd76`).
     priorizarse después. Se registra también investigar un prior externo de posición de reincorporación cuando
     aún nadie haya parado, refinable a cálculo con huecos/posiciones en vivo.
 
+### 2026-11-14
+
+**S12 --- Correcciones de hallazgos del informe de Sakhir.**
+
+-   Vida del neumático: `_usable_life` mezclaba dos unidades distintas. Ahora `usable_life_laps` se toma como
+    edad máxima recomendada y las vueltas restantes del juego (`lifespan_laps`) se convierten a edad total
+    sumándolas a la edad actual antes de compararlas con `edad + vueltas restantes`. En la vuelta 15 de Sakhir
+    (edad 6, juego con 11 vueltas restantes, máximo 16) el límite es 16 y mantener deja de descartarse; en la
+    14 también sigue siendo viable.
+-   Pérdida en boxes: una vuelta de entrada con tiempo de carril parcial (1,933 s en la vuelta 9) ya no se
+    acepta como pérdida completa. La fuente `lane` exige la vuelta de salida cerrada, que es la que acumula el
+    tiempo completo (23,933 s en la misma parada). Sin muestra completa se mantiene la causa visible
+    (`no_pit_loss_source`) en lugar de fabricar una pérdida.
+-   Panel de estrategia: compuesto, juego, vuelta de parada, ganancia e intervalo solo se rellenan cuando la
+    acción recomienda parar; en otro caso se muestran como `No aplica` y un dato ausente como `Desconocido`.
+    La mejor parada calculada se publica en su propia fila como alternativa no recomendada, y toda posición de
+    reincorporación indica si corresponde a la recomendación o a una alternativa.
+-   Regresiones añadidas: vida con ambos campos en las vueltas 14--15 de Sakhir, límite recomendado que aún
+    descarta mantener, C1 al inicio de tanda sin modelo hasta acumular vueltas utilizables, carril parcial
+    frente a carril completo y cuatro casos de render del panel.
+-   Reproducción sobre el recorte real de Sakhir: vuelta 9 `INSUFFICIENT_DATA`/`pit_loss_unavailable`; vueltas
+    10 y 12 `INSUFFICIENT_DATA`/`stay_out_unavailable`; vueltas 14, 15 y 16 `NO_CHANGE`; vuelta 19 bloqueada
+    por el safety car.
+
+**S10 --- Validación de extremo a extremo y rendimiento.**
+
+-   `tests/test_strategy_integration.py`: once escenarios sintéticos con solución analítica y tolerancia de
+    1e-6 s, entre ellos ganancia clara de parar (133,90 s), intervalo de ganancia exacto (38 a 42 s), mantener
+    mejor, última vuelta sin recomendar parada, dos vueltas limpias insuficientes, inventario ausente, datos
+    obsoletos, parada obligatoria por la regla de dos compuestos secos, tráfico declarado sin coste inventado,
+    perfil ausente y huella idéntica en ejecuciones repetidas.
+-   `tests/test_strategy_real_capture.py`: recorre las cinco carreras del manifiesto (Monza, Suzuka, Baku con
+    VSC, Melbourne y Sakhir con safety car) con el marcador `real_capture`. Comprueba ausencia de excepciones,
+    acciones y claves válidas, motivo visible en `INSUFFICIENT_DATA`, como máximo dos cambios de acción por
+    ventana de cinco vueltas, determinismo entre repeticiones y entre velocidades 0x, 1x y 4x.
+-   `tests/test_strategy_performance.py`: mide el coste por evaluación con el marcador `benchmark`, excluido de
+    la suite funcional. Con 12 juegos y unas 100 alternativas la evaluación cuesta ~13,3 ms de media y ~16 ms
+    en el p99, por encima del objetivo de la sección 11 (<1 ms de media y <5 ms de p99); la prueba del criterio
+    queda como `xfail` declarado y la de no regresión pasa.
+-   Incidencia S10-H1: `inputs_hash` incluye relojes monotónicos de la frescura, así que difiere entre
+    reproducciones a 0x, 1x y 4x aunque la recomendación sea idéntica. Queda registrada como `xfail` y no se
+    corrige en esta tarea, que no cambia código de producción.
+-   Validación Windows: `uv run pytest -q` (956 aprobadas, 6 deseleccionadas, 1 `xfail`), `uv run pytest -m
+    benchmark` (1 aprobada, 1 `xfail`), Ruff lint/formato (129 archivos) y Pyright (0 errores).
+
+**S11 --- Documentación y `progress.md`.**
+
+-   Nuevo `docs/estrategia_modelo.md` con el flujo de `evaluate_once`, el modelo de ritmo y la mezcla con el
+    prior, la proyección de tiempos, las alternativas y la fórmula del tiempo restante, las seis fuentes de
+    pérdida en boxes, la reincorporación, las reglas de decisión, los estados y motivos, la tabla de
+    `StrategyConfig` y las limitaciones medidas.
+-   Actualizados la sección 3.5 del outline (contrato real de acciones y estados del panel), la Fase 4 del
+    roadmap (con el criterio de salida medido y las incidencias abiertas) y `docs/almacenamiento_sqlite.md`
+    (campos de pérdida y reincorporación conservados en el JSON de la evaluación).
+
 **S13 --- Prior de pérdida en boxes y reincorporación por circuito.**
 
 -   El CSV se carga como recurso empaquetado. El prior es el último recurso tras anulación, muestras de carrera,
@@ -916,8 +989,10 @@ La Fase 3 está implementada y documentada. El criterio de salida se verificó l
 repetir CI en Linux y macOS. La Fase 2 mantiene abierta la semántica del indicador de combustible del MFD
 y el fixture de Monza acredita solo los escenarios observados localmente. El siguiente trabajo es:
 
-1.  **Fase 4:** S1--S9 y S12--S13 implementadas (panel, registro SQLite v7 y prior por circuito).
-    Siguiente: S10 (validación E2E/rendimiento) y S11 (documentación integral).
+1.  **Fase 4:** S1--S13 implementadas y documentadas (panel, registro SQLite v7, prior por circuito,
+    correcciones de Sakhir, validación de extremo a extremo y modelo en `docs/estrategia_modelo.md`).
+    Quedan las incidencias S10-R1 (coste por evaluación) y S10-H1 (huella entre velocidades), y repetir la
+    validación en CI Linux.
 2.  **CI:** volver a ejecutar GitHub Actions después de la Ola 2.
 3.  **Calibración diferida:** ajustar los parámetros que hoy no tienen valor universal y ampliar la
     validación a capturas con lluvia, safety car y otras condiciones.
@@ -925,6 +1000,9 @@ y el fixture de Monza acredita solo los escenarios observados localmente. El sig
 ## 11. Pendientes y decisiones abiertas
 
 -   Captura más variada: safety car y, si es posible, lluvia.
+-   Incidencias del motor de estrategia: reducir el coste por evaluación (S10-R1) y excluir los relojes
+    monotónicos de la huella de entradas para que sea idéntica entre velocidades de reproducción (S10-H1).
+-   Completar UE2 con una carrera donde mantener sea claramente mejor que parar.
 -   Probar la topología de red local con dos PC; decidir envío dirigido o broadcast y política de
     filtrado por IP de origen.
 -   Modelo local concreto del LLM; voz; framework del front-end de la GUI; empaquetado de escritorio;
