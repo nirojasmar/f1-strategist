@@ -429,7 +429,9 @@ def evaluate_once(
                 "history": inputs.history,
                 "profile": inputs.profile,
                 "car_index": inputs.car_index,
-                "now": inputs.now,
+                # ``now`` no forma parte de la identidad: la frescura se juzga
+                # en tiempo de ejecución y su reloj cambia con la velocidad de
+                # reproducción (incidencia S10-H1).
                 "metrics_config": inputs.config.model_dump(mode="json"),
                 "strategy_config": cfg.model_dump(mode="json"),
             }

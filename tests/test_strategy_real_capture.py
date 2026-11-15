@@ -188,6 +188,28 @@ def test_replay_speed_does_not_change_the_recommendation() -> None:
             )
 
 
+def test_inputs_hash_is_identical_across_replay_speeds() -> None:
+    """La huella de entradas no depende del reloj (incidencia S10-H1).
+
+    Se comparan las velocidades que solo cambian las esperas. En la
+    reproducción offline ``speed=0`` asigna el mismo instante a todos los
+    paquetes, de modo que el registro de vueltas cambia y no sirve para medir
+    la invariancia del reloj; esa parte se cubre con el escenario sintético de
+    ``test_strategy_integration``.
+    """
+    scenario = _smallest_race_scenario()
+    baseline = _replay(scenario, None)
+    realtime = _replay(scenario, 1.0)
+    faster = _replay(scenario, 4.0)
+
+    assert len(baseline) == len(realtime) == len(faster)
+    for index, (lap, evaluation) in enumerate(baseline):
+        for other in (realtime[index][1], faster[index][1]):
+            assert other.inputs_hash == evaluation.inputs_hash, (
+                f"vuelta {lap}: la huella cambia con la velocidad de reproducción"
+            )
+
+
 def _smallest_race_scenario() -> _Scenario:
     scenarios = tuple(scenario for scenario in _race_scenarios() if scenario.path.is_file())
     if not scenarios:

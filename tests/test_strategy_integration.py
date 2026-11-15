@@ -463,7 +463,8 @@ def test_every_evaluation_is_traceable_and_has_the_same_fingerprint() -> None:
     assert first.data_quality in set(Quality)
 
 
-def test_inputs_hash_changes_with_freshness_clock_and_effective_strategy_config() -> None:
+def test_inputs_hash_ignores_the_clock_and_changes_with_the_configuration() -> None:
+    """La huella identifica datos y configuración, no el instante de captura."""
     car = _player(current_lap=15, position=2, actual_tyre_compound="soft", tyre_age_laps=9)
     state = _state(lap=15, cars=(car, *_rivals(gap_s=5.0)), inventory=(_hard_set(),))
     records = _stint(
@@ -476,10 +477,68 @@ def test_inputs_hash_changes_with_freshness_clock_and_effective_strategy_config(
     baseline = evaluate_once(inputs, config).inputs_hash
 
     later = evaluate_once(replace(inputs, now=inputs.now + 1.0), config).inputs_hash
+    aged = evaluate_once(
+        replace(
+            inputs,
+            state=_state(
+                lap=15,
+                cars=(
+                    _player(
+                        current_lap=15,
+                        position=2,
+                        actual_tyre_compound="soft",
+                        tyre_age_laps=10,
+                    ),
+                    *_rivals(gap_s=5.0),
+                ),
+                inventory=(_hard_set(),),
+            ),
+        ),
+        config,
+    ).inputs_hash
     configured = evaluate_once(
         inputs,
         StrategyConfig(min_gain_s=StrategyConfig().min_gain_s + 1.0),
     ).inputs_hash
 
-    assert later != baseline
+    assert later == baseline
+    assert aged != baseline
     assert configured != baseline
+
+
+def test_inputs_hash_ignores_the_monotonic_clocks_of_the_captured_data() -> None:
+    """Mover solo los relojes locales no cambia la huella (incidencia S10-H1)."""
+    car = _player(current_lap=15, position=2, actual_tyre_compound="soft", tyre_age_laps=9)
+    freshness = PacketFreshness(
+        "lap_data",
+        updated_at_monotonic=10.0,
+        stale_after_seconds=5.0,
+    )
+    state = _state(
+        lap=15,
+        cars=(car, *_rivals(gap_s=5.0)),
+        inventory=(_hard_set(),),
+        freshness=(freshness,),
+    )
+    records = _stint(
+        compound="hard", first_lap=1, ages=range(0, 5), base_lap_s=90.0, slope_s_per_lap=0.02
+    ) + _stint(
+        compound="soft", first_lap=6, ages=range(0, 10), base_lap_s=90.0, slope_s_per_lap=0.5
+    )
+    inputs = _inputs(state=state, records=records)
+    config = _stop_config()
+
+    shifted_records = tuple(
+        replace(record, started_at_monotonic=500.0, ended_at_monotonic=590.0) for record in records
+    )
+    shifted = replace(
+        inputs,
+        state=replace(
+            state,
+            freshness=(replace(freshness, updated_at_monotonic=99.0),),
+            tyre_inventory_updated_at_monotonic=99.0,
+        ),
+        history=replace(inputs.history, records={0: shifted_records}),
+    )
+
+    assert evaluate_once(shifted, config).inputs_hash == evaluate_once(inputs, config).inputs_hash

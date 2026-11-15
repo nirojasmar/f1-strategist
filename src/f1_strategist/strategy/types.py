@@ -48,6 +48,10 @@ RISK_RED_FLAG = "red_flag_conditions"
 
 _FLOAT_DIGITS = 9
 
+#: Sufijo de los campos que guardan un reloj monotónico local. No forman parte
+#: de la identidad de las entradas: dependen del instante real de captura.
+_CLOCK_FIELD_SUFFIX = "_monotonic"
+
 
 class StrategyAction(StrEnum):
     """Acción recomendada por el motor."""
@@ -614,7 +618,14 @@ class StrategySnapshot:
 
 
 def compute_inputs_hash(payload: object) -> str:
-    """SHA-256 del JSON canónico de las entradas, independiente del orden."""
+    """SHA-256 del JSON canónico de las entradas, independiente del orden.
+
+    Los relojes monotónicos de los datos (frescura, marcas de vuelta, instante
+    de la evaluación) se excluyen de la huella: la misma información capturada
+    a distinta velocidad de reproducción debe producir el mismo valor
+    (incidencia S10-H1). El resto de campos, incluidas las configuraciones
+    efectivas, sí identifican la evaluación.
+    """
     return hashlib.sha256(_canonical_json(_normalize(payload)).encode("utf-8")).hexdigest()
 
 
@@ -634,7 +645,14 @@ def _normalize(value: object) -> Any:
     if isinstance(value, Enum):
         return _normalize(value.value)
     if is_dataclass(value) and not isinstance(value, type):
-        return {field.name: _normalize(getattr(value, field.name)) for field in fields(value)}
+        # Los relojes monotónicos se omiten: describen cuándo se observó el
+        # dato, no qué dato es. Se conservan edad, vueltas y transiciones, que
+        # sí determinan la evaluación.
+        return {
+            field.name: _normalize(getattr(value, field.name))
+            for field in fields(value)
+            if not field.name.endswith(_CLOCK_FIELD_SUFFIX)
+        }
     if isinstance(value, Mapping):
         # ``Mapping`` cubre también los ``MappingProxyType`` del histórico; sin
         # esto caerían al ``str(value)`` y el orden de inserción alteraría el hash.
