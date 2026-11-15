@@ -535,10 +535,36 @@ def test_inputs_hash_ignores_the_monotonic_clocks_of_the_captured_data() -> None
         inputs,
         state=replace(
             state,
-            freshness=(replace(freshness, updated_at_monotonic=99.0),),
+            # El reloj se mueve sin cambiar la clasificación: con ``now=100``
+            # ambos valores dejan el grupo obsoleto (edad 80 y 90 s > 5 s).
+            freshness=(replace(freshness, updated_at_monotonic=20.0),),
             tyre_inventory_updated_at_monotonic=99.0,
         ),
         history=replace(inputs.history, records={0: shifted_records}),
     )
 
     assert evaluate_once(shifted, config).inputs_hash == evaluate_once(inputs, config).inputs_hash
+
+
+def test_inputs_hash_distinguishes_stale_groups_from_fresh_ones() -> None:
+    """La huella registra qué grupos están obsoletos, nunca sus relojes."""
+    car = _player(current_lap=15, position=2, actual_tyre_compound="soft", tyre_age_laps=9)
+    fresh = PacketFreshness("lap_data", updated_at_monotonic=99.0, stale_after_seconds=5.0)
+    stale = replace(fresh, updated_at_monotonic=0.0)
+    records = _stint(
+        compound="hard", first_lap=1, ages=range(0, 5), base_lap_s=90.0, slope_s_per_lap=0.02
+    ) + _stint(
+        compound="soft", first_lap=6, ages=range(0, 10), base_lap_s=90.0, slope_s_per_lap=0.5
+    )
+    config = _stop_config()
+
+    def _hash(freshness: PacketFreshness) -> str:
+        state = _state(
+            lap=15,
+            cars=(car, *_rivals(gap_s=5.0)),
+            inventory=(_hard_set(),),
+            freshness=(freshness,),
+        )
+        return evaluate_once(_inputs(state=state, records=records), config).inputs_hash
+
+    assert _hash(fresh) != _hash(stale)

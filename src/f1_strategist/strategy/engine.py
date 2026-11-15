@@ -150,6 +150,18 @@ def _is_stale(state: RaceStateSnapshot, now: float) -> bool:
     return False
 
 
+def _stale_groups(state: RaceStateSnapshot, now: float) -> tuple[str, ...]:
+    """Grupos de paquetes obsoletos en el instante de evaluación.
+
+    La huella no guarda los relojes monotónicos (H1), así que registra esta
+    clasificación: dos entradas idénticas salvo por la frescura no pueden
+    compartir huella si una está obsoleta y la otra no.
+    """
+    return tuple(
+        sorted(freshness.group for freshness in state.freshness if freshness.is_stale(now))
+    )
+
+
 def _pace_model(models: CompoundModels, mounted: str | None) -> CompoundModel | None:
     """Modelo del compuesto montado; si no hay, el de referencia."""
     if mounted is not None:
@@ -431,7 +443,9 @@ def evaluate_once(
                 "car_index": inputs.car_index,
                 # ``now`` no forma parte de la identidad: la frescura se juzga
                 # en tiempo de ejecución y su reloj cambia con la velocidad de
-                # reproducción (incidencia S10-H1).
+                # reproducción (incidencia S10-H1). Sí se registra qué grupos
+                # están obsoletos en ese instante (regla 9 de la fase 5).
+                "stale_groups": _stale_groups(inputs.state, inputs.now),
                 "metrics_config": inputs.config.model_dump(mode="json"),
                 "strategy_config": cfg.model_dump(mode="json"),
             }

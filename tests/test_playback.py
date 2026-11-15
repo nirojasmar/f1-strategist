@@ -12,12 +12,18 @@ import pytest
 
 from f1_strategist.capture import CapturedPacket, CaptureWriter
 from f1_strategist.cli import main
+from f1_strategist.config import MetricsConfig, StrategyConfig
 from f1_strategist.fingerprint import file_sha256, fingerprint_capture
+from f1_strategist.metrics.engine import MetricsEngine
 from f1_strategist.metrics.export import laps_to_rows, run_metrics_capture, snapshot_to_dict
+from f1_strategist.offline import run_capture_offline
 from f1_strategist.packets import HEADER_SIZE
 from f1_strategist.parser import PacketParseError, ParsedPacket
 from f1_strategist.playback import PlaybackSession
+from f1_strategist.race_state import RaceState
 from f1_strategist.store import SessionInfo, SessionStore
+from f1_strategist.strategy.engine import StrategyEngine
+from f1_strategist.strategy.types import StrategyEvaluation
 from f1_strategist.weekend_profile import WeekendProfile
 from tests.conftest import make_packet
 from tests.scenarios import ScenarioCar, build_race_timed
@@ -130,10 +136,36 @@ def test_speed_does_not_change_the_result(
     assert results[0] == results[1] == results[2]
 
 
+class _OfflineStrategyCollector:
+    """Consumidor offline que evalúa estrategia con el reloj de la captura."""
+
+    def __init__(self) -> None:
+        self.state = RaceState()
+        self.metrics = MetricsEngine(MetricsConfig())
+        self.strategy = StrategyEngine(StrategyConfig(), MetricsConfig())
+        self.evaluation: StrategyEvaluation | None = None
+
+    def apply(self, packet: ParsedPacket, observed_at: float) -> None:
+        self.state.apply(packet, observed_at)
+        snapshot = self.state.snapshot()
+        self.metrics.apply(packet, observed_at, snapshot)
+        self.strategy.apply(
+            snapshot,
+            self.metrics.snapshot(),
+            self.metrics.history.snapshot(),
+            None,
+            observed_at,
+        )
+        evaluation = self.strategy.snapshot().evaluation
+        if evaluation is not None:
+            self.evaluation = evaluation
+
+
 def test_strategy_result_is_invariant_to_playback_speed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """La huella no cambia con ``play`` a 0x/1x/4x ni con el reloj offline."""
     path, _ = _capture(tmp_path, monkeypatch)
     evaluations = []
     for speed in (0.0, 1.0, 4.0):
@@ -143,7 +175,12 @@ def test_strategy_result_is_invariant_to_playback_speed(
         assert evaluation is not None
         evaluations.append(evaluation.to_dict())
 
-    assert evaluations[0] == evaluations[1] == evaluations[2]
+    offline = _OfflineStrategyCollector()
+    run_capture_offline(path, [offline])
+    assert offline.evaluation is not None
+    evaluations.append(offline.evaluation.to_dict())
+
+    assert evaluations[0] == evaluations[1] == evaluations[2] == evaluations[3]
 
 
 def test_play_matches_the_offline_metrics_runner(

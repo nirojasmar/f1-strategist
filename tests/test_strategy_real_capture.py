@@ -90,10 +90,10 @@ class _StrategyReplay:
 
 
 def _replay_once(
-    scenario: _Scenario, *, speed: float | None = None
+    scenario: _Scenario, *, clock_scale: float | None = None
 ) -> tuple[tuple[int, StrategyEvaluation], ...]:
     replay = _StrategyReplay()
-    result = run_capture_offline(scenario.path, [replay], speed=speed)
+    result = run_capture_offline(scenario.path, [replay], clock_scale=clock_scale)
     assert not result.integrity_problems(), (
         f"{scenario.name}: captura íntegra requerida; " + "; ".join(result.integrity_problems())
     )
@@ -102,10 +102,10 @@ def _replay_once(
 
 @cache
 def _replay(
-    scenario: _Scenario, speed: float | None = None
+    scenario: _Scenario, clock_scale: float | None = None
 ) -> tuple[tuple[int, StrategyEvaluation], ...]:
-    """Reproducción memorizada: cada escenario se procesa una vez por velocidad."""
-    return _replay_once(scenario, speed=speed)
+    """Reproducción memorizada: cada escenario se procesa una vez por escala."""
+    return _replay_once(scenario, clock_scale=clock_scale)
 
 
 def _signature(evaluation: StrategyEvaluation) -> tuple[str, str, float | None]:
@@ -171,10 +171,10 @@ def test_repeated_replays_are_deterministic() -> None:
     ]
 
 
-def test_replay_speed_does_not_change_the_recommendation() -> None:
-    """La velocidad de reproducción solo cambia los tiempos observados."""
+def test_clock_scale_does_not_change_the_recommendation() -> None:
+    """La escala del reloj simulado solo cambia los instantes observados."""
     scenario = _smallest_race_scenario()
-    baseline = _replay(scenario, 0)
+    baseline = _replay(scenario)
     faster = _replay(scenario, 4.0)
     realtime = _replay(scenario, 1.0)
 
@@ -188,14 +188,11 @@ def test_replay_speed_does_not_change_the_recommendation() -> None:
             )
 
 
-def test_inputs_hash_is_identical_across_replay_speeds() -> None:
-    """La huella de entradas no depende del reloj (incidencia S10-H1).
+def test_inputs_hash_is_identical_across_clock_scales() -> None:
+    """La huella de entradas no depende del reloj (incidencias S10-H1 y H2).
 
-    Se comparan las velocidades que solo cambian las esperas. En la
-    reproducción offline ``speed=0`` asigna el mismo instante a todos los
-    paquetes, de modo que el registro de vueltas cambia y no sirve para medir
-    la invariancia del reloj; esa parte se cubre con el escenario sintético de
-    ``test_strategy_integration``.
+    ``clock_scale`` comprime el reloj completo, de modo que frescura y marcas
+    de vuelta escalan juntas y la clasificación de obsolescencia no cambia.
     """
     scenario = _smallest_race_scenario()
     baseline = _replay(scenario, None)
