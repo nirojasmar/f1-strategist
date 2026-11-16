@@ -23,6 +23,7 @@ from f1_strategist.metrics.types import Quality
 from f1_strategist.race_state import (
     CarSnapshot,
     PacketFreshness,
+    RaceEvent,
     RaceState,
     RaceStateSnapshot,
     TyreSetSnapshot,
@@ -568,6 +569,40 @@ def test_inputs_hash_distinguishes_stale_groups_from_fresh_ones() -> None:
         return evaluate_once(_inputs(state=state, records=records), config).inputs_hash
 
     assert _hash(fresh) != _hash(stale)
+
+
+def test_inputs_hash_distinguishes_red_flag_state_from_lap_order() -> None:
+    """La huella registra la bandera roja derivada, no los relojes.
+
+    Las dos entradas solo cambian en si la última vuelta limpia terminó antes o
+    después del evento. Sin el marcador derivado, al excluir los relojes ambas
+    tendrían la misma huella aunque el estado de bandera roja fuese distinto.
+    """
+    car = _player(current_lap=15, position=2, actual_tyre_compound="soft", tyre_age_laps=9)
+    state = _state(
+        lap=15,
+        cars=(car, *_rivals(gap_s=5.0)),
+        inventory=(_hard_set(),),
+        freshness=(
+            PacketFreshness("lap_data", updated_at_monotonic=99.0, stale_after_seconds=5.0),
+        ),
+    )
+    state = replace(state, events=(RaceEvent("red_flag", 105.0, session_uid=123),))
+    records = _stint(
+        compound="hard", first_lap=1, ages=range(0, 5), base_lap_s=90.0, slope_s_per_lap=0.02
+    )
+    clean_lap = records[-1]
+    before = _inputs(
+        state=state,
+        records=(*records[:-1], replace(clean_lap, ended_at_monotonic=104.0)),
+    )
+    after = _inputs(
+        state=state,
+        records=(*records[:-1], replace(clean_lap, ended_at_monotonic=106.0)),
+    )
+    config = _stop_config()
+
+    assert evaluate_once(before, config).inputs_hash != evaluate_once(after, config).inputs_hash
 
 
 def test_fresh_inputs_keep_the_h1_fingerprint() -> None:
