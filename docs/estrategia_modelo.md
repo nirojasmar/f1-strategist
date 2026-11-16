@@ -322,7 +322,9 @@ Una `StrategyEvaluation` guardada contiene, en este orden de lectura:
 6. **`sensitive_to`**: parámetros cuya variación cambia la recomendación.
 7. **`data_quality`** y **`pit_loss_quality`**: calidad global y de la pérdida.
 8. **`inputs_hash`** y **`profile_hash`**: huellas de las entradas y del perfil.
-   Permiten comprobar que dos evaluaciones parten de los mismos datos.
+   Permiten comprobar que dos evaluaciones parten de los mismos datos. La
+   huella no incluye relojes monotónicos, pero sí qué grupos de paquetes están
+   obsoletos en el instante de evaluación y las configuraciones efectivas.
 9. **`projected_lap_times_s`**: proyección por vuelta del compuesto montado,
    para el coche y compuesto indicados en `forecast_car_index` /
    `forecast_compound`.
@@ -384,8 +386,8 @@ Limitaciones del MVP, fuera del alcance de la Fase 4:
   (S13) mejora la pérdida, no la posición.
 - La **calibración** de umbrales y bandas queda para la Fase 9.
 
-Incidencias medidas en la validación de extremo a extremo (S10), registradas y
-no corregidas dentro de esa tarea:
+Incidencias medidas en la validación de extremo a extremo (S10), con su estado
+posterior:
 
 - **S10-R1, rendimiento.** Con los doce juegos del escenario de referencia, una
   evaluación tarda del orden de 13 ms de media (p99 ≈ 16 ms) y crece de forma
@@ -393,10 +395,16 @@ no corregidas dentro de esa tarea:
   (media < 1 ms, p99 < 5 ms) no se cumple; el coste es admisible para la
   cadencia de evaluación en vivo, pero debe optimizarse antes de ampliar la
   ventana de alternativas.
-- **S10-H1, huella entre velocidades de reproducción.** `inputs_hash` incluye
-  marcas de reloj monotónico del estado y del histórico, por lo que difiere al
-  reproducir a 0x, 1x y 4x aunque la recomendación sea idéntica. La
-  recomendación es estable; la huella no.
+- **S10-H1, huella entre velocidades de reproducción.** Corregida en la fase 5
+  (tareas H1 y H2): `inputs_hash` excluye los relojes monotónicos y el instante
+  de evaluación, e incluye la clasificación de obsolescencia de los grupos de
+  paquetes cuando hay alguno obsoleto. Dos entradas idénticas salvo por un grupo
+  obsoleto ya no comparten huella, y con todo fresco la huella coincide con la
+  de H1. `play` y `replay` conservan el tiempo de la captura a cualquier
+  velocidad, así que la huella no depende de las esperas. El runner offline
+  expone `clock_scale` (rechaza cero): comprime el reloj completo, pero los
+  umbrales de obsolescencia están en segundos absolutos, de modo que comprimirlo
+  puede cambiar la frescura y la huella.
 
 ## 13. Resumen de fórmulas
 

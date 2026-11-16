@@ -13,6 +13,7 @@ from pathlib import Path
 from . import __version__
 from .capture import CapturedPacket, CaptureWriter
 from .config import AppConfig
+from .events.types import EventsSnapshot
 from .fingerprint import build_run_info, file_sha256
 from .messages import DiagnosticMessage, message
 from .metrics.engine import MetricsEngine, MetricsSnapshot
@@ -296,6 +297,10 @@ class CaptureSession:
     def strategy_snapshot(self) -> StrategySnapshot:
         """Última evaluación publicada por el motor de estrategia."""
         return self._strategy_engine.snapshot()
+
+    def events_snapshot(self) -> EventsSnapshot:
+        """Eventos detectados; vacío hasta que se integre el motor (E8)."""
+        return EventsSnapshot()
 
     def _consume(self) -> None:
         while not (self._stop_consumer.is_set() and self._queue.empty()):

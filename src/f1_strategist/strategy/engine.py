@@ -150,6 +150,77 @@ def _is_stale(state: RaceStateSnapshot, now: float) -> bool:
     return False
 
 
+def _stale_groups(state: RaceStateSnapshot, now: float) -> tuple[str, ...]:
+    """Grupos de paquetes obsoletos en el instante de evaluación.
+
+    La huella no guarda los relojes monotónicos (H1), así que registra esta
+    clasificación: dos entradas idénticas salvo por la frescura no pueden
+    compartir huella si una está obsoleta y la otra no.
+    """
+    return tuple(
+        sorted(freshness.group for freshness in state.freshness if freshness.is_stale(now))
+    )
+
+
+def _red_flag_active(inputs: MetricInputs) -> bool:
+    """Estado derivado de bandera roja a partir de la sesión, las vueltas y los eventos.
+
+    La duración de la bandera no depende de un reloj absoluto, sino de si hay una
+    vuelta limpia cerrada después del último evento. Por eso se calcula aparte y
+    se incorpora a la huella como un dato derivado.
+    """
+    status = inputs.state.session.safety_car_status
+    car = inputs.car
+    red_flag_events = [
+        event
+        for event in inputs.state.events
+        if event.kind == "red_flag" and event.session_uid in {None, inputs.state.session.uid}
+    ]
+    red_flag_active = status == "red_flag" or (car is not None and car.fia_flag == "red")
+    if red_flag_events:
+        latest_red_flag = max(red_flag_events, key=lambda event: event.occurred_at_monotonic)
+        later_laps = (
+            record
+            for record in inputs.history.records_for(inputs.car_index)
+            if record.ended_at_monotonic is not None
+            and record.ended_at_monotonic > latest_red_flag.occurred_at_monotonic
+        )
+        red_flag_active = red_flag_active or not any(
+            "red_flag" not in record.track_status_seen for record in later_laps
+        )
+    return red_flag_active
+
+
+def _inputs_hash(inputs: MetricInputs, cfg: StrategyConfig) -> str:
+    """Huella de las entradas, con la obsolescencia y la bandera roja solo si existen.
+
+    Con todos los grupos frescos y sin bandera roja el valor coincide exactamente
+    con la huella de H1, para no invalidar comparaciones con evaluaciones
+    anteriores. Cuando hay obsolescencia se añade la clasificación (nunca los
+    relojes), de modo que dos entradas idénticas salvo por la frescura no
+    comparten huella. La bandera roja se añade como estado derivado: dos entradas
+    idénticas salvo por si una vuelta limpia cerró antes o después del evento no
+    pueden compartir huella.
+    """
+    payload: dict[str, object] = {
+        "state": inputs.state,
+        "history": inputs.history,
+        "profile": inputs.profile,
+        "car_index": inputs.car_index,
+        # ``now`` no forma parte de la identidad: la frescura se juzga en tiempo
+        # de ejecución y su reloj cambia con la velocidad de reproducción
+        # (incidencia S10-H1).
+        "metrics_config": inputs.config.model_dump(mode="json"),
+        "strategy_config": cfg.model_dump(mode="json"),
+    }
+    stale_groups = _stale_groups(inputs.state, inputs.now)
+    if stale_groups:
+        payload["stale_groups"] = stale_groups
+    if _red_flag_active(inputs):
+        payload[RISK_RED_FLAG] = True
+    return compute_inputs_hash(payload)
+
+
 def _pace_model(models: CompoundModels, mounted: str | None) -> CompoundModel | None:
     """Modelo del compuesto montado; si no hay, el de referencia."""
     if mounted is not None:
@@ -205,25 +276,7 @@ def _unmodeled_conditions(
     status = inputs.state.session.safety_car_status
     if status in {"full_safety_car", "safety_car", "virtual_safety_car", "formation_lap"}:
         conditions.append(RISK_SAFETY_CAR)
-    car = inputs.car
-    red_flag_events = [
-        event
-        for event in inputs.state.events
-        if event.kind == "red_flag" and event.session_uid in {None, inputs.state.session.uid}
-    ]
-    red_flag_active = status == "red_flag" or (car is not None and car.fia_flag == "red")
-    if red_flag_events:
-        latest_red_flag = max(red_flag_events, key=lambda event: event.occurred_at_monotonic)
-        later_laps = (
-            record
-            for record in inputs.history.records_for(inputs.car_index)
-            if record.ended_at_monotonic is not None
-            and record.ended_at_monotonic > latest_red_flag.occurred_at_monotonic
-        )
-        red_flag_active = red_flag_active or not any(
-            "red_flag" not in record.track_status_seen for record in later_laps
-        )
-    if red_flag_active:
+    if _red_flag_active(inputs):
         conditions.append(RISK_RED_FLAG)
     return tuple(conditions)
 
@@ -423,17 +476,7 @@ def evaluate_once(
                 Quality.OK,
             ),
         ),
-        inputs_hash=compute_inputs_hash(
-            {
-                "state": inputs.state,
-                "history": inputs.history,
-                "profile": inputs.profile,
-                "car_index": inputs.car_index,
-                "now": inputs.now,
-                "metrics_config": inputs.config.model_dump(mode="json"),
-                "strategy_config": cfg.model_dump(mode="json"),
-            }
-        ),
+        inputs_hash=_inputs_hash(inputs, cfg),
         profile_hash=inputs.profile.hash if inputs.profile is not None else None,
         schema_version=STRATEGY_SCHEMA_VERSION,
         forecast_car_index=inputs.car_index if projected_lap_times is not None else None,

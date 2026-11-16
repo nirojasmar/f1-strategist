@@ -23,6 +23,7 @@ from f1_strategist.metrics.types import Quality
 from f1_strategist.race_state import (
     CarSnapshot,
     PacketFreshness,
+    RaceEvent,
     RaceState,
     RaceStateSnapshot,
     TyreSetSnapshot,
@@ -36,7 +37,7 @@ from f1_strategist.strategy import (
     StrategyAction,
     evaluate_once,
 )
-from f1_strategist.strategy.types import BASELINE_STAY_OUT
+from f1_strategist.strategy.types import BASELINE_STAY_OUT, compute_inputs_hash
 
 TRACK_LENGTH_M = 5_000.0
 CAR_INDEX = 0
@@ -463,7 +464,8 @@ def test_every_evaluation_is_traceable_and_has_the_same_fingerprint() -> None:
     assert first.data_quality in set(Quality)
 
 
-def test_inputs_hash_changes_with_freshness_clock_and_effective_strategy_config() -> None:
+def test_inputs_hash_ignores_the_clock_and_changes_with_the_configuration() -> None:
+    """La huella identifica datos y configuración, no el instante de captura."""
     car = _player(current_lap=15, position=2, actual_tyre_compound="soft", tyre_age_laps=9)
     state = _state(lap=15, cars=(car, *_rivals(gap_s=5.0)), inventory=(_hard_set(),))
     records = _stint(
@@ -476,10 +478,191 @@ def test_inputs_hash_changes_with_freshness_clock_and_effective_strategy_config(
     baseline = evaluate_once(inputs, config).inputs_hash
 
     later = evaluate_once(replace(inputs, now=inputs.now + 1.0), config).inputs_hash
+    aged = evaluate_once(
+        replace(
+            inputs,
+            state=_state(
+                lap=15,
+                cars=(
+                    _player(
+                        current_lap=15,
+                        position=2,
+                        actual_tyre_compound="soft",
+                        tyre_age_laps=10,
+                    ),
+                    *_rivals(gap_s=5.0),
+                ),
+                inventory=(_hard_set(),),
+            ),
+        ),
+        config,
+    ).inputs_hash
     configured = evaluate_once(
         inputs,
         StrategyConfig(min_gain_s=StrategyConfig().min_gain_s + 1.0),
     ).inputs_hash
 
-    assert later != baseline
+    assert later == baseline
+    assert aged != baseline
     assert configured != baseline
+
+
+def test_inputs_hash_ignores_the_monotonic_clocks_of_the_captured_data() -> None:
+    """Mover solo los relojes locales no cambia la huella (incidencia S10-H1)."""
+    car = _player(current_lap=15, position=2, actual_tyre_compound="soft", tyre_age_laps=9)
+    freshness = PacketFreshness(
+        "lap_data",
+        updated_at_monotonic=10.0,
+        stale_after_seconds=5.0,
+    )
+    state = _state(
+        lap=15,
+        cars=(car, *_rivals(gap_s=5.0)),
+        inventory=(_hard_set(),),
+        freshness=(freshness,),
+    )
+    records = _stint(
+        compound="hard", first_lap=1, ages=range(0, 5), base_lap_s=90.0, slope_s_per_lap=0.02
+    ) + _stint(
+        compound="soft", first_lap=6, ages=range(0, 10), base_lap_s=90.0, slope_s_per_lap=0.5
+    )
+    inputs = _inputs(state=state, records=records)
+    config = _stop_config()
+
+    shifted_records = tuple(
+        replace(record, started_at_monotonic=500.0, ended_at_monotonic=590.0) for record in records
+    )
+    shifted = replace(
+        inputs,
+        state=replace(
+            state,
+            # El reloj se mueve sin cambiar la clasificación: con ``now=100``
+            # ambos valores dejan el grupo obsoleto (edad 80 y 90 s > 5 s).
+            freshness=(replace(freshness, updated_at_monotonic=20.0),),
+            tyre_inventory_updated_at_monotonic=99.0,
+        ),
+        history=replace(inputs.history, records={0: shifted_records}),
+    )
+
+    assert evaluate_once(shifted, config).inputs_hash == evaluate_once(inputs, config).inputs_hash
+
+
+def test_inputs_hash_distinguishes_stale_groups_from_fresh_ones() -> None:
+    """La huella registra qué grupos están obsoletos, nunca sus relojes."""
+    car = _player(current_lap=15, position=2, actual_tyre_compound="soft", tyre_age_laps=9)
+    fresh = PacketFreshness("lap_data", updated_at_monotonic=99.0, stale_after_seconds=5.0)
+    stale = replace(fresh, updated_at_monotonic=0.0)
+    records = _stint(
+        compound="hard", first_lap=1, ages=range(0, 5), base_lap_s=90.0, slope_s_per_lap=0.02
+    ) + _stint(
+        compound="soft", first_lap=6, ages=range(0, 10), base_lap_s=90.0, slope_s_per_lap=0.5
+    )
+    config = _stop_config()
+
+    def _hash(freshness: PacketFreshness) -> str:
+        state = _state(
+            lap=15,
+            cars=(car, *_rivals(gap_s=5.0)),
+            inventory=(_hard_set(),),
+            freshness=(freshness,),
+        )
+        return evaluate_once(_inputs(state=state, records=records), config).inputs_hash
+
+    assert _hash(fresh) != _hash(stale)
+
+
+def test_inputs_hash_distinguishes_red_flag_state_from_lap_order() -> None:
+    """La huella registra la bandera roja derivada, no los relojes.
+
+    Las dos entradas solo cambian en si la última vuelta limpia terminó antes o
+    después del evento. Sin el marcador derivado, al excluir los relojes ambas
+    tendrían la misma huella aunque el estado de bandera roja fuese distinto.
+    """
+    car = _player(current_lap=15, position=2, actual_tyre_compound="soft", tyre_age_laps=9)
+    state = _state(
+        lap=15,
+        cars=(car, *_rivals(gap_s=5.0)),
+        inventory=(_hard_set(),),
+        freshness=(
+            PacketFreshness("lap_data", updated_at_monotonic=99.0, stale_after_seconds=5.0),
+        ),
+    )
+    state = replace(state, events=(RaceEvent("red_flag", 105.0, session_uid=123),))
+    records = _stint(
+        compound="hard", first_lap=1, ages=range(0, 5), base_lap_s=90.0, slope_s_per_lap=0.02
+    )
+    clean_lap = records[-1]
+    before = _inputs(
+        state=state,
+        records=(*records[:-1], replace(clean_lap, ended_at_monotonic=104.0)),
+    )
+    after = _inputs(
+        state=state,
+        records=(*records[:-1], replace(clean_lap, ended_at_monotonic=106.0)),
+    )
+    config = _stop_config()
+
+    assert evaluate_once(before, config).inputs_hash != evaluate_once(after, config).inputs_hash
+
+
+def test_fresh_inputs_keep_the_h1_fingerprint() -> None:
+    """Sin grupos obsoletos la huella es exactamente la de H1.
+
+    La clasificación de obsolescencia solo se añade al payload cuando existe,
+    para no invalidar comparaciones con evaluaciones anteriores.
+    """
+    car = _player(current_lap=15, position=2, actual_tyre_compound="soft", tyre_age_laps=9)
+    freshness = PacketFreshness("lap_data", updated_at_monotonic=99.0, stale_after_seconds=5.0)
+    state = _state(
+        lap=15,
+        cars=(car, *_rivals(gap_s=5.0)),
+        inventory=(_hard_set(),),
+        freshness=(freshness,),
+    )
+    records = _stint(
+        compound="hard", first_lap=1, ages=range(0, 5), base_lap_s=90.0, slope_s_per_lap=0.02
+    ) + _stint(
+        compound="soft", first_lap=6, ages=range(0, 10), base_lap_s=90.0, slope_s_per_lap=0.5
+    )
+    inputs = _inputs(state=state, records=records)
+    config = _stop_config()
+    h1_payload = {
+        "state": inputs.state,
+        "history": inputs.history,
+        "profile": inputs.profile,
+        "car_index": inputs.car_index,
+        "metrics_config": inputs.config.model_dump(mode="json"),
+        "strategy_config": config.model_dump(mode="json"),
+    }
+
+    assert evaluate_once(inputs, config).inputs_hash == compute_inputs_hash(h1_payload)
+
+
+def test_clock_compression_can_change_staleness_and_the_fingerprint() -> None:
+    """Comprimir el reloj cambia la frescura y, con ella, la huella.
+
+    Los umbrales de obsolescencia están en segundos absolutos, así que
+    ``clock_scale`` no garantiza invariancia: con una actualización en 0 s y un
+    umbral de 5 s, la evaluación a 8 s ve el grupo obsoleto y la comprimida a
+    2 s lo ve fresco.
+    """
+    car = _player(current_lap=15, position=2, actual_tyre_compound="soft", tyre_age_laps=9)
+    freshness = PacketFreshness("lap_data", updated_at_monotonic=0.0, stale_after_seconds=5.0)
+    state = _state(
+        lap=15,
+        cars=(car, *_rivals(gap_s=5.0)),
+        inventory=(_hard_set(),),
+        freshness=(freshness,),
+    )
+    records = _stint(
+        compound="hard", first_lap=1, ages=range(0, 5), base_lap_s=90.0, slope_s_per_lap=0.02
+    ) + _stint(
+        compound="soft", first_lap=6, ages=range(0, 10), base_lap_s=90.0, slope_s_per_lap=0.5
+    )
+    config = _stop_config()
+    realtime = _inputs(state=state, records=records, now=8.0)
+    compressed = replace(realtime, now=2.0)
+
+    assert (
+        evaluate_once(realtime, config).inputs_hash != evaluate_once(compressed, config).inputs_hash
+    )

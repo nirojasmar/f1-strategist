@@ -96,11 +96,11 @@ def run_metrics_capture(
     path: Path,
     config: MetricsConfig | None = None,
     *,
-    speed: float | None = None,
+    clock_scale: float | None = None,
 ) -> MetricsCaptureResult:
     """Reproduce una captura offline y devuelve sus métricas e histórico finales."""
     collector = _MetricsCollector(MetricsEngine(config))
-    offline = run_capture_offline(path, [collector], speed=speed)
+    offline = run_capture_offline(path, [collector], clock_scale=clock_scale)
     if collector.last_state is not None and collector.last_observed_at is not None:
         collector.engine.finalize(collector.last_state, collector.last_observed_at)
     return MetricsCaptureResult(

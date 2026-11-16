@@ -52,19 +52,22 @@ def run_capture_offline(
     path: Path,
     consumers: Iterable[PacketConsumer],
     *,
-    speed: float | None = None,
+    clock_scale: float | None = None,
     stop_when: Callable[[], bool] | None = None,
 ) -> OfflineResult:
     """Procesa una captura sin red, hilos ni esperas.
 
-    `speed` escala el reloj simulado como en `replay`: 2.0 acelera el tiempo
-    a la mitad y 0.0 asigna el mismo instante a todos los paquetes.
+    ``clock_scale`` escala el reloj simulado: 2.0 comprime el tiempo a la mitad.
+    No usar en comprobaciones de determinismo: ``play`` y ``replay`` aceptan
+    ``--speed``, que solo escala las esperas y conserva el tiempo de la captura.
+    El valor por defecto (``None``) usa el tiempo transcurrido de la captura.
+    Cero se rechaza porque colapsa el reloj y cambia los datos registrados.
     Las excepciones inesperadas de consumidores y parser se propagan; solo
     `PacketParseError` se cuenta como rechazo, para no ocultar fallos offline.
     """
-    playback_speed = 1.0 if speed is None else speed
-    if not math.isfinite(playback_speed) or playback_speed < 0:
-        raise ValueError("speed debe ser un número finito no negativo")
+    scale = 1.0 if clock_scale is None else clock_scale
+    if not math.isfinite(scale) or scale <= 0:
+        raise ValueError("clock_scale debe ser un número finito mayor que cero")
 
     reader = CaptureReader(path)
     packet_consumers = tuple(consumers)
@@ -81,8 +84,7 @@ def run_capture_offline(
             first_recv_time_ns = captured.recv_time_ns
 
         elapsed = (captured.recv_time_ns - first_recv_time_ns) / 1_000_000_000
-        observed_at = 0.0 if playback_speed == 0 else elapsed / playback_speed
-        observed_at = max(last_observed_at, observed_at)
+        observed_at = max(last_observed_at, elapsed / scale)
         last_observed_at = observed_at
 
         header = parse_header(captured.payload)
