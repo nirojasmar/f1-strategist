@@ -13,6 +13,15 @@ from .rules_resources import (
     TyreLifeNearLimitRule,
 )
 from .rules_strategy import PitWindowOpenRule, StrategyPitRecommendedRule
+from .rules_track import (
+    DataStaleRule,
+    RainExpectedRule,
+    RedFlagRule,
+    SafetyCarClearedRule,
+    SafetyCarDeployedRule,
+    VirtualSafetyCarDeployedRule,
+    WeatherChangedRule,
+)
 from .types import EventRule
 
 EVENT_RULES: tuple[EventRule, ...] = (
@@ -22,4 +31,11 @@ EVENT_RULES: tuple[EventRule, ...] = (
     FuelMarginCriticalRule(),
     TyreLifeNearLimitRule(),
     TyreDegradationAbnormalRule(),
+    SafetyCarDeployedRule(),
+    VirtualSafetyCarDeployedRule(),
+    SafetyCarClearedRule(),
+    RedFlagRule(),
+    WeatherChangedRule(),
+    RainExpectedRule(),
+    DataStaleRule(),
 )
