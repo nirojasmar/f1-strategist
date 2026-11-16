@@ -74,7 +74,7 @@ docs/                requisitos, outline, roadmap, planes de fase, revisiones
 
 ## Flujo de trabajo con git
 
-- Una tarea, un commit: `<id>-<slug>` (ej. `f5-e1-types`).
+- Una tarea, un commit: `<id>---<slug>` (ej. `E1 --- Tipos, configuración y esqueleto`).
 - Toca solo los archivos que la tarea posee. Excepción: una línea en `registry.py` o en `config.example.toml`.
 - No cambies APIs públicas existentes sin acordarlo; si es necesario, detente y pregunta.
 - Commits pequeños y descriptivos. No hagas merge ni force-push a `main`.

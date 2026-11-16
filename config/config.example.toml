@@ -88,3 +88,78 @@ require_two_dry_compounds = true
 # [strategy.tracks.monza]
 # min_gain_s = 1.5
 # pit_loss_override_s = 20.5
+
+[events]
+# Detector de eventos (Fase 5). Todos los valores son provisionales.
+enabled = true
+
+[events.strategy]
+# Confianza mínima para anunciar una recomendación de parada.
+min_confidence = 0.5
+# Cambio de ganancia que justifica actualizar el aviso.
+update_delta_s = 2.0
+
+[events.pit_window]
+# Vueltas de antelación del aviso de ventana de parada.
+lead_laps = 1
+
+[events.fuel]
+# Margen de combustible, en vueltas, para avisar y para el aviso crítico.
+warn_laps = 0.5
+critical_laps = 0.0
+# Histéresis para no repetir el aviso al oscilar alrededor del umbral.
+hysteresis_laps = 0.3
+
+[events.tyres]
+# Vueltas útiles restantes para avisar del final de vida del neumático.
+warn_laps = 3.0
+# Desgaste observado frente al esperado y su histéresis.
+degradation_ratio = 0.25
+hysteresis = 0.10
+# Tanda mínima para juzgar la degradación.
+min_stint_laps = 4
+
+[events.weather]
+# Probabilidad de lluvia a 10 minutos para abrir y cerrar el aviso.
+rain_enter_pct = 50.0
+rain_exit_pct = 30.0
+
+[events.data]
+# Segundos de datos obsoletos antes de avisar.
+stale_persistence_s = 3.0
+
+[events.damage]
+# Daño de ala, suelo o caja que se anuncia y cambio que fuerza actualización.
+warn_pct = 15.0
+update_delta_pct = 10.0
+
+[events.rivals]
+# Distancia para considerar adyacente a un rival.
+gap_s = 2.0
+
+[gate]
+# Compuerta de avisos (Fase 5). Todos los valores son provisionales.
+enabled = true
+# Separación mínima entre avisos no críticos.
+global_min_gap_s = 8.0
+# Ventana de supresión de avisos equivalentes.
+equivalence_window_s = 90.0
+# Intervalo mínimo entre actualizaciones de un mismo aviso.
+update_min_interval_s = 30.0
+# Cuánto se mantiene un aviso diferido antes de descartarlo.
+defer_max_s = 20.0
+# Vueltas iniciales sin avisos informativos.
+quiet_first_laps = 1
+# Hueco tras un aviso estratégico o crítico.
+informational_space_s = 30.0
+# Silencio tras una interacción del piloto.
+pilot_quiet_s = 15.0
+# Nivel de interrupción: "all", "strategic" o "critical".
+interruption_level = "all"
+# Silencia al agente sin detener la captura.
+muted = false
+
+[gate.cooldown_s]
+# Cooldown por prioridad, en segundos.
+strategic = 45.0
+informational = 120.0

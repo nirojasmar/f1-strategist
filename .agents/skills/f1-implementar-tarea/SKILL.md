@@ -5,7 +5,7 @@ description: Implementa UNA tarea de un plan de fase del proyecto f1-strategist 
 
 # Implementar una tarea del plan
 
-Una conversación = una tarea = una rama = un PR. Sé económico: lee solo lo necesario.
+Una conversación = una tarea. Sé económico: lee solo lo necesario.
 
 ## 1. Preparación (mínima)
 
@@ -23,7 +23,6 @@ Una conversación = una tarea = una rama = un PR. Sé económico: lee solo lo ne
 
 ## 2. Implementación
 
-- Rama: `f<fase>-<id en minúscula>-<slug>` (ej. `f5-e1-types`).
 - Toca solo los archivos que la tarea posee. Excepciones permitidas: una línea en `registry.py` o `config.example.toml` si la tarea lo indica.
 - No cambies APIs públicas existentes salvo que la tarea lo autorice explícitamente.
 - Respeta **Fuera de alcance** al pie de la letra: nada de lógica extra "ya que estoy".

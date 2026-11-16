@@ -16,6 +16,7 @@ from pathlib import Path
 
 from .capture import CaptureReader
 from .config import MetricsConfig, StrategyConfig
+from .events.types import EventsSnapshot
 from .metrics.engine import MetricsEngine, MetricsSnapshot
 from .metrics.history import LapHistorySnapshot
 from .packets import parse_header
@@ -219,6 +220,10 @@ class PlaybackSession:
     def strategy_snapshot(self) -> StrategySnapshot:
         """Última evaluación publicada por el motor de estrategia."""
         return self._strategy_engine.snapshot()
+
+    def events_snapshot(self) -> EventsSnapshot:
+        """Eventos detectados; vacío hasta que se integre el motor (E8)."""
+        return EventsSnapshot()
 
     # ------------------------------------------------------------------
     # Hilo de reproducción

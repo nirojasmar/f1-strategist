@@ -5,7 +5,7 @@ from __future__ import annotations
 import ipaddress
 import tomllib
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import (
     BaseModel,
@@ -231,6 +231,117 @@ class StrategyConfig(BaseModel):
         return self.model_copy(update=changes)
 
 
+class StrategyEventsConfig(BaseModel):
+    """Parámetros de los avisos de estrategia (provisionales)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    min_confidence: float = Field(default=0.5, ge=0, le=1, allow_inf_nan=False)
+    update_delta_s: float = Field(default=2.0, ge=0, allow_inf_nan=False)
+
+
+class PitWindowEventsConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    lead_laps: int = Field(default=1, ge=0)
+
+
+class FuelEventsConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    warn_laps: float = Field(default=0.5, ge=0, allow_inf_nan=False)
+    critical_laps: float = Field(default=0.0, ge=0, allow_inf_nan=False)
+    hysteresis_laps: float = Field(default=0.3, ge=0, allow_inf_nan=False)
+
+    @model_validator(mode="after")
+    def _validate_order(self) -> FuelEventsConfig:
+        if self.critical_laps > self.warn_laps:
+            raise ValueError("critical_laps no puede ser mayor que warn_laps")
+        return self
+
+
+class TyreEventsConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    warn_laps: float = Field(default=3.0, ge=0, allow_inf_nan=False)
+    degradation_ratio: float = Field(default=0.25, ge=0, allow_inf_nan=False)
+    hysteresis: float = Field(default=0.10, ge=0, allow_inf_nan=False)
+    min_stint_laps: int = Field(default=4, ge=1)
+
+
+class WeatherEventsConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    rain_enter_pct: float = Field(default=50.0, ge=0, le=100, allow_inf_nan=False)
+    rain_exit_pct: float = Field(default=30.0, ge=0, le=100, allow_inf_nan=False)
+
+    @model_validator(mode="after")
+    def _validate_order(self) -> WeatherEventsConfig:
+        if self.rain_exit_pct > self.rain_enter_pct:
+            raise ValueError("rain_exit_pct no puede ser mayor que rain_enter_pct")
+        return self
+
+
+class DataEventsConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    stale_persistence_s: float = Field(default=3.0, gt=0, allow_inf_nan=False)
+
+
+class DamageEventsConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    warn_pct: float = Field(default=15.0, ge=0, le=100, allow_inf_nan=False)
+    update_delta_pct: float = Field(default=10.0, ge=0, le=100, allow_inf_nan=False)
+
+
+class RivalsEventsConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    gap_s: float = Field(default=2.0, ge=0, allow_inf_nan=False)
+
+
+class EventsConfig(BaseModel):
+    """Detección de eventos (Fase 5); todos los valores son provisionales."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    strategy: StrategyEventsConfig = Field(default_factory=StrategyEventsConfig)
+    pit_window: PitWindowEventsConfig = Field(default_factory=PitWindowEventsConfig)
+    fuel: FuelEventsConfig = Field(default_factory=FuelEventsConfig)
+    tyres: TyreEventsConfig = Field(default_factory=TyreEventsConfig)
+    weather: WeatherEventsConfig = Field(default_factory=WeatherEventsConfig)
+    data: DataEventsConfig = Field(default_factory=DataEventsConfig)
+    damage: DamageEventsConfig = Field(default_factory=DamageEventsConfig)
+    rivals: RivalsEventsConfig = Field(default_factory=RivalsEventsConfig)
+
+
+class GateCooldownConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    strategic: float = Field(default=45.0, ge=0, allow_inf_nan=False)
+    informational: float = Field(default=120.0, ge=0, allow_inf_nan=False)
+
+
+class GateConfig(BaseModel):
+    """Compuerta de avisos (Fase 5); todos los valores son provisionales."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    global_min_gap_s: float = Field(default=8.0, ge=0, allow_inf_nan=False)
+    cooldown_s: GateCooldownConfig = Field(default_factory=GateCooldownConfig)
+    equivalence_window_s: float = Field(default=90.0, ge=0, allow_inf_nan=False)
+    update_min_interval_s: float = Field(default=30.0, ge=0, allow_inf_nan=False)
+    defer_max_s: float = Field(default=20.0, ge=0, allow_inf_nan=False)
+    quiet_first_laps: int = Field(default=1, ge=0)
+    informational_space_s: float = Field(default=30.0, ge=0, allow_inf_nan=False)
+    pilot_quiet_s: float = Field(default=15.0, ge=0, allow_inf_nan=False)
+    interruption_level: Literal["all", "strategic", "critical"] = "all"
+    muted: bool = False
+
+
 class AppConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -239,6 +350,8 @@ class AppConfig(BaseModel):
     metrics: MetricsConfig = Field(default_factory=MetricsConfig)
     recording: RecordingConfig = Field(default_factory=RecordingConfig)
     strategy: StrategyConfig = Field(default_factory=StrategyConfig)
+    events: EventsConfig = Field(default_factory=EventsConfig)
+    gate: GateConfig = Field(default_factory=GateConfig)
 
 
 def load_config(path: Path | None) -> AppConfig:

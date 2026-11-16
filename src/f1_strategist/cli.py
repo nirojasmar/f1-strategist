@@ -418,6 +418,8 @@ def _build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="base de datos SQLite (por defecto, la de la configuración)",
     )
+
+    sub.add_parser("events", help="consulta eventos y alertas del agente")
     return parser
 
 
@@ -1602,6 +1604,12 @@ def _cmd_strategy(args: argparse.Namespace, console: Console, err: Console) -> i
         return 0
 
 
+def _cmd_events(args: argparse.Namespace, console: Console, err: Console) -> int:
+    """Punto de entrada del grupo; E10 añade los subcomandos y el panel."""
+    console.print("Los avisos del agente estarán disponibles en una tarea posterior.")
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     console = Console()
@@ -1620,6 +1628,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "weekends": _cmd_weekends,
         "weekend": _cmd_weekend,
         "strategy": _cmd_strategy,
+        "events": _cmd_events,
     }
     try:
         return handlers[args.command](args, console, err)

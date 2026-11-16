@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Protocol
 
+from .events.types import EventsSnapshot
 from .metrics.engine import MetricsSnapshot
 from .race_state import RaceStateSnapshot
 from .receiver import StatsSnapshot
@@ -28,3 +29,5 @@ class SessionPort(Protocol):
     def metrics_snapshot(self) -> MetricsSnapshot: ...
 
     def strategy_snapshot(self) -> StrategySnapshot: ...
+
+    def events_snapshot(self) -> EventsSnapshot: ...
