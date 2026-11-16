@@ -6,6 +6,10 @@ está vacío para que la integración pueda construirse antes que las reglas.
 
 from __future__ import annotations
 
+from .rules_strategy import PitWindowOpenRule, StrategyPitRecommendedRule
 from .types import EventRule
 
-EVENT_RULES: tuple[EventRule, ...] = ()
+EVENT_RULES: tuple[EventRule, ...] = (
+    StrategyPitRecommendedRule(),
+    PitWindowOpenRule(),
+)
