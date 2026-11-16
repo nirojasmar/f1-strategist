@@ -398,10 +398,13 @@ posterior:
 - **S10-H1, huella entre velocidades de reproducción.** Corregida en la fase 5
   (tareas H1 y H2): `inputs_hash` excluye los relojes monotónicos y el instante
   de evaluación, e incluye la clasificación de obsolescencia de los grupos de
-  paquetes. Dos entradas idénticas salvo por un grupo obsoleto ya no comparten
-  huella, y la misma captura reproducida con distinta escala de reloj produce
-  la misma huella. El runner offline expone `clock_scale` (rechaza cero) y
-  `play`/`replay` conservan el tiempo de la captura.
+  paquetes cuando hay alguno obsoleto. Dos entradas idénticas salvo por un grupo
+  obsoleto ya no comparten huella, y con todo fresco la huella coincide con la
+  de H1. `play` y `replay` conservan el tiempo de la captura a cualquier
+  velocidad, así que la huella no depende de las esperas. El runner offline
+  expone `clock_scale` (rechaza cero): comprime el reloj completo, pero los
+  umbrales de obsolescencia están en segundos absolutos, de modo que comprimirlo
+  puede cambiar la frescura y la huella.
 
 ## 13. Resumen de fórmulas
 

@@ -171,8 +171,14 @@ def test_repeated_replays_are_deterministic() -> None:
     ]
 
 
-def test_clock_scale_does_not_change_the_recommendation() -> None:
-    """La escala del reloj simulado solo cambia los instantes observados."""
+def test_clock_scale_does_not_change_the_recommendation_on_this_capture() -> None:
+    """Observación sobre la captura: comprimir el reloj no cambió la acción.
+
+    No es una garantía general: los umbrales de obsolescencia están en segundos
+    absolutos y comprimir el reloj puede cambiar la frescura (y la huella). La
+    invariancia del reloj de referencia se comprueba con ``play`` en
+    ``tests/test_playback.py``.
+    """
     scenario = _smallest_race_scenario()
     baseline = _replay(scenario)
     faster = _replay(scenario, 4.0)
@@ -184,26 +190,7 @@ def test_clock_scale_does_not_change_the_recommendation() -> None:
     for index, (lap, evaluation) in enumerate(baseline):
         for other in (faster[index][1], realtime[index][1]):
             assert _signature(other) == _signature(evaluation), (
-                f"vuelta {lap}: la recomendación cambia con la velocidad de reproducción"
-            )
-
-
-def test_inputs_hash_is_identical_across_clock_scales() -> None:
-    """La huella de entradas no depende del reloj (incidencias S10-H1 y H2).
-
-    ``clock_scale`` comprime el reloj completo, de modo que frescura y marcas
-    de vuelta escalan juntas y la clasificación de obsolescencia no cambia.
-    """
-    scenario = _smallest_race_scenario()
-    baseline = _replay(scenario, None)
-    realtime = _replay(scenario, 1.0)
-    faster = _replay(scenario, 4.0)
-
-    assert len(baseline) == len(realtime) == len(faster)
-    for index, (lap, evaluation) in enumerate(baseline):
-        for other in (realtime[index][1], faster[index][1]):
-            assert other.inputs_hash == evaluation.inputs_hash, (
-                f"vuelta {lap}: la huella cambia con la velocidad de reproducción"
+                f"vuelta {lap}: la recomendación cambia con la escala del reloj"
             )
 
 

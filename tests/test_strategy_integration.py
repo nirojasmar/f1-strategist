@@ -36,7 +36,7 @@ from f1_strategist.strategy import (
     StrategyAction,
     evaluate_once,
 )
-from f1_strategist.strategy.types import BASELINE_STAY_OUT
+from f1_strategist.strategy.types import BASELINE_STAY_OUT, compute_inputs_hash
 
 TRACK_LENGTH_M = 5_000.0
 CAR_INDEX = 0
@@ -568,3 +568,66 @@ def test_inputs_hash_distinguishes_stale_groups_from_fresh_ones() -> None:
         return evaluate_once(_inputs(state=state, records=records), config).inputs_hash
 
     assert _hash(fresh) != _hash(stale)
+
+
+def test_fresh_inputs_keep_the_h1_fingerprint() -> None:
+    """Sin grupos obsoletos la huella es exactamente la de H1.
+
+    La clasificación de obsolescencia solo se añade al payload cuando existe,
+    para no invalidar comparaciones con evaluaciones anteriores.
+    """
+    car = _player(current_lap=15, position=2, actual_tyre_compound="soft", tyre_age_laps=9)
+    freshness = PacketFreshness("lap_data", updated_at_monotonic=99.0, stale_after_seconds=5.0)
+    state = _state(
+        lap=15,
+        cars=(car, *_rivals(gap_s=5.0)),
+        inventory=(_hard_set(),),
+        freshness=(freshness,),
+    )
+    records = _stint(
+        compound="hard", first_lap=1, ages=range(0, 5), base_lap_s=90.0, slope_s_per_lap=0.02
+    ) + _stint(
+        compound="soft", first_lap=6, ages=range(0, 10), base_lap_s=90.0, slope_s_per_lap=0.5
+    )
+    inputs = _inputs(state=state, records=records)
+    config = _stop_config()
+    h1_payload = {
+        "state": inputs.state,
+        "history": inputs.history,
+        "profile": inputs.profile,
+        "car_index": inputs.car_index,
+        "metrics_config": inputs.config.model_dump(mode="json"),
+        "strategy_config": config.model_dump(mode="json"),
+    }
+
+    assert evaluate_once(inputs, config).inputs_hash == compute_inputs_hash(h1_payload)
+
+
+def test_clock_compression_can_change_staleness_and_the_fingerprint() -> None:
+    """Comprimir el reloj cambia la frescura y, con ella, la huella.
+
+    Los umbrales de obsolescencia están en segundos absolutos, así que
+    ``clock_scale`` no garantiza invariancia: con una actualización en 0 s y un
+    umbral de 5 s, la evaluación a 8 s ve el grupo obsoleto y la comprimida a
+    2 s lo ve fresco.
+    """
+    car = _player(current_lap=15, position=2, actual_tyre_compound="soft", tyre_age_laps=9)
+    freshness = PacketFreshness("lap_data", updated_at_monotonic=0.0, stale_after_seconds=5.0)
+    state = _state(
+        lap=15,
+        cars=(car, *_rivals(gap_s=5.0)),
+        inventory=(_hard_set(),),
+        freshness=(freshness,),
+    )
+    records = _stint(
+        compound="hard", first_lap=1, ages=range(0, 5), base_lap_s=90.0, slope_s_per_lap=0.02
+    ) + _stint(
+        compound="soft", first_lap=6, ages=range(0, 10), base_lap_s=90.0, slope_s_per_lap=0.5
+    )
+    config = _stop_config()
+    realtime = _inputs(state=state, records=records, now=8.0)
+    compressed = replace(realtime, now=2.0)
+
+    assert (
+        evaluate_once(realtime, config).inputs_hash != evaluate_once(compressed, config).inputs_hash
+    )

@@ -162,6 +162,31 @@ def _stale_groups(state: RaceStateSnapshot, now: float) -> tuple[str, ...]:
     )
 
 
+def _inputs_hash(inputs: MetricInputs, cfg: StrategyConfig) -> str:
+    """Huella de las entradas, con la obsolescencia solo si existe.
+
+    Con todos los grupos frescos el valor coincide exactamente con la huella de
+    H1, para no invalidar comparaciones con evaluaciones anteriores. Cuando hay
+    obsolescencia se añade la clasificación (nunca los relojes), de modo que dos
+    entradas idénticas salvo por la frescura no comparten huella.
+    """
+    payload: dict[str, object] = {
+        "state": inputs.state,
+        "history": inputs.history,
+        "profile": inputs.profile,
+        "car_index": inputs.car_index,
+        # ``now`` no forma parte de la identidad: la frescura se juzga en tiempo
+        # de ejecución y su reloj cambia con la velocidad de reproducción
+        # (incidencia S10-H1).
+        "metrics_config": inputs.config.model_dump(mode="json"),
+        "strategy_config": cfg.model_dump(mode="json"),
+    }
+    stale_groups = _stale_groups(inputs.state, inputs.now)
+    if stale_groups:
+        payload["stale_groups"] = stale_groups
+    return compute_inputs_hash(payload)
+
+
 def _pace_model(models: CompoundModels, mounted: str | None) -> CompoundModel | None:
     """Modelo del compuesto montado; si no hay, el de referencia."""
     if mounted is not None:
@@ -435,21 +460,7 @@ def evaluate_once(
                 Quality.OK,
             ),
         ),
-        inputs_hash=compute_inputs_hash(
-            {
-                "state": inputs.state,
-                "history": inputs.history,
-                "profile": inputs.profile,
-                "car_index": inputs.car_index,
-                # ``now`` no forma parte de la identidad: la frescura se juzga
-                # en tiempo de ejecución y su reloj cambia con la velocidad de
-                # reproducción (incidencia S10-H1). Sí se registra qué grupos
-                # están obsoletos en ese instante (regla 9 de la fase 5).
-                "stale_groups": _stale_groups(inputs.state, inputs.now),
-                "metrics_config": inputs.config.model_dump(mode="json"),
-                "strategy_config": cfg.model_dump(mode="json"),
-            }
-        ),
+        inputs_hash=_inputs_hash(inputs, cfg),
         profile_hash=inputs.profile.hash if inputs.profile is not None else None,
         schema_version=STRATEGY_SCHEMA_VERSION,
         forecast_car_index=inputs.car_index if projected_lap_times is not None else None,
