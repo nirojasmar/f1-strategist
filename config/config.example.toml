@@ -108,12 +108,17 @@ lead_laps = 1
 warn_laps = 0.5
 critical_laps = 0.0
 # Histéresis para no repetir el aviso al oscilar alrededor del umbral.
+# Debe ser mayor que cero para que el cierre quede al otro lado del umbral.
 hysteresis_laps = 0.3
+# Cambio de margen que justifica actualizar el aviso (sin valor universal;
+# omítelo para no actualizar por variación del margen).
+# update_delta_laps = 0.1
 
 [events.tyres]
 # Vueltas útiles restantes para avisar del final de vida del neumático.
 warn_laps = 3.0
 # Desgaste observado frente al esperado y su histéresis.
+# La histéresis debe ser mayor que cero para que el cierre quede por debajo.
 degradation_ratio = 0.25
 hysteresis = 0.10
 # Tanda mínima para juzgar la degradación.
@@ -121,8 +126,12 @@ min_stint_laps = 4
 
 [events.weather]
 # Probabilidad de lluvia a 10 minutos para abrir y cerrar el aviso.
+# El umbral de salida debe ser estrictamente menor que el de entrada.
 rain_enter_pct = 50.0
 rain_exit_pct = 30.0
+# Cambio de probabilidad que justifica actualizar el aviso (sin valor universal;
+# omítelo para no actualizar por variación de la probabilidad).
+# update_delta_pct = 10.0
 
 [events.data]
 # Segundos de datos obsoletos antes de avisar.

@@ -234,24 +234,26 @@ class StrategyConfig(BaseModel):
 class StrategyEventsConfig(BaseModel):
     """Parámetros de los avisos de estrategia (provisionales)."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
     min_confidence: float = Field(default=0.5, ge=0, le=1, allow_inf_nan=False)
     update_delta_s: float = Field(default=2.0, ge=0, allow_inf_nan=False)
 
 
 class PitWindowEventsConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
     lead_laps: int = Field(default=1, ge=0)
 
 
 class FuelEventsConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
     warn_laps: float = Field(default=0.5, ge=0, allow_inf_nan=False)
     critical_laps: float = Field(default=0.0, ge=0, allow_inf_nan=False)
-    hysteresis_laps: float = Field(default=0.3, ge=0, allow_inf_nan=False)
+    hysteresis_laps: float = Field(default=0.3, gt=0, allow_inf_nan=False)
+    # Sin valor universal: si se omite, el margen no fuerza actualizaciones.
+    update_delta_laps: float | None = Field(default=None, ge=0, allow_inf_nan=False)
 
     @model_validator(mode="after")
     def _validate_order(self) -> FuelEventsConfig:
@@ -261,42 +263,44 @@ class FuelEventsConfig(BaseModel):
 
 
 class TyreEventsConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
     warn_laps: float = Field(default=3.0, ge=0, allow_inf_nan=False)
     degradation_ratio: float = Field(default=0.25, ge=0, allow_inf_nan=False)
-    hysteresis: float = Field(default=0.10, ge=0, allow_inf_nan=False)
+    hysteresis: float = Field(default=0.10, gt=0, allow_inf_nan=False)
     min_stint_laps: int = Field(default=4, ge=1)
 
 
 class WeatherEventsConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
     rain_enter_pct: float = Field(default=50.0, ge=0, le=100, allow_inf_nan=False)
     rain_exit_pct: float = Field(default=30.0, ge=0, le=100, allow_inf_nan=False)
+    # Sin valor universal: si se omite, la probabilidad no fuerza actualizaciones.
+    update_delta_pct: float | None = Field(default=None, ge=0, le=100, allow_inf_nan=False)
 
     @model_validator(mode="after")
     def _validate_order(self) -> WeatherEventsConfig:
-        if self.rain_exit_pct > self.rain_enter_pct:
-            raise ValueError("rain_exit_pct no puede ser mayor que rain_enter_pct")
+        if self.rain_exit_pct >= self.rain_enter_pct:
+            raise ValueError("rain_exit_pct debe ser menor que rain_enter_pct")
         return self
 
 
 class DataEventsConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
     stale_persistence_s: float = Field(default=3.0, gt=0, allow_inf_nan=False)
 
 
 class DamageEventsConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
     warn_pct: float = Field(default=15.0, ge=0, le=100, allow_inf_nan=False)
     update_delta_pct: float = Field(default=10.0, ge=0, le=100, allow_inf_nan=False)
 
 
 class RivalsEventsConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
     gap_s: float = Field(default=2.0, ge=0, allow_inf_nan=False)
 
@@ -304,7 +308,7 @@ class RivalsEventsConfig(BaseModel):
 class EventsConfig(BaseModel):
     """Detección de eventos (Fase 5); todos los valores son provisionales."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
     enabled: bool = True
     strategy: StrategyEventsConfig = Field(default_factory=StrategyEventsConfig)
@@ -318,7 +322,7 @@ class EventsConfig(BaseModel):
 
 
 class GateCooldownConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
     strategic: float = Field(default=45.0, ge=0, allow_inf_nan=False)
     informational: float = Field(default=120.0, ge=0, allow_inf_nan=False)
@@ -327,7 +331,7 @@ class GateCooldownConfig(BaseModel):
 class GateConfig(BaseModel):
     """Compuerta de avisos (Fase 5); todos los valores son provisionales."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
     enabled: bool = True
     global_min_gap_s: float = Field(default=8.0, ge=0, allow_inf_nan=False)

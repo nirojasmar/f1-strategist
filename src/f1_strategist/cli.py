@@ -1606,7 +1606,6 @@ def _cmd_strategy(args: argparse.Namespace, console: Console, err: Console) -> i
 
 def _cmd_events(args: argparse.Namespace, console: Console, err: Console) -> int:
     """Punto de entrada del grupo; E10 añade los subcomandos y el panel."""
-    console.print("Los avisos del agente estarán disponibles en una tarea posterior.")
     return 0
 
 

@@ -7,6 +7,7 @@ from dataclasses import FrozenInstanceError
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from f1_strategist.cli import main
 from f1_strategist.config import (
@@ -21,6 +22,7 @@ from f1_strategist.events.types import (
     EVENTS_SCHEMA_VERSION,
     AgentAlert,
     ConditionPolicy,
+    EventInputs,
     EventPhase,
     EventPriority,
     EventSignal,
@@ -28,8 +30,11 @@ from f1_strategist.events.types import (
     GateDecision,
     GateOutcome,
 )
+from f1_strategist.metrics.engine import MetricsSnapshot
 from f1_strategist.playback import PlaybackSession
+from f1_strategist.race_state import RaceSessionSnapshot, RaceStateSnapshot
 from f1_strategist.session import CaptureSession
+from f1_strategist.strategy.types import StrategySnapshot
 
 
 def _signal(**changes: object) -> EventSignal:
@@ -47,7 +52,7 @@ def _signal(**changes: object) -> EventSignal:
         ),
         "material_key": "pit_now:hard:set2",
         "lap": 12,
-        "observed_at": 123.456789123,
+        "observed_at": 1.1234567891234,
     }
     values.update(changes)
     return EventSignal(**values)  # type: ignore[arg-type]
@@ -112,6 +117,20 @@ def test_decision_json_round_trip_includes_the_alert() -> None:
     payload = json.loads(decision.to_json())
 
     assert payload["alert"]["alert_id"] == "alert-1"
+    assert GateDecision.from_json(decision.to_json()) == decision
+
+
+def test_json_round_trip_preserves_all_float_precision() -> None:
+    signal = _signal(
+        facts=(("tiny", 4e-10), ("gain_s", 3.1234567891234)),
+        observed_at=1.1234567891234,
+    )
+    alert = _alert(emitted_at=2.0000000001234)
+    decision = _decision(observed_at=3.0000000001234)
+
+    assert EventSignal.from_json(signal.to_json()) == signal
+    assert dict(signal.facts)["tiny"] == 4e-10
+    assert AgentAlert.from_json(alert.to_json()) == alert
     assert GateDecision.from_json(decision.to_json()) == decision
 
 
@@ -251,12 +270,14 @@ def test_event_config_defaults() -> None:
     assert cfg.events.fuel.warn_laps == 0.5
     assert cfg.events.fuel.critical_laps == 0.0
     assert cfg.events.fuel.hysteresis_laps == 0.3
+    assert cfg.events.fuel.update_delta_laps is None
     assert cfg.events.tyres.warn_laps == 3.0
     assert cfg.events.tyres.degradation_ratio == 0.25
     assert cfg.events.tyres.hysteresis == 0.10
     assert cfg.events.tyres.min_stint_laps == 4
     assert cfg.events.weather.rain_enter_pct == 50.0
     assert cfg.events.weather.rain_exit_pct == 30.0
+    assert cfg.events.weather.update_delta_pct is None
     assert cfg.events.data.stale_persistence_s == 3.0
     assert cfg.events.damage.warn_pct == 15.0
     assert cfg.events.damage.update_delta_pct == 10.0
@@ -275,11 +296,56 @@ def test_event_config_defaults() -> None:
     assert cfg.gate.muted is False
 
 
+def test_optional_update_deltas_can_be_configured(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text(
+        "[events.fuel]\nupdate_delta_laps = 0.2\n[events.weather]\nupdate_delta_pct = 15.0\n"
+    )
+
+    cfg = load_config(path)
+
+    assert cfg.events.fuel.update_delta_laps == 0.2
+    assert cfg.events.weather.update_delta_pct == 15.0
+
+
+def test_event_inputs_config_is_deeply_immutable() -> None:
+    inputs = EventInputs(
+        state=RaceStateSnapshot(
+            session=RaceSessionSnapshot(
+                uid=None,
+                session_type=None,
+                track=None,
+                total_laps=None,
+                started=None,
+                ended=None,
+            ),
+            current_lap=None,
+            player_car_index=None,
+            cars=(),
+            freshness=(),
+            events=(),
+        ),
+        metrics=MetricsSnapshot(),
+        strategy=StrategySnapshot(),
+        config=AppConfig().events,
+        now=10.0,
+        lap=3,
+    )
+
+    with pytest.raises(ValidationError):
+        inputs.config.weather.rain_enter_pct = 80.0
+
+    assert inputs.config.weather.rain_enter_pct == 50.0
+
+
 @pytest.mark.parametrize(
     "body",
     [
         "[events.fuel]\nwarn_laps = 0.5\ncritical_laps = 1.0\n",
         "[events.weather]\nrain_enter_pct = 30\nrain_exit_pct = 50\n",
+        "[events.weather]\nrain_enter_pct = 50\nrain_exit_pct = 50\n",
+        "[events.fuel]\nhysteresis_laps = 0.0\n",
+        "[events.tyres]\nhysteresis = 0.0\n",
         '[gate]\ninterruption_level = "none"\n',
         "[events.tyres]\nmin_stint_laps = 0\n",
         "[gate]\nglobal_min_gap_s = -1\n",
@@ -336,5 +402,8 @@ def test_playback_session_exposes_an_empty_events_snapshot(tmp_path: Path) -> No
     assert snapshot.active_events == ()
 
 
-def test_events_group_is_available_without_subcommands() -> None:
+def test_events_group_is_available_without_subcommands(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     assert main(["events"]) == 0
+    assert capsys.readouterr().out == ""

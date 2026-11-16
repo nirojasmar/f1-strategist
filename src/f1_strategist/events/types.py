@@ -23,7 +23,6 @@ from ..race_state import RaceEvent, RaceStateSnapshot
 from ..strategy.types import StrategySnapshot
 
 EVENTS_SCHEMA_VERSION = 1
-_FLOAT_DIGITS = 9
 
 
 class EventPriority(StrEnum):
@@ -205,7 +204,7 @@ class EventSignal:
             "facts": _facts_payload(self.facts),
             "material_key": self.material_key,
             "lap": self.lap,
-            "observed_at": _round(self.observed_at),
+            "observed_at": self.observed_at,
         }
 
     def to_json(self) -> str:
@@ -276,7 +275,7 @@ class AgentAlert:
             "message_key": self.message_key,
             "facts": _facts_payload(self.facts),
             "lap": self.lap,
-            "emitted_at": _round(self.emitted_at),
+            "emitted_at": self.emitted_at,
             "interrupt": self.interrupt,
             "supersedes": self.supersedes,
         }
@@ -344,7 +343,7 @@ class GateDecision:
             "outcome": self.outcome.value,
             "reason": self.reason,
             "alert": None if self.alert is None else self.alert.to_dict(),
-            "observed_at": _round(self.observed_at),
+            "observed_at": self.observed_at,
         }
 
     def to_json(self) -> str:
@@ -485,7 +484,7 @@ def _canonical_facts(facts: Sequence[Fact]) -> tuple[Fact, ...]:
             raise ValueError(f"El hecho {name!r} no admite booleanos")
         if isinstance(value, float):
             _check_finite(f"facts.{name}", value)
-            normalized[name] = _round(value)
+            normalized[name] = value
         elif value is None or isinstance(value, (int, str)):
             normalized[name] = value
         else:
@@ -513,11 +512,6 @@ def _facts_from_payload(payload: object) -> tuple[Fact, ...]:
             raise ValueError(f"El hecho {name!r} debe ser número, cadena o None")
         facts.append((name, value))
     return _canonical_facts(facts)
-
-
-def _round(value: float) -> float:
-    rounded = round(value, _FLOAT_DIGITS)
-    return 0.0 if rounded == 0 else rounded
 
 
 def _canonical_json(value: object) -> str:
