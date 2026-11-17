@@ -10,7 +10,17 @@ from rich.console import Console
 import f1_strategist.console as console_module
 from f1_strategist.config import AppConfig
 from f1_strategist.console import _render_metrics_summary, _render_race_summary, render
-from f1_strategist.console_messages import render_diagnostic, render_race_event
+from f1_strategist.console_messages import (
+    render_diagnostic,
+    render_event_message,
+    render_race_event,
+)
+from f1_strategist.events.types import (
+    AgentAlert,
+    EventPhase,
+    EventPriority,
+    EventsSnapshot,
+)
 from f1_strategist.messages import message
 from f1_strategist.metrics.engine import MetricsSnapshot
 from f1_strategist.metrics.types import Metric, Quality, Window
@@ -97,6 +107,57 @@ def test_console_renders_race_summary_fields() -> None:
     assert "12.3 kg" in text
     assert "C3" in text
     assert "combustible/neumáticos: 1.0 s" in text
+
+
+def test_event_message_templates_render_known_and_missing_facts() -> None:
+    rendered = render_event_message(
+        "event.fuel_margin_critical",
+        (("margin_kg", 1.25), ("margin_laps", None)),
+    )
+    assert "Margen de combustible crítico" in rendered
+    assert "1.25 kg" in rendered
+    assert "desconocido vueltas" in rendered
+
+
+def test_console_shows_empty_event_panel() -> None:
+    config = AppConfig()
+    session = CaptureSession(config)
+    output = StringIO()
+    Console(file=output, width=180, no_color=True).print(render(config, session, now=2.0))
+    assert "Avisos del agente" in output.getvalue()
+    assert "Sin avisos recientes" in output.getvalue()
+
+
+def test_console_shows_recent_event_alerts(monkeypatch) -> None:
+    snapshot = EventsSnapshot(
+        alerts=(
+            AgentAlert(
+                alert_id="alert:1",
+                event_id="fuel:1",
+                phase=EventPhase.OPENED,
+                priority=EventPriority.CRITICAL,
+                category="fuel",
+                message_key="event.fuel_margin_critical",
+                facts=(("margin_kg", 1.25), ("margin_laps", None)),
+                lap=4,
+                emitted_at=12.0,
+            ),
+        ),
+        counters={"emit": 1, "suppress": 2},
+    )
+    monkeypatch.setattr(CaptureSession, "events_snapshot", lambda self: snapshot)
+    config = AppConfig()
+    session = CaptureSession(config)
+    output = StringIO()
+    Console(file=output, width=180, no_color=True).print(render(config, session, now=2.0))
+
+    text = output.getvalue()
+    assert "Avisos del agente" in text
+    assert "crítica · V4" in text
+    assert "Margen de combustible crítico" in text
+    assert "1.25 kg" in text
+    assert "Emitidos / suprimidos" in text
+    assert "1 / 2" in text
 
 
 def test_race_event_with_out_of_range_car_index_renders_safely() -> None:

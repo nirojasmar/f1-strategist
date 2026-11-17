@@ -23,6 +23,7 @@ from f1_strategist.config import (
     StrategyConfig,
     TelemetryConfig,
 )
+from f1_strategist.events.types import EventPhase, EventPriority, EventSignal
 from f1_strategist.fingerprint import (
     compute_strategy_fingerprint,
     file_sha256,
@@ -50,8 +51,10 @@ from f1_strategist.store import (
     Participant,
     SessionInfo,
     SessionStore,
+    StoredDetectedEvent,
     StoredError,
     StoredEvent,
+    StoredGateDecision,
     StoredStrategyEvaluation,
     TyreInventorySnapshot,
 )
@@ -86,6 +89,8 @@ class _FakeStore:
         self.stint_summaries: list[tuple[int, StintSummary]] = []
         self.tyre_inventory: list[tuple[int, TyreInventorySnapshot]] = []
         self.strategy_evaluations: list[tuple[int, StoredStrategyEvaluation]] = []
+        self.detected_events: list[tuple[int, StoredDetectedEvent]] = []
+        self.gate_decisions: list[tuple[int, StoredGateDecision]] = []
         self._next_id = 1
 
     @contextmanager
@@ -158,6 +163,12 @@ class _FakeStore:
         evaluations: Iterable[StoredStrategyEvaluation],
     ) -> None:
         self.strategy_evaluations.extend((session_id, item) for item in evaluations)
+
+    def add_detected_events(self, session_id: int, events: Iterable[StoredDetectedEvent]) -> None:
+        self.detected_events.extend((session_id, item) for item in events)
+
+    def add_gate_decisions(self, session_id: int, decisions: Iterable[StoredGateDecision]) -> None:
+        self.gate_decisions.extend((session_id, item) for item in decisions)
 
 
 def _cars() -> tuple[ScenarioCar, ScenarioCar]:
@@ -374,16 +385,24 @@ def test_ingesting_twice_is_idempotent_and_replace_does_not_duplicate(
 
     with SessionStore.open(tmp_path / "sessions.db") as store:
         first = ingest_capture(path, store, AppConfig())
+        first_detected = list(store.iter_detected_events(first.session_id))
+        first_decisions = list(store.iter_gate_decisions(first.session_id))
         second = ingest_capture(path, store, AppConfig())
         assert second.skipped
         assert second.session_id == first.session_id
         assert len(store.list_sessions()) == 1
+        assert list(store.iter_detected_events(first.session_id)) == first_detected
+        assert list(store.iter_gate_decisions(first.session_id)) == first_decisions
 
         replaced = ingest_capture(path, store, AppConfig(), replace=True)
         assert not replaced.skipped
         assert replaced.session_id != first.session_id
         assert replaced.laps == first.laps
         assert replaced.events == first.events
+        replaced_detected = list(store.iter_detected_events(replaced.session_id))
+        replaced_decisions = list(store.iter_gate_decisions(replaced.session_id))
+        assert len(replaced_detected) == len(first_detected)
+        assert len(replaced_decisions) == len(first_decisions)
         sessions = store.list_sessions()
         assert len(sessions) == 1
         assert sessions[0].id == replaced.session_id
@@ -424,6 +443,53 @@ def test_observe_does_not_wait_for_a_slow_store() -> None:
             )
             assert time.perf_counter() - started < 0.05
 
+        assert recorder.dropped_batches > 0
+        assert recorder.incomplete
+    finally:
+        recorder.stop()
+
+
+def test_record_events_does_not_wait_for_a_slow_store() -> None:
+    recorder = SessionRecorder(
+        _FakeStore(delay=0.2),
+        RecordingConfig(queue_size=2, batch_size=1, flush_interval_s=0.01),
+    )
+    signal = EventSignal(
+        rule="test",
+        event_id="test:1",
+        phase=EventPhase.OPENED,
+        priority=EventPriority.STRATEGIC,
+        category="test",
+        message_key="test.event",
+        observed_at=1.0,
+    )
+    try:
+        recorder.observe(1.0, 1.0, _snapshot(), _metrics(), _history())
+        started = time.perf_counter()
+        recorder.record_events((signal,), (), 1.0)
+        assert time.perf_counter() - started < 0.05
+    finally:
+        recorder.stop()
+
+
+def test_record_events_drops_without_advancing_sequences_when_queue_is_full() -> None:
+    recorder = SessionRecorder(
+        _FakeStore(delay=0.2),
+        RecordingConfig(queue_size=1, batch_size=1, flush_interval_s=0.01),
+    )
+    signal = EventSignal(
+        rule="test",
+        event_id="test:1",
+        phase=EventPhase.OPENED,
+        priority=EventPriority.STRATEGIC,
+        category="test",
+        message_key="test.event",
+        observed_at=1.0,
+    )
+    try:
+        recorder.observe(1.0, 1.0, _snapshot(), _metrics(), _history())
+        recorder.record_events((signal,), (), 1.0)
+        recorder.record_events((signal,), (), 2.0)
         assert recorder.dropped_batches > 0
         assert recorder.incomplete
     finally:

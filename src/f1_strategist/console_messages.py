@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from .events.types import Fact
 from .messages import DiagnosticMessage
 from .metrics.engine import MetricsSnapshot
 from .metrics.types import Metric, Quality
@@ -18,10 +19,57 @@ from .strategy.types import (
 
 METRICS_PANEL_TITLE = "Métricas"
 STRATEGY_PANEL_TITLE = "Estrategia"
+EVENTS_PANEL_TITLE = "Avisos del agente"
 
 #: Marcadores del panel: distinguen «no disponible» de «no aplica a la acción».
 _STRATEGY_UNKNOWN = "Desconocido"
 _STRATEGY_NOT_APPLICABLE = "No aplica"
+
+_EVENT_TEMPLATES = {
+    "event.strategy_pit_recommended": (
+        "Parada recomendada: {action}, vuelta {pit_lap}, {compound}; "
+        "ganancia {gain_s} s (rango {gain_low_s}–{gain_high_s} s), "
+        "confianza {confidence}, {laps_remaining} vueltas restantes."
+    ),
+    "event.pit_window_open": (
+        "Ventana de parada abierta: vuelta ideal {ideal_lap}, última {latest_lap}; "
+        "faltan {laps_to_ideal} vueltas para la ideal."
+    ),
+    "event.fuel_margin_low": (
+        "Margen de combustible bajo: {margin_laps} vueltas / {margin_kg} kg; "
+        "quedan {laps_remaining} vueltas (consumo {consumption_per_lap} kg/vuelta)."
+    ),
+    "event.fuel_margin_critical": (
+        "Margen de combustible crítico: {margin_laps} vueltas / {margin_kg} kg; "
+        "quedan {laps_remaining} vueltas (consumo {consumption_per_lap} kg/vuelta)."
+    ),
+    "event.tyre_life_near_limit": (
+        "Neumático {compound} cerca del límite: edad {age_laps} vueltas, "
+        "desgaste {wear_mean_pct} %, vida estimada {laps_left} vueltas."
+    ),
+    "event.tyre_degradation_abnormal": (
+        "Degradación anormal: {wear_rate_pct_per_lap} %/vuelta frente a "
+        "{expected_rate_pct_per_lap} %/vuelta esperados (x{ratio}); "
+        "tendencia de ritmo {pace_trend_s_per_lap} s/vuelta."
+    ),
+    "event.safety_car_deployed": "Coche de seguridad desplegado en la vuelta {lap}.",
+    "event.virtual_safety_car_deployed": "Virtual Safety Car desplegado en la vuelta {lap}.",
+    "event.safety_car_cleared": "Coche de seguridad retirado en la vuelta {lap}.",
+    "event.red_flag": "Bandera roja en la vuelta {lap}.",
+    "event.weather_changed": (
+        "Cambio de clima: {previous} → {current}; pista {track_temperature_c} °C, "
+        "aire {air_temperature_c} °C."
+    ),
+    "event.rain_expected": (
+        "Lluvia prevista: probabilidad {probability_pct} % en {horizon_min} min."
+    ),
+    "event.data_stale": "Datos de {group} obsoletos: {age_s} s.",
+    "event.damage_detected": "Daño en {component}: {damage_pct} % (cambio {delta_pct} %).",
+    "event.rival_pit_stop": (
+        "Parada de rival: {name} (coche {car_index}, posición {position}), "
+        "hueco {gap_s} s, vuelta {lap}."
+    ),
+}
 
 _METRIC_ROWS = (
     ("progress.laps_remaining", "Vueltas restantes"),
@@ -389,6 +437,31 @@ def render_strategy_recording_warning() -> str:
         "La estrategia está activa, pero el registro está desactivado; "
         "las evaluaciones no se guardarán."
     )
+
+
+def render_event_message(message_key: str, facts: tuple[Fact, ...]) -> str:
+    """Renderiza plantillas localizadas, conservando los datos ausentes como desconocidos."""
+    template = _EVENT_TEMPLATES.get(message_key)
+    if template is None:
+        return f"Falta la traducción al español del mensaje '{message_key}'."
+    values = {name: _event_fact_text(value) for name, value in facts}
+    try:
+        return template.format_map(_MissingEventFacts(values))
+    except (ValueError, KeyError):
+        return f"Falta la traducción al español del mensaje '{message_key}'."
+
+
+class _MissingEventFacts(dict[str, str]):
+    def __missing__(self, key: str) -> str:
+        return "desconocido"
+
+
+def _event_fact_text(value: object) -> str:
+    if value is None:
+        return "desconocido"
+    if isinstance(value, float):
+        return f"{value:.2f}".rstrip("0").rstrip(".")
+    return str(value)
 
 
 def _render_strategy_keys(keys: tuple[str, ...]) -> str:

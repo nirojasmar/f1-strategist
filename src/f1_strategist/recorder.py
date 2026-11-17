@@ -15,7 +15,10 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from .config import AppConfig, MetricsConfig, RecordingConfig, StrategyConfig
+from .events.engine import EventEngine
+from .events.types import EventSignal, GateDecision
 from .fingerprint import (
+    GateFingerprintAccumulator,
     RunInfo,
     build_run_info,
     compute_capture_fingerprint,
@@ -35,8 +38,10 @@ from .store import (
     Participant,
     SessionInfo,
     SessionStore,
+    StoredDetectedEvent,
     StoredError,
     StoredEvent,
+    StoredGateDecision,
     StoredStrategyEvaluation,
     StoreError,
     TyreInventorySnapshot,
@@ -94,6 +99,19 @@ class RecorderStore(Protocol):
         self, session_id: int, evaluations: Iterable[StoredStrategyEvaluation]
     ) -> None: ...
 
+    def add_detected_events(
+        self, session_id: int, events: Iterable[StoredDetectedEvent]
+    ) -> None: ...
+
+    def add_gate_decisions(
+        self, session_id: int, decisions: Iterable[StoredGateDecision]
+    ) -> None: ...
+
+
+def _enum_value(value: object) -> str:
+    raw = getattr(value, "value", value)
+    return str(raw)
+
 
 @dataclass(frozen=True, slots=True)
 class _SessionClose:
@@ -121,6 +139,8 @@ class _Batch:
     previous_close: _SessionClose | None = None
     tyre_inventory: tuple[TyreInventorySnapshot, ...] = ()
     strategy_evaluations: tuple[StoredStrategyEvaluation, ...] = ()
+    detected_events: tuple[StoredDetectedEvent, ...] = ()
+    gate_decisions: tuple[StoredGateDecision, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -226,6 +246,9 @@ class SessionRecorder:
         self._session_ids: set[int] = set()
         self._race_start_saved: set[int] = set()
         self._strategy_seq = 0
+        self._detected_event_seq = 0
+        self._gate_decision_seq = 0
+        self._gate_fingerprint = GateFingerprintAccumulator()
         self._last_strategy_lap: int | None = None
         self._last_strategy_revision: int | None = None
         self._last_strategy_inputs_hash: str | None = None
@@ -452,6 +475,84 @@ class SessionRecorder:
         except Exception as exc:  # noqa: BLE001 - el grabador nunca detiene la captura
             self._remember_error(exc)
 
+    def record_events(
+        self,
+        signals: Iterable[EventSignal],
+        decisions: Iterable[GateDecision],
+        observed_at: float,
+    ) -> None:
+        """Encola una evaluación de eventos sin bloquear al consumidor en vivo."""
+        try:
+            signal_values = tuple(signals)
+            decision_values = tuple(decisions)
+            if not signal_values and not decision_values:
+                return
+            if not math.isfinite(observed_at):
+                raise ValueError("observed_at debe ser finito")
+            with self._lock:
+                info = self._producer_info
+                uid = self._session_uid
+                if info is None or uid is None:
+                    return
+                event_start = self._detected_event_seq
+                decision_start = self._gate_decision_seq
+                event_rows = tuple(
+                    StoredDetectedEvent(
+                        seq=event_start + index,
+                        t_sim_s=observed_at,
+                        lap=signal.lap,
+                        rule=signal.rule,
+                        event_id=signal.event_id,
+                        phase=_enum_value(signal.phase),
+                        priority=_enum_value(signal.priority),
+                        category=signal.category,
+                        message_key=signal.message_key,
+                        facts_json=_canonical_json(dict(signal.facts)),
+                        material_key=signal.material_key,
+                    )
+                    for index, signal in enumerate(signal_values, 1)
+                )
+                decision_rows = tuple(
+                    StoredGateDecision(
+                        seq=decision_start + index,
+                        t_sim_s=observed_at,
+                        event_id=decision.event_id,
+                        phase=_enum_value(decision.phase),
+                        outcome=_enum_value(decision.outcome),
+                        reason=_enum_value(decision.reason),
+                        alert_id=decision.alert.alert_id if decision.alert is not None else None,
+                        interrupt=decision.alert.interrupt if decision.alert is not None else None,
+                    )
+                    for index, decision in enumerate(decision_values, 1)
+                )
+                gate_fingerprint_state = self._gate_fingerprint.copy()
+                gate_fingerprint_state.add((*signal_values, *decision_values))
+                gate_fingerprint = gate_fingerprint_state.fingerprint
+                info = replace(info, gate_fingerprint=gate_fingerprint)
+                incomplete = self._writer_incomplete or uid in self._dropped_by_uid
+            enqueued = self._enqueue(
+                _Batch(
+                    session_uid=uid,
+                    session_info=info,
+                    participants=(),
+                    laps=(),
+                    events=(),
+                    metrics=(),
+                    errors=(),
+                    incomplete=incomplete,
+                    incomplete_uids=self._incomplete_uids(),
+                    detected_events=event_rows,
+                    gate_decisions=decision_rows,
+                )
+            )
+            if enqueued:
+                self._detected_event_seq += len(event_rows)
+                self._gate_decision_seq += len(decision_rows)
+                self._gate_fingerprint = gate_fingerprint_state
+                self._producer_info = info
+        except Exception as exc:  # noqa: BLE001 - el grabador nunca detiene la captura
+            self._remember_error(exc)
+
     def flush(self, timeout: float) -> bool:
         """Espera, con límite, a que el escritor confirme todo el trabajo encolado."""
         if not math.isfinite(timeout) or timeout <= 0:
@@ -644,6 +745,9 @@ class SessionRecorder:
         self._last_metrics = None
         self._last_header_time = None
         self._strategy_seq = 0
+        self._detected_event_seq = 0
+        self._gate_decision_seq = 0
+        self._gate_fingerprint = GateFingerprintAccumulator()
         self._last_strategy_lap = None
         self._last_strategy_revision = None
         self._last_strategy_inputs_hash = None
@@ -763,6 +867,7 @@ class SessionRecorder:
             ("config_hash", run_info.config_hash),
             ("config_json", self._config_json),
             ("strategy_fingerprint", self._strategy_fingerprint),
+            ("gate_fingerprint", None),
             ("season_link_id", state.session.season_link_id),
             ("weekend_link_id", state.session.weekend_link_id),
             ("session_link_id", state.session.session_link_id),
@@ -1040,6 +1145,10 @@ class SessionRecorder:
             self._store.add_tyre_inventory(session_id, batch.tyre_inventory)
         if batch.strategy_evaluations:
             self._store.add_strategy_evaluations(session_id, batch.strategy_evaluations)
+        if batch.detected_events:
+            self._store.add_detected_events(session_id, batch.detected_events)
+        if batch.gate_decisions:
+            self._store.add_gate_decisions(session_id, batch.gate_decisions)
         return created_session_id
 
     def _close_current(
@@ -1139,12 +1248,14 @@ class _IngestCollector:
         engine: MetricsEngine,
         strategy_engine: StrategyEngine,
         recorder: SessionRecorder,
+        event_engine: EventEngine,
         *,
         profiles_by_uid: Mapping[int, WeekendProfile],
     ) -> None:
         self.engine = engine
         self.strategy_engine = strategy_engine
         self.recorder = recorder
+        self.event_engine = event_engine
         self.profiles_by_uid = dict(profiles_by_uid)
         self.events: list[RaceEvent] = []
         self.state = RaceState(self.events.append)
@@ -1197,6 +1308,12 @@ class _IngestCollector:
             profile,
             observed_at,
         )
+        self.event_engine.apply(
+            snapshot,
+            self.engine.snapshot(),
+            self.strategy_engine.snapshot(),
+            observed_at,
+        )
         self.recorder.observe(
             packet.header.session_time,
             observed_at,
@@ -1205,6 +1322,9 @@ class _IngestCollector:
             self.engine.history,
             header=packet.header,
         )
+        evaluation = self.event_engine.last_evaluation
+        if evaluation is not None:
+            self.recorder.record_events(evaluation.signals, evaluation.decisions, observed_at)
         self.recorder.record_strategy(self.strategy_engine.snapshot())
 
 
@@ -1230,6 +1350,7 @@ def ingest_capture(
 
     engine = MetricsEngine(app_config.metrics)
     strategy_engine = StrategyEngine(app_config.strategy, app_config.metrics)
+    event_engine = EventEngine(app_config)
     recorder = SessionRecorder(
         store,
         app_config.recording,
@@ -1245,6 +1366,7 @@ def ingest_capture(
         engine,
         strategy_engine,
         recorder,
+        event_engine,
         profiles_by_uid=registered_profiles,
     )
     offline: OfflineResult | None = None

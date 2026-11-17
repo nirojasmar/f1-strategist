@@ -11,7 +11,7 @@ import sqlite3
 from dataclasses import dataclass
 
 #: Versión que entiende este código.
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 MIN_READONLY_SCHEMA_VERSION = 6
 
 
@@ -300,6 +300,41 @@ _V7_STATEMENTS: tuple[str, ...] = (
     "ALTER TABLE strategy_evaluations ADD COLUMN projected_lap_times_json TEXT",
 )
 
+_V8_STATEMENTS: tuple[str, ...] = (
+    "ALTER TABLE sessions ADD COLUMN gate_fingerprint TEXT",
+    """
+    CREATE TABLE detected_events (
+        session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        seq INTEGER NOT NULL CHECK (seq > 0),
+        t_sim_s REAL NOT NULL,
+        lap INTEGER,
+        rule TEXT NOT NULL,
+        event_id TEXT NOT NULL,
+        phase TEXT NOT NULL,
+        priority TEXT NOT NULL,
+        category TEXT NOT NULL,
+        message_key TEXT NOT NULL,
+        facts_json TEXT NOT NULL,
+        material_key TEXT,
+        PRIMARY KEY (session_id, seq)
+    )
+    """,
+    """
+    CREATE TABLE gate_decisions (
+        session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        seq INTEGER NOT NULL CHECK (seq > 0),
+        t_sim_s REAL NOT NULL,
+        event_id TEXT NOT NULL,
+        phase TEXT NOT NULL,
+        outcome TEXT NOT NULL,
+        reason TEXT NOT NULL,
+        alert_id TEXT,
+        interrupt INTEGER,
+        PRIMARY KEY (session_id, seq)
+    )
+    """,
+)
+
 #: Migraciones ordenadas; el índice 0 lleva el esquema a la versión 1.
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(version=1, statements=_V1_STATEMENTS),
@@ -309,6 +344,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration(version=5, statements=_V5_STATEMENTS),
     Migration(version=6, statements=_V6_STATEMENTS),
     Migration(version=7, statements=_V7_STATEMENTS),
+    Migration(version=8, statements=_V8_STATEMENTS),
 )
 
 
@@ -379,6 +415,8 @@ def check_supported_version(connection: sqlite3.Connection) -> int:
         "tyre_inventory_snapshots",
         "strategy_evaluations",
     }
+    if current >= 8:
+        required_tables.update({"detected_events", "gate_decisions"})
     existing_tables = {
         str(row[0])
         for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
