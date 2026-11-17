@@ -1,6 +1,6 @@
 # Almacenamiento SQLite de sesiones
 
-Las fases 3 y 3.5 guardan cada sesión en dos capas complementarias:
+Las fases 3, 3.5 y 5 guardan cada sesión en dos capas complementarias:
 
 1. La **captura cruda** (`.f1cap` o `.f1cap.gz`) conserva los datagramas tal como llegaron,
    con su tiempo de recepción, la IP y el puerto de origen. Es la fuente para el replay y
@@ -15,12 +15,15 @@ registros de forma permanente; conviene conservar copias de `sessions.db` junto 
 capturas.
 
 El esquema vive en [`src/f1_strategist/store/schema.py`](../src/f1_strategist/store/schema.py)
-y la versión actual es `SCHEMA_VERSION = 7`. La versión se guarda en `PRAGMA user_version`.
+y la versión actual es `SCHEMA_VERSION = 8`. La versión se guarda en `PRAGMA user_version`.
 Al abrir la base en modo escritura se aplican las migraciones pendientes. Los comandos
-de consulta la abren en solo lectura y admiten v6 y v7 sin migrarlas; una base v6 no contiene
-proyecciones por vuelta y sus evaluaciones no se pueden incluir en `strategy review`. Al abrir
-una base compatible en modo escritura se aplican las migraciones hasta v7. La apertura de solo
-lectura rechaza bases anteriores a v6 o creadas por una versión más nueva de la herramienta.
+de consulta la abren en solo lectura y admiten v6, v7 y v8 sin migrarlas; una base v6 no
+contiene proyecciones por vuelta y sus evaluaciones no se pueden incluir en `strategy review`.
+Una base v7 no tiene detecciones ni decisiones de la compuerta; `events show` exige una base
+v8 y rechaza la anterior con un mensaje claro. Al abrir una base compatible en modo escritura
+se aplican las migraciones hasta v8. La
+apertura de solo lectura rechaza bases anteriores a v6 o creadas por una versión más nueva de
+la herramienta.
 
 ## Tablas
 
@@ -48,6 +51,7 @@ reconstruida desde una captura (`ingest`).
 | `weekend_id` | Fin de semana al que pertenece la sesión, automático o manual. |
 | `profile_json`, `profile_hash` | Perfil canónico usado al iniciar una carrera y su SHA-256. |
 | `strategy_fingerprint` | SHA-256 de un objeto con la versión de esquema de estrategia y su configuración canónica. |
+| `gate_fingerprint` | Huella canónica e independiente del orden de detecciones y decisiones de la compuerta (esquema v8). |
 
 ### `weekends`
 
@@ -99,6 +103,22 @@ Eventos de carrera en orden de inserción. `seq` es la secuencia asignada por el
 `kind` es un código estable; `value` y `previous_value` conservan el cambio observado. Los
 eventos idénticos consecutivos se conservan: la deduplicación se hace por alineación
 ordenada de la ventana de eventos, no por un conjunto de campos.
+
+### `detected_events`
+
+Señales aceptadas por el detector de eventos, en orden por sesión y secuencia. La clave
+`(session_id, seq)` evita duplicados al reescribir. Cada fila conserva `t_sim_s`, vuelta,
+regla, `event_id`, fase (`opened`, `updated`, `closed`), prioridad, categoría, `message_key`,
+`facts_json` y `material_key`. Los hechos se guardan como JSON y permiten reconstruir el
+aviso sin volver a evaluar las reglas. Las bases v7 y anteriores no tienen esta tabla.
+
+### `gate_decisions`
+
+Decisiones de la compuerta, en orden por sesión y secuencia. Cada fila conserva `t_sim_s`,
+`event_id`, fase, resultado (`emit`, `update`, `suppress`, `defer`, `cancel`), motivo estable
+(supresión por cooldown, duplicado, cambio no material, etc.), `alert_id` del aviso emitido e
+indicador `interrupt`. Una señal puede no tener aviso asociado: la fila explica igualmente por
+qué se emitió, aplazó o silenció. Las bases v7 y anteriores no tienen esta tabla.
 
 ### `app_errors`
 
@@ -158,6 +178,8 @@ de práctica y clasificación no reciben esas métricas.
 - `idx_sessions_weekend_id`: localizar las sesiones de un fin de semana.
 - `idx_weekends_game_link`: unicidad de identificadores de temporada/fin de semana.
 - La clave primaria de `strategy_evaluations` permite recorrer sus filas por sesión y secuencia.
+- Las claves primarias de `detected_events` y `gate_decisions` permiten recorrer sus filas por
+  sesión y secuencia.
 
 ## Consultas de ejemplo
 
@@ -218,7 +240,13 @@ uv run f1-strategist sessions export 1 --format json --db captures/sessions.db
 uv run f1-strategist weekends list --db captures/sessions.db
 uv run f1-strategist weekends show 1 --db captures/sessions.db
 uv run f1-strategist weekend show --session 1 --db captures/sessions.db
+uv run f1-strategist events show --session 1 --db captures/sessions.db
+uv run f1-strategist events show --session 1 --rule fuel_margin_low --outcome suppress --db captures/sessions.db
+uv run f1-strategist events summary --session 1 --db captures/sessions.db
 ```
+
+`events show` empareja cada detección con su decisión; `events summary` agrega detecciones,
+resultados y motivos. `events simulate` no abre la base: reproduce una captura en memoria.
 
 `held_metric_values` no se limita a leer la última fila: rellena las vueltas observadas
 arrastrando el valor anterior, que es lo que muestra `sessions metrics`. `sessions export`
@@ -286,6 +314,8 @@ modificarla.
 - `strategy_fingerprint` es la huella SHA-256 de un objeto con `schema_version` y la configuración
   de estrategia serializada de forma canónica; no depende del sistema operativo ni del orden de las
   claves.
+- `gate_fingerprint` usa la misma serialización canónica sobre las detecciones y decisiones
+  aceptadas por el detector; es independiente del orden de evaluación y no incluye relojes.
 - Guardar o cambiar `strategy_fingerprint` no modifica el valor de `fingerprint` ya almacenado.
   En cambio, `compute_capture_fingerprint` recalcula la huella a partir de la configuración completa,
   incluida la estrategia; al recalcularla tras un cambio de estrategia, el nuevo resultado puede diferir

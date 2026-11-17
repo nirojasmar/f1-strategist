@@ -396,6 +396,43 @@ junto con la fase de conversación).
 La aplicación distingue entre telemetría normal y situaciones que
 justifican una intervención sin depender del LLM.
 
+### Estado
+
+Implementada en la ola 2 de la Fase 5. El detector y la compuerta viven en
+`src/f1_strategist/events/` (reglas, tracker de condiciones, compuerta,
+tipos y motor), se integran con `session`, `playback` y `console`, se
+persisten en el registro SQLite v8 y se consultan con `events show`,
+`events summary` y `events simulate`. La arquitectura, la matriz de
+prioridades, los parámetros y la lectura de una decisión están en
+[`eventos_y_gate.md`](eventos_y_gate.md).
+
+Criterio de salida medido:
+
+-   Silencio en periodos normales: los escenarios sintéticos de carrera
+    estable no generan avisos, y una condición persistente produce un solo
+    aviso de apertura.
+-   Cambio material: una variación relevante genera como máximo una
+    actualización por intervalo mínimo; una oscilación alrededor del
+    umbral no reabre el evento gracias a la histéresis.
+-   Prioridad: un crítico interrumpe durante el cooldown de otra
+    categoría; el silencio global y el nivel de interrupción suprimen con
+    motivo visible (`muted`, `below_interruption_level`).
+-   Determinismo: repetir la evaluación con el mismo reloj simulado
+    produce los mismos `event_id`, resultados y motivos; el cambio de
+    `clock_scale` se comporta como está documentado.
+-   Rendimiento: 2000 evaluaciones de detección y compuerta promedian
+    ~0,118 ms, por debajo del objetivo de 1 ms.
+-   `uv run pytest -q -m "not benchmark and not real_capture"`: 1098
+    pruebas superadas y 40 deseleccionadas.
+
+Incidencia abierta, registrada como medida y no corregida:
+
+-   **E12-R1 (capturas reales):** las pruebas `real_capture` de Sakhir,
+    Baku y Monza no terminaron en esta máquina en 10 minutos; la suite
+    funcional las excluye y solo se ejecutan cuando la captura está
+    disponible. Queda repetir la validación en CI Linux con el manifiesto
+    real.
+
 ------------------------------------------------------------------------
 
 ## Fase 6 --- Integración del LLM local

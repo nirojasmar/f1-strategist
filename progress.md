@@ -1,6 +1,6 @@
 # Progreso del proyecto --- F1 Strategist
 
-**Última actualización:** 2026-11-12
+**Última actualización:** 2026-11-17
 **Propósito de este archivo:** llevar trazabilidad del avance importante y dejar el contexto
 necesario para que cualquier persona o agente que llegue al proyecto entienda dónde estamos, qué
 está decidido, qué está verificado y qué falta.
@@ -45,7 +45,7 @@ Documentos de diseño:
 | Lenguaje y entorno | Python 3.12+, `uv`, `ruff`, `pyright`, `pytest` | Acordado (2026-10-31) |
 | Modelos y configuración | `pydantic` v2 y TOML | Acordado |
 | LLM | Cliente HTTP a API compatible con OpenAI, adaptador intercambiable | Acordado; modelo concreto pendiente |
-| Almacenamiento | Captura binaria cruda (`.f1cap`) + SQLite para derivados | Implementado; esquema actual v7 documentado en `docs/almacenamiento_sqlite.md` |
+| Almacenamiento | Captura binaria cruda (`.f1cap`) + SQLite para derivados | Implementado; esquema actual v8 documentado en `docs/almacenamiento_sqlite.md` |
 | Grabación e ingesta | Grabador en vivo con hilo y cola acotada; `ingest` offline idempotente | Implementado (G5); la cola del vivo no bloquea y la ingesta espera al escritor para no perder lotes |
 | Replay y huella | Replay interno (`play`) y reemisión UDP (`replay`); huella canónica compartida por `verify` e `ingest` | Implementado (G2, G4, G5); la velocidad no cambia el tiempo simulado y la captura truncada se marca incompleta |
 | Perfil del fin de semana | Se construye al empezar la carrera y se registra en la sesión (`profile_json` + `profile_hash`); la reproducción usa el registrado | Implementado (Fase 3.5, P1--P8); sin fin de semana enlazado no hay perfil y la captura continúa |
@@ -67,12 +67,20 @@ Documentos de diseño:
 | 3. Grabación y replay | Implementada; validación local completa | G1--G8 implementados sobre SQLite versionado (v7 tras las migraciones de Fase 4), `play`/`replay`, datasets, huella y `verify`, grabador en vivo e `ingest`, inspección con `sessions`, pruebas E2E y benchmarks. Documentación en `docs/almacenamiento_sqlite.md`. Queda repetir CI en Linux y macOS. |
 | 3.5. Perfil del fin de semana | Implementada; validación local Windows | P1--P8 implementadas. Esquema SQLite v5, enlace de sesiones, resúmenes de tandas, inventario, perfil versionado y métricas `profile.*`; la prueba integrada cubre práctica, clasificación, carrera y reingesta con huella estable. Validación Linux por CI pendiente. |
 | 4. Motor de estrategia | Implementada; validación local Windows | Ola 0 cerrada; S5--S8 cubren evaluación, decisión, motor integrado y registro SQLite; S9 añade panel y comandos; S12 corrige los hallazgos de Sakhir (vida del neumático, carril parcial y estados del HUD); S13 incorpora prior por circuito y rango de reincorporación; S10 añade pruebas analíticas, de captura real y de rendimiento; S11 documenta el modelo. Quedan las incidencias S10-R1 (rendimiento) y S10-H1 (huella entre velocidades) y repetir CI en Linux. |
-| 5--10 | No iniciadas | |
+| 5. Event Detector y Event Gate | Implementada; validación local Windows | E1--E12 implementadas: 15 reglas, ciclo de vida con persistencia e histéresis, compuerta ordenada con motivos, avisos `AgentAlert`, registro SQLite v8 (`detected_events`, `gate_decisions`, `gate_fingerprint`) y comandos `events show/summary/simulate`. Documentación en `docs/eventos_y_gate.md`. Queda repetir CI en Linux y la validación con capturas reales (E12-R1). |
+| 6--10 | No iniciadas | |
 
 ## 5. Qué está verificado y qué no
 
 **Verificado:**
 
+-   Fase 5 (2026-11-17): detector y compuerta deterministas sin LLM. Escenarios sintéticos de extremo a extremo
+    pasan (silencio en telemetría normal, un solo aviso con condición sostenida, actualización material,
+    histéresis, crítico que interrumpe el cooldown, silencio por `muted`/`below_interruption_level` y
+    determinismo). Rendimiento: 2000 evaluaciones con ~0,118 ms de media, por debajo de 1 ms. Migración v7→v8
+    y consulta de eventos cubiertas. Validación Windows: 1098 pruebas aprobadas y 40 deseleccionadas
+    (`benchmark` y `real_capture`), Ruff lint/formato y Pyright (0 errores). Las pruebas de captura real
+    (Sakhir, Baku y Monza) no terminaron en 10 minutos en esta máquina (E12-R1).
 -   S13: el prior de circuito se evalúa después de las fuentes de sesión y conserva su fuente, banda y calidad;
     el cálculo publica rango de reincorporación. Validación Windows: `uv run pytest -q` (938 aprobadas,
     4 deseleccionadas), Ruff lint/formato, Pyright (0 errores), `git diff --check` y wheel con el CSV incluido.
@@ -824,6 +832,41 @@ fixes de la revisión (`0b3bd76`).
 -   Validación Windows: 938 pruebas aprobadas, 4 deseleccionadas; Ruff lint/formato, Pyright (0 errores),
     `git diff --check` y wheel construido con el CSV incluido.
 
+### 2026-11-17
+
+**Fase 5 --- Event Detector y Event Gate (E1--E12).**
+
+-   Quince reglas deterministas agrupadas en estrategia, recursos, pista, clima, daños y rivales. Cada una
+    declara categoría, prioridad, persistencia e histéresis y produce observaciones puras; un dato `None` o
+    insuficiente nunca abre ni cierra una condición.
+-   El ciclo de vida vive una sola vez en `ConditionTracker`: inactiva → pendiente → activa → cerrando →
+    inactiva. La persistencia se configura en segundos u observaciones, la histéresis separa entrada y salida,
+    y un cambio material actualiza el aviso. `one_shot` abre y cierra en la siguiente evaluación.
+-   Los `event_id` son deterministas (`regla:clave:n`). Un cambio de sesión o un flashback cierran los eventos
+    activos en silencio y reinician el estado.
+-   `EventGate` aplica diez controles en orden: silencio manual, nivel de interrupción, cierre, duplicados,
+    periodo de calma contextual, cooldown global y por categoría, actualización material con intervalo mínimo,
+    equivalencia reciente y arbitraje por prioridad. Los críticos interrumpen y no esperan cooldown; los
+    estratégicos bloqueados se difieren y los informativos se suprimen. Cada decisión lleva un motivo estable.
+-   `AgentAlert` conserva hechos numéricos, vuelta, instante, prioridad e `interrupt`; `EventsSnapshot` expone
+    avisos recientes, eventos activos, contadores por resultado y motivo, silencio y errores. La consola solo
+    traduce claves de mensaje.
+-   Marco de eventos integrado en `session` y `playback`; la evaluación ocurre con métricas o estrategia nuevas
+    y como máximo cada `evaluation_min_interval_s`, nunca por paquete.
+-   SQLite v8 añade `detected_events`, `gate_decisions` y `sessions.gate_fingerprint`; la huella de la compuerta
+    es canónica, independiente del orden y no incluye relojes. La apertura de solo lectura admite v6--v8.
+-   CLI: `events show --session`, `events summary --session` y `events simulate CAPTURA`, con filtros por regla
+    y resultado y rangos de vuelta.
+-   Pruebas: unitarias de reglas, tracker, compuerta y tipos; extremo a extremo sintéticas y de captura real
+    con el marcador `real_capture`; benchmark de detección y compuerta con el marcador `benchmark`.
+-   Documentación: nuevo `docs/eventos_y_gate.md` (arquitectura, reglas, prioridades, controles, parámetros,
+    motivos y lectura de una decisión), secciones 3.6 y 3.7 del outline, Fase 5 del roadmap con el criterio
+    medido y `docs/almacenamiento_sqlite.md` actualizado a v8.
+-   Validación Windows: 1098 pruebas aprobadas y 40 deseleccionadas; ~0,118 ms de media por evaluación (2000
+    iteraciones, objetivo <1 ms); Ruff lint/formato y Pyright (0 errores).
+-   Incidencia E12-R1: las pruebas `real_capture` de Sakhir, Baku y Monza no terminaron en 10 minutos en esta
+    máquina. Quedan fuera de la suite funcional y deben repetirse en CI Linux.
+
 ## 7. Hallazgos de la primera captura real
 
 Captura: 68 541 paquetes, ~66 MB, 795,5 s entre el primer y el último paquete. Salida de `inspect`:
@@ -944,12 +987,14 @@ src/f1_strategist/
   console.py      Panel de consola con Rich (solo presentación)
   console_messages.py  Renderizado en español de los diagnósticos
   cli.py          Comandos run, play, replay, inspect, trim, metrics, verify, datasets, ingest, sessions,
-                  weekends y weekend
+                  weekends, weekend y events
+  events/         Reglas del detector, tracker de ciclo de vida, compuerta determinista y tipos de aviso
   strategy/       Tipos del contrato, modelo de ritmo y desgaste, pérdida en boxes y reglas de neumáticos
   metrics/        Tipos, configuración, histórico, resúmenes de tanda, módulos, motor y exportación
   store/          SQLite versionado, consultas de sesiones y exportación fiel a metrics
 tests/            Pruebas unitarias, de integración y de extremo a extremo
-docs/             Requerimientos, outline, roadmap y documentación de almacenamiento/exportación
+docs/             Requerimientos, outline, roadmap y documentación de almacenamiento, exportación,
+                  estrategia y eventos
 config/config.example.toml   Ejemplo de configuración
 ```
 
@@ -970,6 +1015,9 @@ uv run f1-strategist sessions list --db captures/sessions.db
 uv run f1-strategist weekends list --db captures/sessions.db
 uv run f1-strategist weekends link 3 4 --db captures/sessions.db
 uv run f1-strategist weekend show --session 4 --db captures/sessions.db
+uv run f1-strategist events show --session 4 --db captures/sessions.db
+uv run f1-strategist events summary --session 4 --db captures/sessions.db
+uv run f1-strategist events simulate captures/<archivo>.f1cap --from-lap 10 --to-lap 20
 ```
 
 ## 9. Notas técnicas para agentes
@@ -983,30 +1031,32 @@ uv run f1-strategist weekend show --session 4 --db captures/sessions.db
 -   Si el juego envía por broadcast, la app debe escuchar en `0.0.0.0`; en loopback no recibe nada.
 -   Otra aplicación de telemetría usando el puerto 20777 provoca un error claro al abrir el socket.
 
-## 10. Siguiente paso: Fase 4 y calibración diferida
+## 10. Siguiente paso: Fase 6 y validación pendiente
 
-La Fase 3 está implementada y documentada. El criterio de salida se verificó localmente en Windows; queda
-repetir CI en Linux y macOS. La Fase 2 mantiene abierta la semántica del indicador de combustible del MFD
-y el fixture de Monza acredita solo los escenarios observados localmente. El siguiente trabajo es:
+La Fase 5 está implementada y documentada; su criterio de salida se verificó localmente en Windows. La Fase 2
+mantiene abierta la semántica del indicador de combustible del MFD y la Fase 4 las incidencias S10-R1 y S10-H1.
+El siguiente trabajo es:
 
-1.  **Fase 4:** S1--S13 implementadas y documentadas (panel, registro SQLite v7, prior por circuito,
-    correcciones de Sakhir, validación de extremo a extremo y modelo en `docs/estrategia_modelo.md`).
-    Quedan las incidencias S10-R1 (coste por evaluación) y S10-H1 (huella entre velocidades), y repetir la
-    validación en CI Linux.
-2.  **CI:** volver a ejecutar GitHub Actions después de la Ola 2.
-3.  **Calibración diferida:** ajustar los parámetros que hoy no tienen valor universal y ampliar la
-    validación a capturas con lluvia, safety car y otras condiciones.
+1.  **Fase 6:** integrar el LLM local con una interfaz desacoplada, adaptador compatible con OpenAI, salida
+    estructurada validada, medición de latencia y configuración de modelo y timeout. El LLM solo explica los
+    avisos y el contexto ya calculados.
+2.  **CI y capturas reales:** repetir GitHub Actions tras la Ola 2 y validar el detector con las capturas de
+    Sakhir, Baku y Monza que no terminaron localmente (E12-R1). Siguen abiertas S10-R1 y S10-H1.
+3.  **Calibración diferida:** ajustar los parámetros que hoy no tienen valor universal y ampliar la validación
+    a capturas con lluvia, safety car y otras condiciones.
 
 ## 11. Pendientes y decisiones abiertas
 
 -   Captura más variada: safety car y, si es posible, lluvia.
 -   Incidencias del motor de estrategia: reducir el coste por evaluación (S10-R1) y excluir los relojes
     monotónicos de la huella de entradas para que sea idéntica entre velocidades de reproducción (S10-H1).
+-   Validación del detector con capturas reales: repetir Sakhir, Baku y Monza en CI Linux y revisar falsos
+    positivos y negativos (E12-R1).
 -   Completar UE2 con una carrera donde mantener sea claramente mejor que parar.
 -   Probar la topología de red local con dos PC; decidir envío dirigido o broadcast y política de
     filtrado por IP de origen.
 -   Modelo local concreto del LLM; voz; framework del front-end de la GUI; empaquetado de escritorio;
     fórmulas de degradación y simulación de paradas; umbrales iniciales; idioma por defecto y cambio en
     caliente.
--   Ejecutar CI de GitHub Actions después de la Ola 5; la calibración de parámetros abiertos y las
+-   Ejecutar CI de GitHub Actions después de la Fase 5; la calibración de parámetros abiertos y las
     condiciones de lluvia o safety car quedan para fases posteriores con capturas variadas.
