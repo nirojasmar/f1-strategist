@@ -8,7 +8,7 @@ import pytest
 
 from f1_strategist.capture import CapturedPacket, CaptureWriter
 from f1_strategist.config import AppConfig, CaptureConfig, EventsConfig, GateConfig, RecordingConfig
-from f1_strategist.events.engine import EventEngine, evaluate_once
+from f1_strategist.events.engine import EventEngine, EventEvaluation, evaluate_once
 from f1_strategist.events.types import (
     ConditionPolicy,
     EventInputs,
@@ -16,13 +16,16 @@ from f1_strategist.events.types import (
     EventsSnapshot,
     Observation,
 )
+from f1_strategist.fingerprint import compute_gate_fingerprint
 from f1_strategist.metrics.engine import MetricsSnapshot
 from f1_strategist.offline import OfflineEventPipeline, run_capture_offline
 from f1_strategist.packets import HEADER_SIZE, HEADER_STRUCT
 from f1_strategist.parser import ParsedPacket
 from f1_strategist.playback import PlaybackSession
 from f1_strategist.race_state import RaceEvent, RaceSessionSnapshot, RaceStateSnapshot
+from f1_strategist.recorder import ingest_capture
 from f1_strategist.session import CaptureSession
+from f1_strategist.store import SessionStore
 from f1_strategist.strategy.types import StrategySnapshot
 from tests.conftest import make_packet
 from tests.scenarios import ScenarioCar, build_race_timed
@@ -397,20 +400,65 @@ def test_events_are_invariant_to_playback_speed_and_offline_clock(
         "f1_strategist.events.engine.EVENT_RULES",
         (_AlwaysActiveRule(),),
     )
+    evaluations: list[EventEvaluation] = []
+    apply = EventEngine.apply
+
+    def apply_and_collect(
+        engine: EventEngine,
+        state: RaceStateSnapshot,
+        metrics: MetricsSnapshot,
+        strategy: StrategySnapshot,
+        observed_at: float,
+    ) -> None:
+        apply(engine, state, metrics, strategy, observed_at)
+        if engine.last_evaluation is not None:
+            evaluations.append(engine.last_evaluation)
+
+    monkeypatch.setattr(EventEngine, "apply", apply_and_collect)
+
+    def gate_fingerprint() -> str:
+        records = (
+            record
+            for evaluation in evaluations
+            for record in (*evaluation.signals, *evaluation.decisions)
+        )
+        return compute_gate_fingerprint(records)
+
     snapshots = []
+    fingerprints = []
     for speed in (0.0, 1.0, 4.0):
+        evaluations.clear()
         session = PlaybackSession(path, speed=speed)
         session.play()
         assert session.wait(timeout=10.0), "la reproducción no terminó a tiempo"
         assert session.error is None
         snapshots.append(_serialize(session.events_snapshot()))
+        fingerprints.append(gate_fingerprint())
 
+    evaluations.clear()
     offline = OfflineEventPipeline(AppConfig())
     run_capture_offline(path, [offline])
     snapshots.append(_serialize(offline.events_snapshot()))
+    fingerprints.append(gate_fingerprint())
 
     assert snapshots[0][0], "el escenario debe generar al menos un aviso"
     assert snapshots[0] == snapshots[1] == snapshots[2] == snapshots[3]
+    assert len(set(fingerprints)) == 1
+
+    evaluations.clear()
+    with SessionStore.open(tmp_path / "events.db") as store:
+        first = ingest_capture(path, store, AppConfig())
+        first_session = store.get_session(first.session_id)
+        assert first_session is not None
+        assert first_session.gate_fingerprint == fingerprints[0]
+        assert gate_fingerprint() == fingerprints[0]
+
+        evaluations.clear()
+        replaced = ingest_capture(path, store, AppConfig(), replace=True)
+        replaced_session = store.get_session(replaced.session_id)
+        assert replaced_session is not None
+        assert replaced_session.gate_fingerprint == first_session.gate_fingerprint
+        assert gate_fingerprint() == fingerprints[0]
 
 
 def _cars() -> tuple[ScenarioCar, ScenarioCar]:
