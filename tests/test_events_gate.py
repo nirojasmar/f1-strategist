@@ -37,6 +37,7 @@ def _signal(
     category: str = "strategy",
     rule: str = "strategy_pit",
     material_key: str | None = None,
+    facts: tuple[tuple[str, float | int | str | None], ...] = (),
     lap: int = 2,
     observed_at: float = 0.0,
 ) -> EventSignal:
@@ -47,6 +48,7 @@ def _signal(
         priority=priority,
         category=category,
         message_key=f"event.{rule}",
+        facts=facts,
         material_key=material_key,
         lap=lap,
         observed_at=observed_at,
@@ -169,6 +171,40 @@ def test_muted_suppresses_everything_and_reset_preserves_mute() -> None:
     assert reset_snapshot.muted is True
     assert reset_snapshot.alerts == ()
     assert reset_snapshot.counters == {}
+
+
+def test_muted_closed_signal_cleans_up_active_event_without_announcement() -> None:
+    gate = EventGate(_cfg())
+    opened = _signal(event_id="strategy:1")
+    gate.process((opened,), now=10.0, lap=2)
+    gate.set_muted(True)
+
+    decision = gate.process(
+        (_signal(event_id="strategy:1", phase=EventPhase.CLOSED),),
+        now=11.0,
+        lap=2,
+    )[0]
+
+    assert decision.outcome is GateOutcome.SUPPRESS
+    assert decision.reason == "muted"
+    assert gate.snapshot().active_events == ()
+
+
+def test_silent_close_cancels_deferred_event() -> None:
+    gate = EventGate(_cfg(global_min_gap_s=100.0))
+    gate.process((_signal(event_id="strategy:1"),), now=0.0, lap=2)
+    second = _signal(event_id="strategy:2")
+    assert gate.process((second,), now=1.0, lap=2)[0].outcome is GateOutcome.DEFER
+
+    closed = _signal(event_id="strategy:2", phase=EventPhase.CLOSED)
+    decision = gate.process(
+        (closed,),
+        now=2.0,
+        lap=2,
+        announce_close_event_ids=frozenset(),
+    )[0]
+    assert decision.outcome is GateOutcome.CANCEL
+    assert gate.process((), now=200.0, lap=2) == ()
 
 
 def test_interruption_level_suppresses_below_threshold() -> None:
@@ -353,6 +389,101 @@ def test_equivalent_recent_is_suppressed() -> None:
     assert suppressed.outcome is GateOutcome.SUPPRESS
     assert suppressed.reason == "equivalent_recent"
     assert allowed.outcome is GateOutcome.EMIT
+
+
+def test_updated_value_with_stable_material_key_is_accepted() -> None:
+    gate = EventGate(_cfg(equivalence_window_s=90.0))
+    opened = _signal(
+        event_id="strategy:1",
+        material_key="same-plan",
+        facts=(("gain_s", 5.0),),
+    )
+    updated = _signal(
+        event_id="strategy:1",
+        phase=EventPhase.UPDATED,
+        material_key="same-plan",
+        facts=(("gain_s", 8.0),),
+    )
+
+    first = gate.process((opened,), now=10.0, lap=2)[0]
+    decision = gate.process((updated,), now=11.0, lap=2)[0]
+
+    assert first.alert is not None
+    assert decision.outcome is GateOutcome.UPDATE
+    assert decision.alert is not None
+    assert decision.alert.supersedes == first.alert.alert_id
+    assert gate.snapshot().active_events[0].facts == (("gain_s", 8.0),)
+
+
+def test_burst_defers_update_and_releases_it_with_its_phase_and_parent() -> None:
+    gate = EventGate(_cfg())
+    opened = _signal(
+        event_id="strategy:1",
+        material_key="plan",
+        facts=(("gain_s", 1.0),),
+    )
+    initial = gate.process((opened,), now=1.0, lap=2)[0]
+    critical = _signal(
+        event_id="track:1",
+        priority=EventPriority.CRITICAL,
+        category="track",
+        rule="track_incident",
+    )
+    updated = _signal(
+        event_id="strategy:1",
+        phase=EventPhase.UPDATED,
+        material_key="plan",
+        facts=(("gain_s", 2.0),),
+    )
+
+    decisions = gate.process((critical, updated), now=2.0, lap=2)
+    by_id = {decision.event_id: decision for decision in decisions}
+    assert by_id["strategy:1"].outcome is GateOutcome.DEFER
+    assert by_id["strategy:1"].phase is EventPhase.UPDATED
+
+    released = gate.process((), now=3.0, lap=2)
+    assert len(released) == 1
+    assert released[0].outcome is GateOutcome.UPDATE
+    assert released[0].phase is EventPhase.UPDATED
+    assert released[0].alert is not None
+    assert initial.alert is not None
+    assert released[0].alert.supersedes == initial.alert.alert_id
+
+
+def test_rate_limited_update_retries_latest_value_and_closes_cleanly() -> None:
+    gate = EventGate(_cfg(update_min_interval_s=10.0))
+    opened = _signal(
+        event_id="strategy:1",
+        material_key="stable",
+        facts=(("gain_s", 1.0),),
+    )
+    first = gate.process((opened,), now=0.0, lap=2)[0]
+    early = _signal(
+        event_id="strategy:1",
+        phase=EventPhase.UPDATED,
+        material_key="stable",
+        facts=(("gain_s", 2.0),),
+    )
+    latest = _signal(
+        event_id="strategy:1",
+        phase=EventPhase.UPDATED,
+        material_key="stable",
+        facts=(("gain_s", 3.0),),
+    )
+    assert gate.process((early,), now=1.0, lap=2)[0].reason == "update_rate_limited"
+    assert gate.process((latest,), now=2.0, lap=2)[0].reason == "update_rate_limited"
+
+    released = gate.process((), now=10.0, lap=2)
+    assert len(released) == 1
+    assert released[0].outcome is GateOutcome.UPDATE
+    assert released[0].alert is not None
+    assert released[0].alert.facts == (("gain_s", 3.0),)
+    assert first.alert is not None
+    assert released[0].alert.supersedes == first.alert.alert_id
+
+    closing = _signal(event_id="strategy:1", phase=EventPhase.CLOSED)
+    gate.process((closing,), now=11.0, lap=2)
+    assert gate.process((), now=30.0, lap=2) == ()
 
 
 def test_burst_emits_highest_priority_and_defers_the_rest() -> None:

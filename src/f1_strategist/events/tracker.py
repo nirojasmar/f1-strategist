@@ -50,6 +50,23 @@ class ConditionTracker:
         *,
         now: float,
         lap: int,
+        include_silent_closures: bool = False,
+    ) -> tuple[ConditionTransition, ...]:
+        transitions = self._update_lifecycle(observation, now=now, lap=lap)
+        if include_silent_closures or self._policy.announce_close:
+            return transitions
+        return tuple(
+            transition
+            for transition in transitions
+            if transition.signal.phase is not EventPhase.CLOSED
+        )
+
+    def _update_lifecycle(
+        self,
+        observation: Observation,
+        *,
+        now: float,
+        lap: int,
     ) -> tuple[ConditionTransition, ...]:
         _validate_time_and_lap(now, lap)
         if observation.active is None or observation.quality in {
@@ -65,14 +82,10 @@ class ConditionTracker:
 
         if state.is_active:
             if self._policy.one_shot:
-                transition = (
-                    self._transition(EventPhase.CLOSED, state, observation, now, lap)
-                    if self._policy.announce_close
-                    else None
-                )
+                transition = self._transition(EventPhase.CLOSED, state, observation, now, lap)
                 self._close(state, observation.key)
                 state.one_shot_spent = desired
-                return () if transition is None else (transition,)
+                return (transition,)
             return self._update_active(state, observation, desired, now, lap)
 
         if state.one_shot_spent:
@@ -154,13 +167,9 @@ class ConditionTracker:
                 state.closing_since = now
             if now - state.closing_since < self._policy.clear_persistence_s:
                 return ()
-            transition = (
-                self._transition(EventPhase.CLOSED, state, observation, now, lap)
-                if self._policy.announce_close
-                else None
-            )
+            transition = self._transition(EventPhase.CLOSED, state, observation, now, lap)
             self._close(state, observation.key)
-            return () if transition is None else (transition,)
+            return (transition,)
 
         state.closing_since = None
         material_changed = observation.material_key != state.material_key

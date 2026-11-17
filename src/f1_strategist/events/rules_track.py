@@ -215,7 +215,7 @@ class RainExpectedRule:
         return (
             Observation(
                 key=_RAIN_EXPECTED_KEY,
-                active=probability >= self._config.weather.rain_enter_pct,
+                active=probability > self._config.weather.rain_enter_pct,
                 value=probability,
                 facts=facts,
                 material_key=_RAIN_EXPECTED_KEY,

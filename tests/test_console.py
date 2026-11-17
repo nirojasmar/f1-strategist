@@ -99,6 +99,88 @@ def test_console_renders_race_summary_fields() -> None:
     assert "combustible/neumáticos: 1.0 s" in text
 
 
+def test_event_message_templates_render_known_and_missing_facts() -> None:
+    rendered = render_event_message(
+        "event.fuel_margin_critical",
+        (("margin_kg", 1.25), ("margin_laps", None)),
+    )
+    assert "Margen de combustible crítico" in rendered
+    assert "1.25 kg" in rendered
+    assert "desconocido vueltas" in rendered
+
+
+def test_event_facts_localize_categories_and_show_one_based_car_labels() -> None:
+    strategy = render_event_message(
+        "event.strategy_pit_recommended",
+        (("action", "PIT_NOW"),),
+    )
+    weather = render_event_message(
+        "event.weather_changed",
+        (("previous", "clear"), ("current", "light_rain")),
+    )
+    rival = render_event_message(
+        "event.rival_pit_stop",
+        (("car_index", 0),),
+    )
+    unknown_rival = render_event_message(
+        "event.rival_pit_stop",
+        (("car_index", None),),
+    )
+
+    assert "Parar ahora" in strategy
+    assert "despejado → lluvia ligera" in weather
+    assert "(coche 1," in rival
+    assert "coche desconocido" in unknown_rival
+
+
+def test_console_shows_empty_event_panel() -> None:
+    config = AppConfig()
+    session = CaptureSession(config)
+    output = StringIO()
+    Console(file=output, width=180, no_color=True).print(render(config, session, now=2.0))
+    assert "Avisos del agente" in output.getvalue()
+    assert "Sin avisos recientes" in output.getvalue()
+
+
+def test_console_shows_recent_event_alerts(monkeypatch) -> None:
+    snapshot = EventsSnapshot(
+        alerts=(
+            *(
+                AgentAlert(
+                    alert_id=f"alert:{lap}",
+                    event_id=f"fuel:{lap}",
+                    phase=EventPhase.OPENED,
+                    priority=EventPriority.CRITICAL,
+                    category="fuel",
+                    message_key="event.fuel_margin_critical",
+                    facts=(("margin_kg", float(lap)), ("margin_laps", None)),
+                    lap=lap,
+                    emitted_at=float(lap),
+                )
+                for lap in range(1, 7)
+            ),
+        ),
+        counters={"emit": 1, "update": 2, "suppress": 3, "defer": 4, "cancel": 5},
+    )
+    monkeypatch.setattr(CaptureSession, "events_snapshot", lambda self: snapshot)
+    config = AppConfig()
+    session = CaptureSession(config)
+    output = StringIO()
+    Console(file=output, width=180, no_color=True).print(render(config, session, now=2.0))
+
+    text = output.getvalue()
+    assert "Avisos del agente" in text
+    assert "crítica · V6" in text
+    assert "Margen de combustible crítico" in text
+    assert "6 kg" in text
+    assert "Emitidos / suprimidos" in text
+    assert "3 / 12" in text
+    assert (
+        text.index("V6") < text.index("V5") < text.index("V4") < text.index("V3") < text.index("V2")
+    )
+    assert "V1" not in text
+
+
 def test_race_event_with_out_of_range_car_index_renders_safely() -> None:
     event = RaceEvent("pit_entry", occurred_at_monotonic=1.0, car_index=22)
     exit_event = RaceEvent("pit_exit", occurred_at_monotonic=2.0, car_index=0)

@@ -112,10 +112,18 @@ def _update(
     inputs: EventInputs,
     *,
     now: float,
+    include_silent_closures: bool = False,
 ) -> list[ConditionTransition]:
     transitions: list[ConditionTransition] = []
     for observation in rule.observe(inputs):
-        transitions.extend(tracker.update(observation, now=now, lap=inputs.lap))
+        transitions.extend(
+            tracker.update(
+                observation,
+                now=now,
+                lap=inputs.lap,
+                include_silent_closures=include_silent_closures,
+            )
+        )
     return transitions
 
 
@@ -400,6 +408,10 @@ def test_rain_expected_needs_two_observations_and_uses_hysteresis() -> None:
         metrics = MetricsSnapshot({_RAIN_KEY: _metric(_RAIN_KEY, probability)})
         return _inputs(metrics=metrics, lap=lap, config=config)
 
+    at_enter = rule.observe(inputs(50.0, lap=11))[0]
+    assert at_enter.active is False
+    assert tracker.update(at_enter, now=9.0, lap=11) == ()
+
     first = _update(tracker, rule, inputs(60.0, lap=12), now=10.0)
     assert first == []
 
@@ -417,11 +429,22 @@ def test_rain_expected_needs_two_observations_and_uses_hysteresis() -> None:
     assert updated[0].signal.phase is EventPhase.UPDATED
     assert dict(updated[0].signal.facts)["probability_pct"] == 75.0
 
-    # Por encima de exit pero por debajo de enter no reabre ni cierra.
-    assert _update(tracker, rule, inputs(70.0, lap=16), now=14.0) == []
+    # En banda, mantiene la misma condición; el cambio numérico puede actualizarla.
+    in_band = _update(tracker, rule, inputs(40.0, lap=16), now=14.0)
+    assert len(in_band) == 1
+    assert in_band[0].signal.phase is EventPhase.UPDATED
+    assert in_band[0].signal.event_id == second[0].signal.event_id
 
-    closed = _update(tracker, rule, inputs(20.0, lap=17), now=15.0)
-    assert closed == []
+    at_exit = _update(
+        tracker,
+        rule,
+        inputs(30.0, lap=17),
+        now=15.0,
+        include_silent_closures=True,
+    )
+    assert len(at_exit) == 1
+    assert at_exit[0].signal.phase is EventPhase.CLOSED
+    assert at_exit[0].signal.event_id == second[0].signal.event_id
 
 
 def test_rain_expected_ignores_unusable_or_unknown_probability() -> None:

@@ -20,6 +20,7 @@ from .types import (
     EventPriority,
     EventSignal,
     EventsSnapshot,
+    Fact,
     GateDecision,
     GateOutcome,
 )
@@ -81,7 +82,8 @@ class EventGate:
         self._alerts: list[AgentAlert] = []
         self._active: dict[str, _ActiveEvent] = {}
         self._deferred: dict[str, _DeferredSignal] = {}
-        self._equivalents: dict[tuple[str, str], float] = {}
+        self._pending_updates: dict[str, _DeferredSignal] = {}
+        self._equivalents: dict[tuple[str, str], tuple[float, tuple[Fact, ...]]] = {}
         self._last_noncritical_at: float | None = None
         self._last_major_at: float | None = None
         self._last_category_at: dict[tuple[EventPriority, str], float] = {}
@@ -95,6 +97,7 @@ class EventGate:
         *,
         now: float,
         lap: int,
+        announce_close_event_ids: frozenset[str] | None = None,
     ) -> tuple[GateDecision, ...]:
         """Procesa las señales y devuelve una decisión por cada una."""
         _validate_time_and_lap(now, lap)
@@ -110,17 +113,26 @@ class EventGate:
                 now=now,
                 lap=lap,
                 emitted_this_call=emitted_this_call,
+                announce_close=(
+                    announce_close_event_ids is None or signal.event_id in announce_close_event_ids
+                ),
             )
             decisions[index] = decision
             emitted_this_call = emitted_this_call or emitted
 
         result = [decision for decision in decisions if decision is not None]
         if not self._muted:
+            pending_decisions, emitted = self._review_pending_updates(
+                now=now,
+                lap=lap,
+                emitted_this_call=emitted_this_call,
+            )
+            result.extend(pending_decisions)
             result.extend(
                 self._review_deferred(
                     now=now,
                     lap=lap,
-                    emitted_this_call=emitted_this_call,
+                    emitted_this_call=emitted_this_call or emitted,
                 )
             )
         return tuple(result)
@@ -151,6 +163,7 @@ class EventGate:
         self._alerts.clear()
         self._active.clear()
         self._deferred.clear()
+        self._pending_updates.clear()
         self._equivalents.clear()
         self._last_noncritical_at = None
         self._last_major_at = None
@@ -166,9 +179,30 @@ class EventGate:
         now: float,
         lap: int,
         emitted_this_call: bool,
+        announce_close: bool,
     ) -> tuple[GateDecision, bool]:
         if self._muted:
+            if signal.phase is EventPhase.CLOSED:
+                self._cleanup_closed(signal.event_id)
             return self._decide(signal, GateOutcome.SUPPRESS, GateReason.MUTED, now), False
+        if signal.phase is EventPhase.CLOSED:
+            if not self._level_allows(signal.priority):
+                self._cleanup_closed(signal.event_id)
+                return (
+                    self._decide(
+                        signal,
+                        GateOutcome.SUPPRESS,
+                        GateReason.BELOW_INTERRUPTION_LEVEL,
+                        now,
+                    ),
+                    False,
+                )
+            return self._process_closed(
+                signal,
+                now=now,
+                lap=lap,
+                announce=announce_close,
+            )
         if not self._level_allows(signal.priority):
             return (
                 self._decide(
@@ -179,8 +213,6 @@ class EventGate:
                 ),
                 False,
             )
-        if signal.phase is EventPhase.CLOSED:
-            return self._process_closed(signal, now=now, lap=lap)
         if signal.event_id in self._deferred:
             self._deferred[signal.event_id].signal = replace(
                 signal,
@@ -188,7 +220,12 @@ class EventGate:
             )
             return self._decide(signal, GateOutcome.DEFER, GateReason.DEFERRED, now), False
         if signal.phase is EventPhase.UPDATED:
-            return self._process_updated(signal, now=now, lap=lap)
+            return self._process_updated(
+                signal,
+                now=now,
+                lap=lap,
+                emitted_this_call=emitted_this_call,
+            )
         return self._process_opened(
             signal,
             now=now,
@@ -236,6 +273,7 @@ class EventGate:
         *,
         now: float,
         lap: int,
+        emitted_this_call: bool,
     ) -> tuple[GateDecision, bool]:
         if self._in_quiet_period(signal, now=now, lap=lap):
             return (
@@ -248,12 +286,21 @@ class EventGate:
                 self._decide(signal, GateOutcome.SUPPRESS, GateReason.NO_MATERIAL_CHANGE, now),
                 False,
             )
-        if signal.material_key == active.signal.material_key:
+        if (
+            signal.material_key == active.signal.material_key
+            and signal.facts == active.signal.facts
+        ):
             return (
                 self._decide(signal, GateOutcome.SUPPRESS, GateReason.NO_MATERIAL_CHANGE, now),
                 False,
             )
+        if emitted_this_call and signal.priority is not EventPriority.CRITICAL:
+            self._pending_updates[signal.event_id] = _DeferredSignal(signal=signal, deferred_at=now)
+            return self._decide(
+                signal, GateOutcome.DEFER, GateReason.LOWER_PRIORITY_ACTIVE, now
+            ), False
         if now - active.last_alert_at < self._cfg.update_min_interval_s:
+            self._pending_updates[signal.event_id] = _DeferredSignal(signal=signal, deferred_at=now)
             return (
                 self._decide(signal, GateOutcome.SUPPRESS, GateReason.UPDATE_RATE_LIMITED, now),
                 False,
@@ -263,6 +310,7 @@ class EventGate:
                 self._decide(signal, GateOutcome.SUPPRESS, GateReason.EQUIVALENT_RECENT, now),
                 False,
             )
+        self._pending_updates.pop(signal.event_id, None)
         return self._emit_updated(active, signal, now=now, lap=lap)
 
     def _process_closed(
@@ -271,14 +319,21 @@ class EventGate:
         *,
         now: float,
         lap: int,
+        announce: bool,
     ) -> tuple[GateDecision, bool]:
         deferred = self._deferred.pop(signal.event_id, None)
+        self._pending_updates.pop(signal.event_id, None)
         if deferred is not None:
             return (
                 self._decide(signal, GateOutcome.CANCEL, GateReason.CANCELLED_CLOSED, now),
                 False,
             )
         active = self._active.pop(signal.event_id, None)
+        if active is not None and not announce:
+            return (
+                self._decide(signal, GateOutcome.SUPPRESS, GateReason.CLOSED_NOT_ANNOUNCED, now),
+                False,
+            )
         if active is None:
             return (
                 self._decide(signal, GateOutcome.SUPPRESS, GateReason.CLOSED_NOT_ANNOUNCED, now),
@@ -297,6 +352,11 @@ class EventGate:
             ),
             True,
         )
+
+    def _cleanup_closed(self, event_id: str) -> None:
+        self._active.pop(event_id, None)
+        self._deferred.pop(event_id, None)
+        self._pending_updates.pop(event_id, None)
 
     def _emit_opened(
         self,
@@ -432,6 +492,43 @@ class EventGate:
             break
         return decisions
 
+    def _review_pending_updates(
+        self,
+        *,
+        now: float,
+        lap: int,
+        emitted_this_call: bool,
+    ) -> tuple[list[GateDecision], bool]:
+        decisions: list[GateDecision] = []
+        if emitted_this_call:
+            return decisions, False
+        candidates = sorted(
+            self._pending_updates.items(),
+            key=lambda item: (
+                -_PRIORITY_RANK[item[1].signal.priority],
+                item[1].deferred_at,
+                item[0],
+            ),
+        )
+        for event_id, item in candidates:
+            active = self._active.get(event_id)
+            if active is None:
+                del self._pending_updates[event_id]
+                continue
+            if now - active.last_alert_at < self._cfg.update_min_interval_s:
+                continue
+            del self._pending_updates[event_id]
+            decision, emitted = self._process_updated(
+                item.signal,
+                now=now,
+                lap=lap,
+                emitted_this_call=False,
+            )
+            decisions.append(decision)
+            if emitted:
+                return decisions, True
+        return decisions, False
+
     def _make_alert(
         self,
         signal: EventSignal,
@@ -496,7 +593,7 @@ class EventGate:
         if _PRIORITY_RANK[signal.priority] >= _PRIORITY_RANK[EventPriority.STRATEGIC]:
             self._last_major_at = now
         if equivalence and signal.material_key is not None:
-            self._equivalents[(signal.rule, signal.material_key)] = now
+            self._equivalents[(signal.rule, signal.material_key)] = (now, signal.facts)
 
     def _level_allows(self, priority: EventPriority) -> bool:
         return _PRIORITY_RANK[priority] >= _LEVEL_RANK[self._cfg.interruption_level]
@@ -540,7 +637,11 @@ class EventGate:
         if signal.material_key is None:
             return False
         last = self._equivalents.get((signal.rule, signal.material_key))
-        return last is not None and now - last < self._cfg.equivalence_window_s
+        return (
+            last is not None
+            and now - last[0] < self._cfg.equivalence_window_s
+            and last[1] == signal.facts
+        )
 
 
 def _validate_time_and_lap(now: float, lap: int) -> None:

@@ -86,6 +86,47 @@ class _FailingRule:
         raise RuntimeError("event boom")
 
 
+class _FailOnceRule(_FailingRule):
+    def observe(self, inputs: EventInputs) -> tuple[Observation, ...]:
+        del inputs
+        self.calls += 1
+        if self.calls == 1:
+            raise RuntimeError("event boom once")
+        return (Observation(key="boom", active=False),)
+
+
+class _SilentCloseRule(_SpyRule):
+    def __init__(self) -> None:
+        super().__init__(active=True)
+        self.policy = ConditionPolicy(
+            rule="silent_close",
+            category="test",
+            priority=EventPriority.CRITICAL,
+            message_key="event.silent_close",
+            announce_close=False,
+        )
+
+    def observe(self, inputs: EventInputs) -> tuple[Observation, ...]:
+        self.calls += 1
+        self.seen_events.append(tuple(inputs.new_state_events))
+        return (Observation(key="silent_close", active=self.active),)
+
+
+class _StrategicRule(_SpyRule):
+    def __init__(self) -> None:
+        super().__init__(active=True)
+        self.policy = ConditionPolicy(
+            rule="strategic_test",
+            category="strategy",
+            priority=EventPriority.STRATEGIC,
+            message_key="event.strategic_test",
+        )
+
+    def observe(self, inputs: EventInputs) -> tuple[Observation, ...]:
+        self.calls += 1
+        return (Observation(key="strategic_test", active=True),)
+
+
 class _FailingEventEngine:
     """Doble del motor para la prueba de fallo a nivel de captura."""
 
@@ -200,6 +241,48 @@ def test_rule_failure_is_reported_once_and_does_not_raise() -> None:
 
     engine.apply(_state(), _metrics(0.0), StrategySnapshot(), 0.5)
     assert rule.calls == 1
+
+
+def test_successful_rule_transition_is_published_when_a_later_rule_fails_once() -> None:
+    active = _SpyRule(active=True)
+    failing = _FailOnceRule()
+    engine = EventEngine(EventsConfig(), rules=[active, failing])
+
+    engine.apply(_state(), _metrics(0.0), StrategySnapshot(), 0.0)
+    failed_snapshot = engine.snapshot()
+    assert failed_snapshot.error is not None
+    assert len(failed_snapshot.alerts) == 1
+    opened_id = failed_snapshot.alerts[0].event_id
+
+    engine.apply(_state(), _metrics(1.0), StrategySnapshot(), 1.0)
+    recovered = engine.snapshot()
+    assert recovered.error is None
+    assert len(recovered.alerts) == 1
+    assert recovered.active_events[0].event_id == opened_id
+
+
+def test_silent_tracker_closure_cleans_gate_and_active_condition_stays_deferred() -> None:
+    silent = _SilentCloseRule()
+    engine = EventEngine(EventsConfig(), rules=[silent])
+    engine.apply(_state(), _metrics(0.0), StrategySnapshot(), 0.0)
+    assert len(engine.snapshot().active_events) == 1
+
+    silent.active = False
+    engine.apply(_state(), _metrics(1.0), StrategySnapshot(), 1.0)
+    assert engine.snapshot().active_events == ()
+    assert len(engine.snapshot().alerts) == 1
+
+    critical = _SpyRule(active=True)
+    strategic = _StrategicRule()
+    deferred_engine = EventEngine(EventsConfig(), rules=[critical, strategic])
+    deferred_engine.apply(_state(), _metrics(0.0), StrategySnapshot(), 0.0)
+    assert {item.event_id for item in deferred_engine.snapshot().active_events} == {"spy:spy:1"}
+
+    deferred_engine.apply(_state(), _metrics(1.0), StrategySnapshot(), 1.0)
+    assert {item.event_id for item in deferred_engine.snapshot().active_events} == {
+        "spy:spy:1",
+        "strategic_test:strategic_test:1",
+    }
 
 
 def test_session_change_and_flashback_reset_the_engine() -> None:

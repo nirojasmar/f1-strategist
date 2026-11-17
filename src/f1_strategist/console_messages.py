@@ -64,6 +64,16 @@ _STRATEGY_ACTION_LABELS = {
     StrategyAction.INSUFFICIENT_DATA: "Datos insuficientes",
 }
 
+_EVENT_WEATHER_LABELS = {
+    "clear": "despejado",
+    "light_cloud": "poco nuboso",
+    "overcast": "cubierto",
+    "light_rain": "lluvia ligera",
+    "heavy_rain": "lluvia intensa",
+    "wet": "lluvia",
+    "storm": "tormenta",
+}
+
 _STRATEGY_KEY_LABELS = {
     "fuel_effect_not_separated": "Efecto del combustible no separado",
     "rivals_do_not_pit": "Se supone que los rivales no paran",
@@ -389,6 +399,46 @@ def render_strategy_recording_warning() -> str:
         "La estrategia está activa, pero el registro está desactivado; "
         "las evaluaciones no se guardarán."
     )
+
+
+def render_event_message(message_key: str, facts: tuple[Fact, ...]) -> str:
+    """Renderiza plantillas localizadas, conservando los datos ausentes como desconocidos."""
+    template = _EVENT_TEMPLATES.get(message_key)
+    if template is None:
+        return f"Falta la traducción al español del mensaje '{message_key}'."
+    values = {name: _event_fact_text(message_key, name, value) for name, value in facts}
+    try:
+        return template.format_map(_MissingEventFacts(values))
+    except (ValueError, KeyError):
+        return f"Falta la traducción al español del mensaje '{message_key}'."
+
+
+class _MissingEventFacts(dict[str, str]):
+    def __missing__(self, key: str) -> str:
+        return "desconocido"
+
+
+def _event_fact_text(message_key: str, name: str, value: object) -> str:
+    if value is None:
+        return "desconocido"
+    if (
+        message_key == "event.rival_pit_stop"
+        and name == "car_index"
+        and isinstance(value, int)
+        and not isinstance(value, bool)
+    ):
+        return str(value + 1)
+    if message_key == "event.strategy_pit_recommended" and name == "action":
+        try:
+            action = StrategyAction(value)
+        except ValueError:
+            return str(value)
+        return _STRATEGY_ACTION_LABELS[action]
+    if message_key == "event.weather_changed" and name in {"previous", "current"}:
+        return _EVENT_WEATHER_LABELS.get(str(value), str(value))
+    if isinstance(value, float):
+        return f"{value:.2f}".rstrip("0").rstrip(".")
+    return str(value)
 
 
 def _render_strategy_keys(keys: tuple[str, ...]) -> str:

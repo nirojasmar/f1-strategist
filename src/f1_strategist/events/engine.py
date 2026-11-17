@@ -22,6 +22,7 @@ from .registry import EVENT_RULES
 from .tracker import ConditionTracker
 from .types import (
     EventInputs,
+    EventPhase,
     EventRule,
     EventSignal,
     EventsSnapshot,
@@ -41,6 +42,19 @@ class EventEvaluation:
     snapshot: EventsSnapshot
 
 
+@dataclass(frozen=True, slots=True)
+class _CollectedSignals:
+    signals: tuple[EventSignal, ...]
+    announced_closures: frozenset[str]
+
+
+class _SignalCollectionError(Exception):
+    def __init__(self, cause: Exception, collected: _CollectedSignals) -> None:
+        super().__init__(str(cause))
+        self.cause = cause
+        self.collected = collected
+
+
 def evaluate_once(
     inputs: EventInputs,
     gate_config: GateConfig | None = None,
@@ -58,11 +72,20 @@ def evaluate_once(
 
     active_rules = tuple(rules) if rules is not None else _configured_rules(inputs.config)
     trackers = tuple(ConditionTracker(rule.policy) for rule in active_rules)
-    signals = _collect_signals(active_rules, trackers, inputs)
+    collected = _collect_signals(active_rules, trackers, inputs)
     gate = EventGate(gate_cfg)
-    decisions = gate.process(signals, now=inputs.now, lap=inputs.lap) if gate_cfg.enabled else ()
+    decisions = (
+        gate.process(
+            collected.signals,
+            now=inputs.now,
+            lap=inputs.lap,
+            announce_close_event_ids=collected.announced_closures,
+        )
+        if gate_cfg.enabled
+        else ()
+    )
     snapshot = gate.snapshot() if gate_cfg.enabled else EventsSnapshot(muted=gate_cfg.muted)
-    return EventEvaluation(signals, tuple(decisions), snapshot)
+    return EventEvaluation(collected.signals, tuple(decisions), snapshot)
 
 
 class EventEngine:
@@ -173,10 +196,40 @@ class EventEngine:
                         lap=lap,
                         new_state_events=new_events,
                     )
-                    signals = _collect_signals(self._rules, self._trackers, inputs)
-                    if self._gate_config.enabled:
-                        self._gate.process(signals, now=observed_at, lap=lap)
+                    collected = _collect_signals(self._rules, self._trackers, inputs)
+                    signals = collected.signals
+                    decisions = (
+                        tuple(
+                            self._gate.process(
+                                signals,
+                                now=observed_at,
+                                lap=lap,
+                                announce_close_event_ids=collected.announced_closures,
+                            )
+                        )
+                        if self._gate_config.enabled
+                        else ()
+                    )
                     self._error = None
+                except _SignalCollectionError as exc:
+                    signals = exc.collected.signals
+                    try:
+                        decisions = (
+                            tuple(
+                                self._gate.process(
+                                    signals,
+                                    now=observed_at,
+                                    lap=lap,
+                                    announce_close_event_ids=exc.collected.announced_closures,
+                                )
+                            )
+                            if self._gate_config.enabled
+                            else ()
+                        )
+                    except Exception as gate_exc:
+                        self._error = f"{type(gate_exc).__name__}: {gate_exc}"
+                    else:
+                        self._error = f"{type(exc.cause).__name__}: {exc.cause}"
                 except Exception as exc:
                     self._error = f"{type(exc).__name__}: {exc}"
                 finally:
@@ -187,6 +240,8 @@ class EventEngine:
                     self._evaluated_strategy_token = strategy_token
                     self._mark_state_events_seen(state.events)
                     self._publish()
+                    if self._error is None or signals or decisions:
+                        self._last_evaluation = EventEvaluation(signals, decisions, self._snapshot)
 
             self._last_lap = state.current_lap if state.current_lap is not None else self._last_lap
             if uid is not None:
@@ -279,14 +334,29 @@ def _collect_signals(
     rules: Sequence[EventRule],
     trackers: Sequence[ConditionTracker],
     inputs: EventInputs,
-) -> tuple[EventSignal, ...]:
+) -> _CollectedSignals:
     signals: list[EventSignal] = []
+    announced_closures: set[str] = set()
     for rule, tracker in zip(rules, trackers, strict=True):
-        for observation in rule.observe(inputs):
-            _validate_observation(observation)
-            for transition in tracker.update(observation, now=inputs.now, lap=inputs.lap):
-                signals.append(transition.signal)
-    return tuple(signals)
+        try:
+            for observation in rule.observe(inputs):
+                _validate_observation(observation)
+                for transition in tracker.update(
+                    observation,
+                    now=inputs.now,
+                    lap=inputs.lap,
+                    include_silent_closures=True,
+                ):
+                    signal = transition.signal
+                    signals.append(signal)
+                    if signal.phase is EventPhase.CLOSED and rule.policy.announce_close:
+                        announced_closures.add(signal.event_id)
+        except Exception as exc:
+            raise _SignalCollectionError(
+                exc,
+                _CollectedSignals(tuple(signals), frozenset(announced_closures)),
+            ) from exc
+    return _CollectedSignals(tuple(signals), frozenset(announced_closures))
 
 
 def _validate_observation(observation: Observation) -> None:

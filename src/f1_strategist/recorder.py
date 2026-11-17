@@ -1152,6 +1152,7 @@ class _IngestCollector:
         self.last_observed_at: float | None = None
         self.last_header_time: float | None = None
         self.last_header: PacketHeader | None = None
+        self.event_evaluation_failed = False
 
     def apply(self, packet: ParsedPacket, observed_at: float) -> None:
         previous_state = self.state.snapshot()
@@ -1197,6 +1198,14 @@ class _IngestCollector:
             profile,
             observed_at,
         )
+        self.event_engine.apply(
+            snapshot,
+            self.engine.snapshot(),
+            self.strategy_engine.snapshot(),
+            observed_at,
+        )
+        if self.event_engine.snapshot().error is not None:
+            self.event_evaluation_failed = True
         self.recorder.observe(
             packet.header.session_time,
             observed_at,
@@ -1274,7 +1283,7 @@ def ingest_capture(
     finally:
         recorder.stop(
             fingerprint=fingerprint,
-            incomplete=offline is None or offline.truncated,
+            incomplete=(offline is None or offline.truncated or collector.event_evaluation_failed),
             final_metrics=metrics,
             capture_sha256=run_info.capture_sha256 or None,
         )

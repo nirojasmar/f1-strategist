@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import shutil
 import struct
+import threading
 import time
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
@@ -23,7 +24,16 @@ from f1_strategist.config import (
     StrategyConfig,
     TelemetryConfig,
 )
+from f1_strategist.events.types import (
+    EventPhase,
+    EventPriority,
+    EventSignal,
+    EventsSnapshot,
+    GateDecision,
+    GateOutcome,
+)
 from f1_strategist.fingerprint import (
+    compute_gate_fingerprint,
     compute_strategy_fingerprint,
     file_sha256,
     fingerprint_capture,
@@ -158,6 +168,31 @@ class _FakeStore:
         evaluations: Iterable[StoredStrategyEvaluation],
     ) -> None:
         self.strategy_evaluations.extend((session_id, item) for item in evaluations)
+
+    def add_detected_events(self, session_id: int, events: Iterable[StoredDetectedEvent]) -> None:
+        self.detected_events.extend((session_id, item) for item in events)
+
+    def add_gate_decisions(self, session_id: int, decisions: Iterable[StoredGateDecision]) -> None:
+        self.gate_decisions.extend((session_id, item) for item in decisions)
+
+
+class _BlockingStore(_FakeStore):
+    def __init__(self) -> None:
+        super().__init__()
+        self.transaction_entered = threading.Event()
+        self.release_transaction = threading.Event()
+        self.detected_event_batch_written = threading.Event()
+
+    @contextmanager
+    def transaction(self) -> Iterator[object]:
+        self.transaction_entered.set()
+        if not self.release_transaction.wait(timeout=5.0):
+            raise TimeoutError("blocked test store was not released")
+        yield object()
+
+    def add_detected_events(self, session_id: int, events: Iterable[StoredDetectedEvent]) -> None:
+        super().add_detected_events(session_id, events)
+        self.detected_event_batch_written.set()
 
 
 def _cars() -> tuple[ScenarioCar, ScenarioCar]:
@@ -428,6 +463,81 @@ def test_observe_does_not_wait_for_a_slow_store() -> None:
         assert recorder.incomplete
     finally:
         recorder.stop()
+
+
+def test_record_events_enqueues_while_writer_is_blocked() -> None:
+    store = _BlockingStore()
+    recorder = SessionRecorder(
+        store,
+        RecordingConfig(queue_size=2, batch_size=1, flush_interval_s=0.01),
+    )
+    signal = EventSignal(
+        rule="test",
+        event_id="test:1",
+        phase=EventPhase.OPENED,
+        priority=EventPriority.STRATEGIC,
+        category="test",
+        message_key="test.event",
+        observed_at=1.0,
+    )
+    try:
+        recorder.observe(1.0, 1.0, _snapshot(), _metrics(), _history())
+        assert store.transaction_entered.wait(timeout=3.0)
+        recorder.record_events((signal,), (), 1.0)
+        assert recorder._queue.qsize() == 1
+    finally:
+        store.release_transaction.set()
+        recorder.stop()
+
+
+def test_record_events_drops_without_advancing_sequences_when_queue_is_full() -> None:
+    store = _BlockingStore()
+    recorder = SessionRecorder(
+        store,
+        RecordingConfig(queue_size=1, batch_size=1, flush_interval_s=0.01),
+    )
+    signals = tuple(
+        EventSignal(
+            rule="test",
+            event_id=f"test:{name}",
+            phase=EventPhase.OPENED,
+            priority=EventPriority.STRATEGIC,
+            category="test",
+            message_key="test.event",
+            facts=(("value", value),),
+            observed_at=float(value),
+        )
+        for name, value in (("first", 1), ("rejected", 2), ("later", 3))
+    )
+    decisions = tuple(
+        GateDecision(
+            event_id=signal.event_id,
+            phase=EventPhase.OPENED,
+            outcome=GateOutcome.SUPPRESS,
+            reason="test",
+            observed_at=signal.observed_at,
+        )
+        for signal in signals
+    )
+    try:
+        recorder.observe(1.0, 1.0, _snapshot(), _metrics(), _history())
+        assert store.transaction_entered.wait(timeout=3.0)
+        recorder.record_events((signals[0],), (decisions[0],), 1.0)
+        recorder.record_events((signals[1],), (decisions[1],), 2.0)
+        assert recorder.dropped_batches > 0
+        assert recorder.incomplete
+        store.release_transaction.set()
+        assert store.detected_event_batch_written.wait(timeout=3.0)
+        recorder.record_events((signals[2],), (decisions[2],), 3.0)
+    finally:
+        store.release_transaction.set()
+        recorder.stop()
+
+    assert [row.seq for _, row in store.detected_events] == [1, 2]
+    assert [row.seq for _, row in store.gate_decisions] == [1, 2]
+    assert store.updated[-1][1].gate_fingerprint == compute_gate_fingerprint(
+        (signals[0], decisions[0], signals[2], decisions[2])
+    )
 
 
 def test_write_failure_is_reported_without_reaching_the_consumer() -> None:
@@ -1110,6 +1220,34 @@ def test_truncated_capture_marks_the_session_incomplete(
 
     assert result.offline is not None and result.offline.truncated
     assert session is not None and session.incomplete
+
+
+def test_ingest_stays_incomplete_after_a_recovered_event_evaluation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = _capture(tmp_path, monkeypatch)
+
+    class RecoveringEventEngine:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            self.calls = 0
+            self.error: str | None = None
+            self.last_evaluation = None
+
+        def apply(self, *_args: object, **_kwargs: object) -> None:
+            self.calls += 1
+            self.error = "evaluation failed" if self.calls == 1 else None
+
+        def snapshot(self) -> EventsSnapshot:
+            return EventsSnapshot(error=self.error)
+
+    monkeypatch.setattr("f1_strategist.recorder.EventEngine", RecoveringEventEngine)
+    with SessionStore.open(tmp_path / "sessions.db") as store:
+        result = ingest_capture(path, store, AppConfig())
+        session = store.get_session(result.session_id)
+
+    assert session is not None
+    assert session.incomplete
 
 
 def test_dropped_batches_mark_only_their_own_session_incomplete() -> None:

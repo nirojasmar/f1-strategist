@@ -9,7 +9,8 @@ import select
 import signal
 import sys
 import time
-from collections.abc import Sequence
+from collections import Counter, defaultdict
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -1613,6 +1614,251 @@ def _cmd_strategy(args: argparse.Namespace, console: Console, err: Console) -> i
             )
         console.print(table)
         return 0
+
+
+class _DetectedEventRow(Protocol):
+    t_sim_s: float
+    lap: int | None
+    rule: str
+    event_id: str
+    phase: str
+    priority: str
+    category: str
+    message_key: str
+    facts_json: str
+    material_key: str | None
+
+
+class _GateDecisionRow(Protocol):
+    t_sim_s: float
+    event_id: str
+    phase: str
+    outcome: str
+    reason: str
+    alert_id: str | None
+    interrupt: bool | None
+
+
+class _EventSessionReader(Protocol):
+    """Contrato de lectura E9, intencionadamente separado del SessionStore actual."""
+
+    def iter_detected_events(self, session_id: int) -> Iterable[_DetectedEventRow]: ...
+
+    def iter_gate_decisions(self, session_id: int) -> Iterable[_GateDecisionRow]: ...
+
+
+def _event_session_rows(
+    store: SessionStore, session_id: int
+) -> tuple[Sequence[_DetectedEventRow], Sequence[_GateDecisionRow]]:
+    require_session(store, session_id)
+    reader = cast(_EventSessionReader, store)
+    try:
+        return (
+            tuple(reader.iter_detected_events(session_id)),
+            tuple(reader.iter_gate_decisions(session_id)),
+        )
+    except AttributeError as exc:
+        raise StoreError(
+            "La base de datos no ofrece todavía la API de lectura de eventos E9."
+        ) from exc
+
+
+def _cmd_events_show(args: argparse.Namespace, console: Console) -> int:
+    db = _sessions_database(args)
+    with SessionStore.open(db, readonly=True) as store:
+        detections, decisions = _event_session_rows(store, args.session)
+    decision_map: dict[int, list[_GateDecisionRow]] = defaultdict(list)
+    detection_indices: dict[tuple[str, str], list[int]] = defaultdict(list)
+    for index, detection in enumerate(detections):
+        detection_indices[(detection.event_id, detection.phase)].append(index)
+    for decision in decisions:
+        candidates = detection_indices.get((decision.event_id, decision.phase), [])
+        if candidates:
+            nearest = min(
+                candidates,
+                key=lambda index: (
+                    abs(detections[index].t_sim_s - decision.t_sim_s),
+                    detections[index].t_sim_s > decision.t_sim_s,
+                    index,
+                ),
+            )
+            decision_map[nearest].append(decision)
+    table = Table(title=f"Eventos · sesión {args.session}", expand=False)
+    for name in ("Tiempo", "Vuelta", "Regla", "Fase", "Prioridad", "Detección", "Compuerta"):
+        table.add_column(name, overflow="fold")
+    shown = 0
+    for index, detection in enumerate(detections):
+        matching = decision_map.get(index, [])
+        if args.outcome is not None:
+            matching = [item for item in matching if item.outcome == args.outcome]
+            if not matching:
+                continue
+        if args.rule is not None and detection.rule != args.rule:
+            continue
+        facts_payload = json.loads(detection.facts_json)
+        facts = cast(
+            tuple[Fact, ...],
+            tuple((str(name), value) for name, value in facts_payload.items()),
+        )
+        message = render_event_message(detection.message_key, facts)
+        decision_text = (
+            ", ".join(f"{item.outcome}/{item.reason}" for item in matching) or "sin decisión"
+        )
+        table.add_row(
+            f"{detection.t_sim_s:.1f} s",
+            "—" if detection.lap is None else str(detection.lap),
+            detection.rule,
+            detection.phase,
+            detection.priority,
+            message,
+            decision_text,
+        )
+        shown += 1
+    if not shown:
+        console.print(f"La sesión {args.session} no tiene eventos que coincidan.")
+    else:
+        console.print(table)
+    return 0
+
+
+def _cmd_events_summary(args: argparse.Namespace, console: Console) -> int:
+    db = _sessions_database(args)
+    with SessionStore.open(db, readonly=True) as store:
+        detections, decisions = _event_session_rows(store, args.session)
+    by_rule = Counter(item.rule for item in detections)
+    by_outcome = Counter(item.outcome for item in decisions)
+    by_reason = Counter(item.reason for item in decisions)
+    detections_by_key: dict[tuple[str, str], list[_DetectedEventRow]] = defaultdict(list)
+    for item in detections:
+        detections_by_key[(item.event_id, item.phase)].append(item)
+    alert_laps: Counter[int] = Counter()
+    for item in decisions:
+        if item.alert_id is None:
+            continue
+        candidates = detections_by_key.get((item.event_id, item.phase), [])
+        if not candidates:
+            continue
+        nearest = min(candidates, key=lambda row: abs(row.t_sim_s - item.t_sim_s))
+        if nearest.lap is not None:
+            alert_laps[nearest.lap] += 1
+    material_counts = Counter(
+        (item.rule, item.material_key) for item in detections if item.material_key is not None
+    )
+    repeated = sum(count - 1 for count in material_counts.values() if count > 1)
+    suppressed = sum(by_outcome.get(outcome, 0) for outcome in ("suppress", "defer", "cancel"))
+    console.print(
+        f"Sesión {args.session}: {len(detections)} detecciones, {len(decisions)} decisiones."
+    )
+    console.print(f"Avisos emitidos: {by_outcome.get('emit', 0) + by_outcome.get('update', 0)}")
+    console.print(f"Decisiones suprimidas: {suppressed}; repeticiones de material: {repeated}")
+    _print_counter_table(console, "Detecciones por regla", "Regla", by_rule)
+    _print_counter_table(console, "Decisiones por resultado", "Resultado", by_outcome)
+    _print_counter_table(console, "Decisiones por motivo", "Motivo", by_reason)
+    _print_counter_table(console, "Avisos por vuelta", "Vuelta", alert_laps)
+    return 0
+
+
+def _print_counter_table(console: Console, title: str, label: str, counts: Counter[Any]) -> None:
+    table = Table(title=title, expand=False)
+    table.add_column(label)
+    table.add_column("Cantidad", justify="right")
+    for key, count in sorted(counts.items(), key=lambda item: str(item[0])):
+        table.add_row(str(key), str(count))
+    if counts:
+        console.print(table)
+
+
+class _EventsCaptureCollector:
+    def __init__(
+        self,
+        cfg: AppConfig,
+        from_lap: int | None,
+        to_lap: int | None,
+        profiles_by_uid: Mapping[int, WeekendProfile],
+    ) -> None:
+        self.cfg = cfg
+        self.from_lap = from_lap
+        self.to_lap = to_lap
+        self.profiles_by_uid = profiles_by_uid
+        self.race = RaceState()
+        self.metrics = MetricsEngine(cfg.metrics)
+        self.strategy = StrategyEngine(cfg.strategy, cfg.metrics)
+        self.engine = EventEngine(cfg)
+        self.timeline: list[tuple[float, int, str, str, str, str, str]] = []
+
+    def apply(self, packet: ParsedPacket, observed_at: float) -> None:
+        self.race.apply(packet, observed_at)
+        state = self.race.snapshot()
+        session = state.session
+        profile = (
+            self.profiles_by_uid.get(session.uid)
+            if session.uid is not None
+            and session.session_type is not None
+            and session.session_type.lower() in {"race", "race_2", "race_3"}
+            else None
+        )
+        self.metrics.set_profile(profile)
+        self.metrics.apply(packet, observed_at, state)
+        metrics = self.metrics.snapshot()
+        self.strategy.apply(
+            state,
+            metrics,
+            self.metrics.history.snapshot(),
+            profile,
+            observed_at,
+        )
+        self.engine.apply(state, metrics, self.strategy.snapshot(), observed_at)
+        evaluation = self.engine.last_evaluation
+        if evaluation is None:
+            return
+        decisions = {(item.event_id, item.phase): item for item in evaluation.decisions}
+        for event_signal in evaluation.signals:
+            if not self._lap_in_range(event_signal.lap):
+                continue
+            decision = decisions.get((event_signal.event_id, event_signal.phase))
+            self.timeline.append(
+                (
+                    event_signal.observed_at,
+                    event_signal.lap,
+                    event_signal.rule,
+                    event_signal.priority.value,
+                    render_event_message(event_signal.message_key, event_signal.facts),
+                    "sin decisión" if decision is None else decision.outcome.value,
+                    "—" if decision is None else decision.reason,
+                )
+            )
+
+    def _lap_in_range(self, lap: int) -> bool:
+        return not (
+            (self.from_lap is not None and lap < self.from_lap)
+            or (self.to_lap is not None and lap > self.to_lap)
+        )
+
+    def should_stop(self) -> bool:
+        if self.to_lap is None:
+            return False
+        state = self.race.snapshot()
+        return state.current_lap is not None and state.current_lap > self.to_lap
+
+
+def _cmd_events_simulate(args: argparse.Namespace, console: Console, err: Console) -> int:
+    if args.from_lap is not None and args.to_lap is not None and args.from_lap > args.to_lap:
+        raise ValueError("--from-lap no puede ser mayor que --to-lap.")
+    cfg = load_config(args.config)
+    profiles = _profiles_for_capture(cfg, args.file, err)
+    collector = _EventsCaptureCollector(cfg, args.from_lap, args.to_lap, profiles)
+    result = run_capture_offline(args.file, [collector], stop_when=collector.should_stop)
+    _warn_offline_issues(result, err)
+    table = Table(title="Simulación de eventos", expand=False)
+    for name in ("Tiempo", "Vuelta", "Regla", "Prioridad", "Detección", "Resultado", "Motivo"):
+        table.add_column(name, overflow="fold")
+    for row in collector.timeline:
+        table.add_row(f"{row[0]:.1f} s", str(row[1]), *row[2:])
+    if collector.timeline:
+        console.print(table)
+    else:
+        console.print("No se detectaron eventos en el rango solicitado.")
+    return 0
 
 
 def _cmd_events(args: argparse.Namespace, console: Console, err: Console) -> int:

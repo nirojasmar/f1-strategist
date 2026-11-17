@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from f1_strategist.config import EventsConfig
+from f1_strategist.config import DamageEventsConfig, EventsConfig
 from f1_strategist.events.registry import EVENT_RULES
 from f1_strategist.events.rules_damage import DamageDetectedRule, RivalPitStopRule
 from f1_strategist.events.tracker import ConditionTracker, ConditionTransition
@@ -200,10 +200,19 @@ def _update(
     rule: DamageDetectedRule | RivalPitStopRule,
     inputs: EventInputs,
     now: float,
+    *,
+    include_silent_closures: bool = False,
 ) -> tuple[ConditionTransition, ...]:
     transitions: list[ConditionTransition] = []
     for observation in rule.observe(inputs):
-        transitions.extend(tracker.update(observation, now=now, lap=inputs.lap))
+        transitions.extend(
+            tracker.update(
+                observation,
+                now=now,
+                lap=inputs.lap,
+                include_silent_closures=include_silent_closures,
+            )
+        )
     return tuple(transitions)
 
 
@@ -373,6 +382,16 @@ def test_damage_does_not_alert_with_stale_data_or_outside_the_session() -> None:
     assert tyres["damage_tyres"].active is None
 
 
+def test_damage_at_exact_warning_threshold_is_inactive() -> None:
+    config = EventsConfig(damage=DamageEventsConfig(warn_pct=15.0))
+    observations = _observations(
+        DamageDetectedRule(config),
+        _inputs(metrics=_damage_metrics(wing=15.0), config=config),
+    )
+
+    assert observations["damage_wing"].active is False
+
+
 def test_damage_memory_resets_with_a_new_session() -> None:
     rule = DamageDetectedRule()
 
@@ -482,3 +501,57 @@ def test_rival_pit_stop_is_suppressed_when_paused_or_stale() -> None:
 
     assert RivalPitStopRule().observe(paused) == ()
     assert RivalPitStopRule().observe(stale) == ()
+
+
+def test_rival_pit_stop_pending_key_survives_stale_data_and_rearms() -> None:
+    rule = RivalPitStopRule()
+    tracker = ConditionTracker(rule.policy)
+    opening = _update(
+        tracker,
+        rule,
+        _inputs(state=_rival_state(), new_state_events=(_pit_entry(1),)),
+        10.0,
+    )
+    assert opening[0].signal.event_id == "rival_pit_stop:rival_pit_stop_1:1"
+
+    stale = _inputs(
+        state=_rival_state(freshness=(PacketFreshness("lap_data", 0.0, 1.0),)),
+        now=11.0,
+    )
+    assert _update(tracker, rule, stale, 11.0) == ()
+
+    closed = _update(
+        tracker,
+        rule,
+        _inputs(state=_rival_state()),
+        12.0,
+        include_silent_closures=True,
+    )
+    assert len(closed) == 1
+    assert closed[0].signal.phase is EventPhase.CLOSED
+
+    reopened = _update(
+        tracker,
+        rule,
+        _inputs(state=_rival_state(), new_state_events=(_pit_entry(1, lap=22),)),
+        13.0,
+    )
+    assert reopened[0].signal.event_id == "rival_pit_stop:rival_pit_stop_1:2"
+
+
+def test_rival_pit_stop_session_change_drops_pending_key() -> None:
+    rule = RivalPitStopRule()
+    tracker = ConditionTracker(rule.policy)
+    _update(
+        tracker,
+        rule,
+        _inputs(state=_rival_state(), new_state_events=(_pit_entry(1),)),
+        10.0,
+    )
+
+    changed_session = _inputs(
+        state=_rival_state(session=_session(uid=2)),
+        now=11.0,
+    )
+    assert rule.observe(changed_session) == ()
+    assert _update(tracker, rule, changed_session, 11.0) == ()

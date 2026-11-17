@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from f1_strategist.config import EventsConfig, FuelEventsConfig
+from f1_strategist.config import EventsConfig, FuelEventsConfig, TyreEventsConfig
 from f1_strategist.events.registry import EVENT_RULES
 from f1_strategist.events.rules_resources import (
     FuelMarginCriticalRule,
@@ -249,6 +249,66 @@ def test_fuel_margin_low_opens_after_two_evaluations_with_facts() -> None:
     }
 
 
+def test_resource_rules_do_not_activate_at_warning_boundaries_or_close_old_stints() -> None:
+    config = EventsConfig(
+        fuel=FuelEventsConfig(warn_laps=0.5),
+        tyres=TyreEventsConfig(warn_laps=3.0),
+    )
+    fuel = FuelMarginLowRule(config).observe(
+        _inputs(metrics=_fuel_metrics(margin=0.5), config=config)
+    )[0]
+    tyre_boundary = TyreLifeNearLimitRule(config).observe(
+        _inputs(
+            metrics=_tyre_metrics(age=10, laps_to_limit=3.0, lifespan=30),
+            state=_state(lap=20, age=10, lifespan=30),
+            config=config,
+            lap=20,
+        )
+    )[0]
+    assert fuel.active is False
+    assert tyre_boundary.active is False
+
+    life_rule = TyreLifeNearLimitRule(config)
+    old_life_key = life_rule.observe(
+        _inputs(
+            metrics=_tyre_metrics(age=10, lifespan=30),
+            state=_state(lap=20, age=10, lifespan=30),
+            config=config,
+            lap=20,
+        )
+    )[0].key
+    new_life = life_rule.observe(
+        _inputs(
+            metrics=_tyre_metrics(age=2, lifespan=30),
+            state=_state(lap=30, age=2, lifespan=30, session=_session(uid=2)),
+            config=config,
+            lap=30,
+        )
+    )
+    assert all(item.key != old_life_key or item.active is not False for item in new_life)
+
+    degradation_rule = TyreDegradationAbnormalRule(config)
+    old_degradation_key = degradation_rule.observe(
+        _inputs(
+            metrics=_tyre_metrics(age=10, lifespan=30),
+            state=_state(lap=20, age=10, lifespan=30),
+            config=config,
+            lap=20,
+        )
+    )[0].key
+    new_degradation = degradation_rule.observe(
+        _inputs(
+            metrics=_tyre_metrics(age=2, lifespan=30),
+            state=_state(lap=30, age=2, lifespan=30, session=_session(uid=2)),
+            config=config,
+            lap=30,
+        )
+    )
+    assert all(
+        item.key != old_degradation_key or item.active is not False for item in new_degradation
+    )
+
+
 def test_fuel_margin_oscillates_with_hysteresis_and_recovers() -> None:
     config = EventsConfig(
         fuel=FuelEventsConfig(
@@ -337,7 +397,8 @@ def test_tyre_life_policy_matches_the_matrix() -> None:
 
 
 def test_tyre_life_opens_updates_and_does_not_warn_if_it_reaches_the_finish() -> None:
-    rule = TyreLifeNearLimitRule()
+    config = EventsConfig(tyres=TyreEventsConfig(warn_laps=8.0))
+    rule = TyreLifeNearLimitRule(config)
     tracker = ConditionTracker(rule.policy)
 
     first = rule.observe(
@@ -367,14 +428,25 @@ def test_tyre_life_opens_updates_and_does_not_warn_if_it_reaches_the_finish() ->
     assert [item.signal.phase for item in updated] == [EventPhase.UPDATED]
     assert _facts(updated[0].signal)["laps_left"] == 1.0
 
-    reaches_finish = rule.observe(
+    reaches_finish = TyreLifeNearLimitRule(config).observe(
         _inputs(
-            metrics=_tyre_metrics(age=48, laps_to_limit=5.0, lifespan=60),
-            state=_state(lap=48, age=48, lifespan=60),
-            lap=48,
+            metrics=_tyre_metrics(age=48, laps_to_limit=6.0, lifespan=60),
+            state=_state(lap=52, age=48, lifespan=60),
+            config=config,
+            lap=52,
         )
     )[0]
     assert reaches_finish.active is False
+
+    earlier_race = TyreLifeNearLimitRule(config).observe(
+        _inputs(
+            metrics=_tyre_metrics(age=48, laps_to_limit=6.0, lifespan=60),
+            state=_state(lap=48, age=48, lifespan=60),
+            config=config,
+            lap=48,
+        )
+    )[0]
+    assert earlier_race.active is True
 
 
 def test_tyre_life_change_emits_a_close_for_the_previous_tyre() -> None:
