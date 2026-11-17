@@ -104,6 +104,7 @@ class ConditionPolicy:
     enter: float | None = None
     exit: float | None = None
     direction: Literal["below", "above"] | None = None
+    enter_inclusive: bool = False
     update_min_delta: float | None = None
     one_shot: bool = False
     announce_close: bool = False
@@ -125,6 +126,8 @@ class ConditionPolicy:
             _check_non_negative_finite("update_min_delta", self.update_min_delta)
         if self.direction is not None and self.direction not in {"below", "above"}:
             raise ValueError("direction debe ser 'below', 'above' o None")
+        if not isinstance(self.enter_inclusive, bool):
+            raise ValueError("enter_inclusive debe ser booleano")
         if (self.enter is None) != (self.exit is None):
             raise ValueError("enter y exit deben declararse juntos")
         if self.enter is not None and self.exit is not None:

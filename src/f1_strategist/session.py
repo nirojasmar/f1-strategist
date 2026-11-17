@@ -13,6 +13,7 @@ from pathlib import Path
 from . import __version__
 from .capture import CapturedPacket, CaptureWriter
 from .config import AppConfig
+from .events.engine import EventEngine
 from .events.types import EventsSnapshot
 from .fingerprint import build_run_info, file_sha256
 from .messages import DiagnosticMessage, message
@@ -46,6 +47,7 @@ class CaptureSession:
         self._race_state = RaceState()
         self._metrics_engine = metrics_engine or MetricsEngine(config.metrics)
         self._strategy_engine = strategy_engine or StrategyEngine(config.strategy, config.metrics)
+        self._event_engine = EventEngine(config)
         self._queue: queue.Queue[CapturedPacket] = queue.Queue(maxsize=queue_size)
         self._receiver = UdpReceiver(config.telemetry, self._queue, self.stats)
         self._writer: CaptureWriter | None = None
@@ -58,6 +60,8 @@ class CaptureSession:
         self._reported_dropped_batches = 0
         self._strategy_error_session_uid: int | None = None
         self._strategy_error_active = False
+        self._events_error_session_uid: int | None = None
+        self._events_error_active = False
         self._last_observed_at: float | None = None
         self._last_header: PacketHeader | None = None
         self._profiled_uids: set[int] = set()
@@ -299,8 +303,8 @@ class CaptureSession:
         return self._strategy_engine.snapshot()
 
     def events_snapshot(self) -> EventsSnapshot:
-        """Eventos detectados; vacío hasta que se integre el motor (E8)."""
-        return EventsSnapshot()
+        """Último estado publicado por el motor de eventos."""
+        return self._event_engine.snapshot()
 
     def _consume(self) -> None:
         while not (self._stop_consumer.is_set() and self._queue.empty()):
@@ -385,6 +389,7 @@ class CaptureSession:
                             except Exception as exc:
                                 _LOGGER.exception("Unexpected error while recording the session")
                                 self._record_error(message("recorder_error", error=str(exc)))
+                        strategy_snapshot = self._strategy_engine.snapshot()
                         try:
                             self._strategy_engine.apply(
                                 state_snapshot,
@@ -414,6 +419,41 @@ class CaptureSession:
                         except Exception as exc:
                             _LOGGER.exception("Unexpected error while updating strategy")
                             self._record_error(message("strategy_engine_error", error=str(exc)))
+                        try:
+                            self._event_engine.apply(
+                                state_snapshot,
+                                self._metrics_engine.snapshot(),
+                                strategy_snapshot,
+                                observed_at,
+                            )
+                            evaluation = self._event_engine.last_evaluation
+                            if recorder is not None and evaluation is not None:
+                                recorder.record_events(
+                                    evaluation.signals,
+                                    evaluation.decisions,
+                                    observed_at,
+                                )
+                            events_snapshot = self._event_engine.snapshot()
+                            session_uid = state_snapshot.session.uid
+                            if session_uid != self._events_error_session_uid:
+                                self._events_error_session_uid = session_uid
+                                self._events_error_active = False
+                            if events_snapshot.error is not None:
+                                if not self._events_error_active:
+                                    self._record_error(
+                                        message(
+                                            "events_engine_error",
+                                            error=events_snapshot.error,
+                                        )
+                                    )
+                                self._events_error_active = True
+                            else:
+                                self._events_error_active = False
+                        except Exception as exc:
+                            _LOGGER.exception("Unexpected error while updating events")
+                            if not self._events_error_active:
+                                self._record_error(message("events_engine_error", error=str(exc)))
+                            self._events_error_active = True
                         self._last_observed_at = observed_at
                         self._last_header = parsed_packet.header
         writer = self._writer

@@ -23,6 +23,7 @@ from .strategy.types import STRATEGY_SCHEMA_VERSION
 from .weekend_profile import WeekendProfile
 
 FINGERPRINT_SCHEMA_VERSION = 1
+GATE_FINGERPRINT_SCHEMA_VERSION = 1
 
 _IGNORED_KEYS = frozenset({"capture_path"})
 
@@ -97,6 +98,65 @@ def compute_strategy_fingerprint(config: StrategyConfig) -> str:
         "config": config.model_dump(mode="json"),
     }
     return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()
+
+
+def compute_gate_fingerprint(records: Iterable[object]) -> str:
+    """Huella independiente de plataforma y del orden de señales/decisiones."""
+    accumulator = GateFingerprintAccumulator()
+    accumulator.add(records)
+    return accumulator.fingerprint
+
+
+class GateFingerprintAccumulator:
+    """Bounded-memory, order-independent accumulator for persisted gate records."""
+
+    __slots__ = ("_count", "_xor", "_sum")
+
+    def __init__(self) -> None:
+        self._count = 0
+        self._xor = 0
+        self._sum = 0
+
+    def copy(self) -> GateFingerprintAccumulator:
+        result = GateFingerprintAccumulator()
+        result._count = self._count
+        result._xor = self._xor
+        result._sum = self._sum
+        return result
+
+    def add(self, records: Iterable[object]) -> None:
+        for record in records:
+            encoded = _canonical_json(_gate_value(record)).encode("utf-8")
+            digest = int.from_bytes(hashlib.sha256(encoded).digest(), "big")
+            self._count += 1
+            self._xor ^= digest
+            self._sum = (self._sum + digest) % (1 << 256)
+
+    @property
+    def fingerprint(self) -> str:
+        payload = {
+            "schema_version": GATE_FINGERPRINT_SCHEMA_VERSION,
+            "count": self._count,
+            "xor": f"{self._xor:064x}",
+            "sum": f"{self._sum:064x}",
+        }
+        return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()
+
+
+def _gate_value(value: object) -> Any:
+    if is_dataclass(value) and not isinstance(value, type):
+        return {field.name: _gate_value(getattr(value, field.name)) for field in fields(value)}
+    if isinstance(value, Enum):
+        return _gate_value(value.value)
+    if isinstance(value, Mapping):
+        return {str(key): _gate_value(item) for key, item in value.items()}
+    if isinstance(value, (tuple, list)):
+        return [_gate_value(item) for item in value]
+    if isinstance(value, (set, frozenset)):
+        return sorted((_gate_value(item) for item in value), key=_canonical_json)
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    return str(value)
 
 
 def _effective_metrics_config(config: AppConfig | MetricsConfig | None) -> MetricsConfig:

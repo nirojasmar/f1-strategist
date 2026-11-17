@@ -15,7 +15,8 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from .capture import CaptureReader
-from .config import MetricsConfig, StrategyConfig
+from .config import EventsConfig, GateConfig, MetricsConfig, StrategyConfig
+from .events.engine import EventEngine
 from .events.types import EventsSnapshot
 from .metrics.engine import MetricsEngine, MetricsSnapshot
 from .metrics.history import LapHistorySnapshot
@@ -46,12 +47,16 @@ class PlaybackSession:
         start_lap: int | None = None,
         profiles_by_uid: Mapping[int, WeekendProfile] | None = None,
         strategy_config: StrategyConfig | None = None,
+        events_config: EventsConfig | None = None,
+        gate_config: GateConfig | None = None,
     ) -> None:
         if start_lap is not None and start_lap < 1:
             raise ValueError("start_lap debe ser positivo")
         self.path = Path(path)
         self._config = config
         self._strategy_config = strategy_config or StrategyConfig()
+        self._events_config = events_config or EventsConfig()
+        self._gate_config = gate_config or GateConfig()
         self._loop = loop
         self._speed = _validate_speed(speed)
         self._seek_lap = start_lap
@@ -69,6 +74,11 @@ class PlaybackSession:
         self._race_state = RaceState()
         self._metrics_engine = MetricsEngine(config)
         self._strategy_engine = StrategyEngine(self._strategy_config, config)
+        self._event_engine = EventEngine(
+            self._events_config,
+            gate=self._gate_config,
+            evaluation_min_interval_s=self._strategy_config.evaluation_min_interval_s,
+        )
         self._stats = Stats()
         # Valida cabecera y metadatos ahora para que los errores sean inmediatos.
         CaptureReader(self.path)
@@ -222,8 +232,8 @@ class PlaybackSession:
         return self._strategy_engine.snapshot()
 
     def events_snapshot(self) -> EventsSnapshot:
-        """Eventos detectados; vacío hasta que se integre el motor (E8)."""
-        return EventsSnapshot()
+        """Último estado publicado por el motor de eventos."""
+        return self._event_engine.snapshot()
 
     # ------------------------------------------------------------------
     # Hilo de reproducción
@@ -261,6 +271,11 @@ class PlaybackSession:
         self._race_state = RaceState()
         self._metrics_engine = MetricsEngine(self._config)
         self._strategy_engine = StrategyEngine(self._strategy_config, self._config)
+        self._event_engine = EventEngine(
+            self._events_config,
+            gate=self._gate_config,
+            evaluation_min_interval_s=self._strategy_config.evaluation_min_interval_s,
+        )
         self._stats = Stats()
         with self._condition:
             self._observed_at = 0.0
@@ -322,6 +337,12 @@ class PlaybackSession:
                 self._metrics_engine.snapshot(),
                 self._metrics_engine.history.snapshot(),
                 profile,
+                observed_at,
+            )
+            self._event_engine.apply(
+                state,
+                self._metrics_engine.snapshot(),
+                self._strategy_engine.snapshot(),
                 observed_at,
             )
             last_state = state

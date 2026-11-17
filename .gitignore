@@ -12,3 +12,6 @@ captures/
 config.toml
 # Planificación de tareas local
 plans/
+# Capturas de telemetría de pruebas reales
+tests/fixtures/real/sakhir-practice-12-laps.f1cap.gz
+tests/fixtures/real/sakhir-race-20-laps-high-wear.f1cap.gz
