@@ -27,8 +27,8 @@ from .config import AppConfig, ConfigError, MetricsConfig, apply_overrides, load
 from .console import format_bytes, render, run_console
 from .console_messages import render_event_message, render_strategy_rows
 from .datasets import DEFAULT_MANIFEST, Manifest, Scenario, load_manifest, verify_scenario
-from .events.engine import evaluate_once as evaluate_events_once
-from .events.types import EventInputs, Fact
+from .events.engine import EventEngine
+from .events.types import Fact
 from .fingerprint import build_run_info, fingerprint_capture
 from .metrics.engine import MetricsEngine
 from .metrics.export import EXPORT_FORMATS, render_metrics_export, run_metrics_capture
@@ -1634,7 +1634,7 @@ def _cmd_strategy(args: argparse.Namespace, console: Console, err: Console) -> i
 
 class _DetectedEventRow(Protocol):
     t_sim_s: float
-    lap: int
+    lap: int | None
     rule: str
     event_id: str
     phase: str
@@ -1652,7 +1652,7 @@ class _GateDecisionRow(Protocol):
     outcome: str
     reason: str
     alert_id: str | None
-    interrupt: bool
+    interrupt: bool | None
 
 
 class _EventSessionReader(Protocol):
@@ -1706,7 +1706,7 @@ def _cmd_events_show(args: argparse.Namespace, console: Console) -> int:
         )
         table.add_row(
             f"{detection.t_sim_s:.1f} s",
-            str(detection.lap),
+            "—" if detection.lap is None else str(detection.lap),
             detection.rule,
             detection.phase,
             detection.priority,
@@ -1728,12 +1728,19 @@ def _cmd_events_summary(args: argparse.Namespace, console: Console) -> int:
     by_rule = Counter(item.rule for item in detections)
     by_outcome = Counter(item.outcome for item in decisions)
     by_reason = Counter(item.reason for item in decisions)
-    laps_by_event = {item.event_id: item.lap for item in detections}
-    alert_laps = Counter(
-        laps_by_event[item.event_id]
-        for item in decisions
-        if item.alert_id is not None and item.event_id in laps_by_event
-    )
+    detections_by_key: dict[tuple[str, str], list[_DetectedEventRow]] = defaultdict(list)
+    for item in detections:
+        detections_by_key[(item.event_id, item.phase)].append(item)
+    alert_laps: Counter[int] = Counter()
+    for item in decisions:
+        if item.alert_id is None:
+            continue
+        candidates = detections_by_key.get((item.event_id, item.phase), [])
+        if not candidates:
+            continue
+        nearest = min(candidates, key=lambda row: abs(row.t_sim_s - item.t_sim_s))
+        if nearest.lap is not None:
+            alert_laps[nearest.lap] += 1
     material_counts = Counter(
         (item.rule, item.material_key) for item in detections if item.material_key is not None
     )
@@ -1769,7 +1776,7 @@ class _EventsCaptureCollector:
         self.race = RaceState()
         self.metrics = MetricsEngine(cfg.metrics)
         self.strategy = StrategyEngine(cfg.strategy, cfg.metrics)
-        self.last_state_events: tuple[Any, ...] = ()
+        self.engine = EventEngine(cfg)
         self.timeline: list[tuple[float, int, str, str, str, str, str]] = []
 
     def apply(self, packet: ParsedPacket, observed_at: float) -> None:
@@ -1784,33 +1791,19 @@ class _EventsCaptureCollector:
             None,
             observed_at,
         )
-        lap = state.current_lap or 0
-        if (self.from_lap is not None and lap < self.from_lap) or (
-            self.to_lap is not None and lap > self.to_lap
-        ):
-            self.last_state_events = state.events
+        self.engine.apply(state, metrics, self.strategy.snapshot(), observed_at)
+        evaluation = self.engine.last_evaluation
+        if evaluation is None:
             return
-        new_events = tuple(event for event in state.events if event not in self.last_state_events)
-        self.last_state_events = state.events
-        evaluation = evaluate_events_once(
-            EventInputs(
-                state=state,
-                metrics=metrics,
-                strategy=self.strategy.snapshot(),
-                config=self.cfg.events,
-                now=observed_at,
-                lap=lap,
-                new_state_events=new_events,
-            ),
-            self.cfg.gate,
-        )
         decisions = {(item.event_id, item.phase): item for item in evaluation.decisions}
         for event_signal in evaluation.signals:
+            if not self._lap_in_range(event_signal.lap):
+                continue
             decision = decisions.get((event_signal.event_id, event_signal.phase))
             self.timeline.append(
                 (
-                    observed_at,
-                    lap,
+                    event_signal.observed_at,
+                    event_signal.lap,
                     event_signal.rule,
                     event_signal.priority.value,
                     render_event_message(event_signal.message_key, event_signal.facts),
@@ -1818,6 +1811,12 @@ class _EventsCaptureCollector:
                     "—" if decision is None else decision.reason,
                 )
             )
+
+    def _lap_in_range(self, lap: int) -> bool:
+        return not (
+            (self.from_lap is not None and lap < self.from_lap)
+            or (self.to_lap is not None and lap > self.to_lap)
+        )
 
     def should_stop(self) -> bool:
         if self.to_lap is None:

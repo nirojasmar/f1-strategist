@@ -47,6 +47,11 @@ _FRESHNESS_LABELS = {
     "participants": "participantes",
     "car_status": "combustible/neumáticos",
 }
+_EVENT_PRIORITY_LABELS = {
+    "critical": "crítica",
+    "strategic": "estratégica",
+    "informational": "informativa",
+}
 
 
 def _display_enum(value: str | None) -> str:
@@ -175,9 +180,10 @@ def _render_events_summary(snapshot: EventsSnapshot) -> Panel:
     else:
         for alert in reversed(alerts[-5:]):
             lap = "—" if alert.lap == 0 else str(alert.lap)
+            priority = _EVENT_PRIORITY_LABELS.get(alert.priority.value, alert.priority.value)
             message = render_event_message(alert.message_key, alert.facts)
             table.add_row(
-                f"{alert.priority.value} · V{lap}",
+                f"{priority} · V{lap}",
                 Text(message),
             )
     return Panel(table, title=EVENTS_PANEL_TITLE, expand=False)
