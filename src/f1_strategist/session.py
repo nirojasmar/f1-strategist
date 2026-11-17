@@ -426,6 +426,13 @@ class CaptureSession:
                                 strategy_snapshot,
                                 observed_at,
                             )
+                            evaluation = self._event_engine.last_evaluation
+                            if recorder is not None and evaluation is not None:
+                                recorder.record_events(
+                                    evaluation.signals,
+                                    evaluation.decisions,
+                                    observed_at,
+                                )
                             events_snapshot = self._event_engine.snapshot()
                             session_uid = state_snapshot.session.uid
                             if session_uid != self._events_error_session_uid:

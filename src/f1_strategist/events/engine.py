@@ -103,6 +103,7 @@ class EventEngine:
         self._trackers: tuple[ConditionTracker, ...] = ()
         self._gate = EventGate(gate_cfg)
         self._snapshot = EventsSnapshot(muted=gate_cfg.muted)
+        self._last_evaluation: EventEvaluation | None = None
         self._error: str | None = None
         self._reset_rules()
 
@@ -129,9 +130,12 @@ class EventEngine:
         Nunca propaga un fallo al consumidor: lo deja en ``EventsSnapshot.error``
         y conserva el estado previamente publicado.
         """
+        self._last_evaluation = None
         if not self._config.enabled:
             return
 
+        signals: tuple[EventSignal, ...] = ()
+        decisions: tuple[GateDecision, ...] = ()
         try:
             _validate_observed_at(observed_at)
             lap = state.current_lap or 0
@@ -173,9 +177,12 @@ class EventEngine:
                         lap=lap,
                         new_state_events=new_events,
                     )
-                    signals = _collect_signals(self._rules, self._trackers, inputs)
-                    if self._gate_config.enabled:
-                        self._gate.process(signals, now=observed_at, lap=lap)
+                    signals = tuple(_collect_signals(self._rules, self._trackers, inputs))
+                    decisions = (
+                        tuple(self._gate.process(signals, now=observed_at, lap=lap))
+                        if self._gate_config.enabled
+                        else ()
+                    )
                     self._error = None
                 except Exception as exc:
                     self._error = f"{type(exc).__name__}: {exc}"
@@ -187,6 +194,8 @@ class EventEngine:
                     self._evaluated_strategy_token = strategy_token
                     self._mark_state_events_seen(state.events)
                     self._publish()
+                    if self._error is None:
+                        self._last_evaluation = EventEvaluation(signals, decisions, self._snapshot)
 
             self._last_lap = state.current_lap if state.current_lap is not None else self._last_lap
             if uid is not None:
@@ -198,6 +207,11 @@ class EventEngine:
     def snapshot(self) -> EventsSnapshot:
         """Último estado publicado; inmutable y seguro para consumidores."""
         return self._snapshot
+
+    @property
+    def last_evaluation(self) -> EventEvaluation | None:
+        """Última evaluación completada por esta llamada a :meth:`apply`, si la hubo."""
+        return self._last_evaluation
 
     # ------------------------------------------------------------------
     # Cadencia y reinicios

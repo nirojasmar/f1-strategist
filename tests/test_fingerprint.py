@@ -24,6 +24,7 @@ from f1_strategist.fingerprint import (
     build_run_info,
     compute_config_hash,
     compute_fingerprint,
+    compute_gate_fingerprint,
     compute_strategy_fingerprint,
     fingerprint_capture,
 )
@@ -213,6 +214,18 @@ def test_strategy_fingerprint_ignores_track_order_and_platform(
 
     assert fingerprint == compute_strategy_fingerprint(reordered)
     assert len(fingerprint) == 64
+
+
+def test_gate_fingerprint_ignores_record_order_and_platform(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    records = ({"kind": "signal", "event_id": "a"}, {"kind": "decision", "outcome": "emit"})
+    expected = compute_gate_fingerprint(records)
+    monkeypatch.setattr("f1_strategist.fingerprint.platform.platform", lambda: "other-os")
+    monkeypatch.setattr("f1_strategist.fingerprint.platform.python_version", lambda: "0.0")
+
+    assert compute_gate_fingerprint(reversed(records)) == expected
+    assert len(expected) == 64
 
 
 def test_run_info_has_versions_and_capture_hash(

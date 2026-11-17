@@ -68,6 +68,7 @@ _SESSION_COLUMNS: tuple[str, ...] = (
     "profile_json",
     "profile_hash",
     "strategy_fingerprint",
+    "gate_fingerprint",
 )
 
 _WEEKEND_COLUMNS: tuple[str, ...] = (
@@ -129,6 +130,7 @@ class SessionInfo:
     profile_json: str | None = None
     profile_hash: str | None = None
     strategy_fingerprint: str | None = None
+    gate_fingerprint: str | None = None
 
     def __post_init__(self) -> None:
         if self.session_uid < 0 or self.session_uid > 2**64 - 1:
@@ -300,6 +302,41 @@ class StoredStrategyEvaluation:
                 raise ValueError(f"{name} no puede estar vacío")
 
 
+@dataclass(frozen=True, slots=True)
+class StoredDetectedEvent:
+    seq: int
+    t_sim_s: float
+    lap: int | None
+    rule: str
+    event_id: str
+    phase: str
+    priority: str
+    category: str
+    message_key: str
+    facts_json: str
+    material_key: str | None
+
+    def __post_init__(self) -> None:
+        if self.seq < 1 or not math.isfinite(self.t_sim_s):
+            raise ValueError("seq debe ser positivo y t_sim_s finito")
+
+
+@dataclass(frozen=True, slots=True)
+class StoredGateDecision:
+    seq: int
+    t_sim_s: float
+    event_id: str
+    phase: str
+    outcome: str
+    reason: str
+    alert_id: str | None
+    interrupt: bool | None
+
+    def __post_init__(self) -> None:
+        if self.seq < 1 or not math.isfinite(self.t_sim_s):
+            raise ValueError("seq debe ser positivo y t_sim_s finito")
+
+
 class SessionStore:
     """Conexión a una base de sesiones con API de escritura y lectura."""
 
@@ -403,6 +440,7 @@ class SessionStore:
             info.profile_json,
             info.profile_hash,
             info.strategy_fingerprint,
+            info.gate_fingerprint,
         ]
         columns = _SESSION_COLUMNS[1:]
         weekend_index = _SESSION_COLUMNS.index("weekend_id") - 1
@@ -492,7 +530,8 @@ class SessionStore:
                 "weekend_id = COALESCE(?, weekend_id), "
                 "profile_json = COALESCE(?, profile_json), "
                 "profile_hash = COALESCE(?, profile_hash), "
-                "strategy_fingerprint = COALESCE(?, strategy_fingerprint) "
+                "strategy_fingerprint = COALESCE(?, strategy_fingerprint), "
+                "gate_fingerprint = COALESCE(?, gate_fingerprint) "
                 "WHERE id = ?",
                 (
                     info.game_format,
@@ -515,6 +554,7 @@ class SessionStore:
                     info.profile_json,
                     info.profile_hash,
                     info.strategy_fingerprint,
+                    info.gate_fingerprint,
                     session_id,
                 ),
             )
@@ -835,6 +875,106 @@ class SessionStore:
                 ),
             )
 
+    def add_detected_events(self, session_id: int, events: Iterable[StoredDetectedEvent]) -> None:
+        rows = [
+            (
+                session_id,
+                item.seq,
+                item.t_sim_s,
+                item.lap,
+                item.rule,
+                item.event_id,
+                item.phase,
+                item.priority,
+                item.category,
+                item.message_key,
+                item.facts_json,
+                item.material_key,
+            )
+            for item in events
+        ]
+        if not rows:
+            return
+        with self.transaction() as connection:
+            connection.executemany(
+                "INSERT INTO detected_events (session_id, seq, t_sim_s, lap, rule, event_id, "
+                "phase, priority, category, message_key, facts_json, material_key) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(session_id, seq) DO UPDATE SET t_sim_s=excluded.t_sim_s, "
+                "lap=excluded.lap, rule=excluded.rule, event_id=excluded.event_id, "
+                "phase=excluded.phase, priority=excluded.priority, category=excluded.category, "
+                "message_key=excluded.message_key, facts_json=excluded.facts_json, "
+                "material_key=excluded.material_key",
+                rows,
+            )
+
+    def add_gate_decisions(self, session_id: int, decisions: Iterable[StoredGateDecision]) -> None:
+        rows = [
+            (
+                session_id,
+                item.seq,
+                item.t_sim_s,
+                item.event_id,
+                item.phase,
+                item.outcome,
+                item.reason,
+                item.alert_id,
+                None if item.interrupt is None else int(item.interrupt),
+            )
+            for item in decisions
+        ]
+        if not rows:
+            return
+        with self.transaction() as connection:
+            connection.executemany(
+                "INSERT INTO gate_decisions (session_id, seq, t_sim_s, event_id, phase, "
+                "outcome, reason, alert_id, interrupt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(session_id, seq) DO UPDATE SET t_sim_s=excluded.t_sim_s, "
+                "event_id=excluded.event_id, phase=excluded.phase, outcome=excluded.outcome, "
+                "reason=excluded.reason, alert_id=excluded.alert_id, interrupt=excluded.interrupt",
+                rows,
+            )
+
+    def iter_detected_events(self, session_id: int) -> Iterator[StoredDetectedEvent]:
+        cursor = self._connection.execute(
+            "SELECT seq,t_sim_s,lap,rule,event_id,phase,priority,category,message_key,facts_json,"
+            "material_key FROM detected_events WHERE session_id=? ORDER BY seq",
+            (session_id,),
+        )
+        for row in cursor:
+            yield StoredDetectedEvent(
+                int(row["seq"]),
+                float(row["t_sim_s"]),
+                _optional_int(row["lap"]),
+                str(row["rule"]),
+                str(row["event_id"]),
+                str(row["phase"]),
+                str(row["priority"]),
+                str(row["category"]),
+                str(row["message_key"]),
+                str(row["facts_json"]),
+                _optional_str(row["material_key"]),
+            )
+
+    def iter_gate_decisions(self, session_id: int) -> Iterator[StoredGateDecision]:
+        cursor = self._connection.execute(
+            "SELECT seq,t_sim_s,event_id,phase,outcome,reason,alert_id,interrupt "
+            "FROM gate_decisions WHERE session_id=? ORDER BY seq",
+            (session_id,),
+        )
+        for row in cursor:
+            interrupt = _optional_int(row["interrupt"])
+            yield StoredGateDecision(
+                int(row["seq"]),
+                float(row["t_sim_s"]),
+                str(row["event_id"]),
+                str(row["phase"]),
+                str(row["outcome"]),
+                str(row["reason"]),
+                _optional_str(row["alert_id"]),
+                None if interrupt is None else bool(interrupt),
+            )
+
     # ------------------------------------------------------------------
     # Fines de semana
     # ------------------------------------------------------------------
@@ -901,7 +1041,8 @@ class SessionStore:
     def list_weekend_sessions(self, weekend_id: int) -> list[SessionInfo]:
         """Devuelve las sesiones enlazadas a un fin de semana, por orden de id."""
         rows = self._connection.execute(
-            f"SELECT {', '.join(_SESSION_COLUMNS)} FROM sessions WHERE weekend_id = ? ORDER BY id",
+            f"SELECT {_session_select_columns(self._connection)} FROM sessions "
+            "WHERE weekend_id = ? ORDER BY id",
             (weekend_id,),
         ).fetchall()
         return [_session_from_row(row) for row in rows]
@@ -909,7 +1050,7 @@ class SessionStore:
     def unlinked_sessions(self) -> list[SessionInfo]:
         """Devuelve las sesiones que no pertenecen a ningún fin de semana."""
         rows = self._connection.execute(
-            f"SELECT {', '.join(_SESSION_COLUMNS)} FROM sessions "
+            f"SELECT {_session_select_columns(self._connection)} FROM sessions "
             "WHERE weekend_id IS NULL ORDER BY id"
         ).fetchall()
         return [_session_from_row(row) for row in rows]
@@ -1051,14 +1192,14 @@ class SessionStore:
     def list_sessions(self) -> list[SessionInfo]:
         """Devuelve todas las sesiones, de la más antigua a la más reciente."""
         rows = self._connection.execute(
-            f"SELECT {', '.join(_SESSION_COLUMNS)} FROM sessions ORDER BY id"
+            f"SELECT {_session_select_columns(self._connection)} FROM sessions ORDER BY id"
         ).fetchall()
         return [_session_from_row(row) for row in rows]
 
     def get_session(self, session_id: int) -> SessionInfo | None:
         """Devuelve una sesión por id, o ``None`` si no existe."""
         row = self._connection.execute(
-            f"SELECT {', '.join(_SESSION_COLUMNS)} FROM sessions WHERE id = ?",
+            f"SELECT {_session_select_columns(self._connection)} FROM sessions WHERE id = ?",
             (session_id,),
         ).fetchone()
         return None if row is None else _session_from_row(row)
@@ -1243,7 +1384,17 @@ def _open_readonly(location: str) -> sqlite3.Connection:
     return connection
 
 
+def _session_select_columns(connection: sqlite3.Connection) -> str:
+    available = {
+        str(row[1]) for row in connection.execute("PRAGMA table_info(sessions)").fetchall()
+    }
+    return ", ".join(
+        f"NULL AS {column}" if column not in available else column for column in _SESSION_COLUMNS
+    )
+
+
 def _session_from_row(row: sqlite3.Row) -> SessionInfo:
+    row_values = dict(row)
     return SessionInfo(
         id=int(row["id"]),
         session_uid=int(row["session_uid"]),
@@ -1273,6 +1424,7 @@ def _session_from_row(row: sqlite3.Row) -> SessionInfo:
         profile_json=_optional_str(row["profile_json"]),
         profile_hash=_optional_str(row["profile_hash"]),
         strategy_fingerprint=_optional_str(row["strategy_fingerprint"]),
+        gate_fingerprint=(_optional_str(row_values.get("gate_fingerprint"))),
     )
 
 
