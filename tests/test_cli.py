@@ -1,14 +1,33 @@
 from __future__ import annotations
 
 import socket
+import struct
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+import f1_strategist.cli as cli_module
 from f1_strategist.capture import CapturedPacket, CaptureWriter
 from f1_strategist.cli import main
+from f1_strategist.config import EventsConfig
+from f1_strategist.events.types import (
+    ConditionPolicy,
+    EventInputs,
+    EventPriority,
+    Observation,
+)
+from f1_strategist.packets import HEADER_SIZE
+from f1_strategist.parser import ParsedPacket
+from f1_strategist.store import (
+    SessionInfo,
+    SessionStore,
+    StoredDetectedEvent,
+    StoredGateDecision,
+)
 
 from .conftest import make_packet
+from .scenarios import ScenarioCar, build_race_timed
 
 
 def test_run_with_invalid_config_exits_with_error(tmp_path: Path) -> None:

@@ -10,7 +10,17 @@ from rich.console import Console
 import f1_strategist.console as console_module
 from f1_strategist.config import AppConfig
 from f1_strategist.console import _render_metrics_summary, _render_race_summary, render
-from f1_strategist.console_messages import render_diagnostic, render_race_event
+from f1_strategist.console_messages import (
+    render_diagnostic,
+    render_event_message,
+    render_race_event,
+)
+from f1_strategist.events.types import (
+    AgentAlert,
+    EventPhase,
+    EventPriority,
+    EventsSnapshot,
+)
 from f1_strategist.messages import message
 from f1_strategist.metrics.engine import MetricsSnapshot
 from f1_strategist.metrics.types import Metric, Quality, Window

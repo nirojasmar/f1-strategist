@@ -192,9 +192,12 @@ def test_regular_evaluations_respect_the_interval_and_state_events_force_one() -
 
     engine.apply(_state(), _metrics(0.0), StrategySnapshot(), 0.0)
     assert rule.calls == 1
+    assert engine.last_evaluation is not None
+    assert engine.last_evaluation.snapshot == engine.snapshot()
 
     engine.apply(_state(), _metrics(0.0), StrategySnapshot(), 5.0)
     assert rule.calls == 1
+    assert engine.last_evaluation is None
 
     engine.apply(_state(), _metrics(1.0), StrategySnapshot(), 6.0)
     assert rule.calls == 1
@@ -227,20 +230,22 @@ def test_state_events_are_not_replayed_across_evaluations() -> None:
     assert len(rule.seen_events) == 2
 
 
-def test_rule_failure_is_reported_once_and_does_not_raise() -> None:
-    rule = _FailingRule()
-    engine = EventEngine(EventsConfig(), rules=[rule])
-
+def test_rule_failure_is_reported_once_and_does_not_raise(monkeypatch: pytest.MonkeyPatch) -> None:
+    engine = EventEngine(EventsConfig(), rules=[_SpyRule()])
     engine.apply(_state(), _metrics(0.0), StrategySnapshot(), 0.0)
+    assert engine.last_evaluation is not None
+
+    def fail(*args: object, **kwargs: object) -> tuple[()]:
+        raise RuntimeError("event boom")
+
+    monkeypatch.setattr("f1_strategist.events.engine._collect_signals", fail)
+    engine.apply(_state(), _metrics(1.0), StrategySnapshot(), 1.0)
 
     snapshot = engine.snapshot()
     assert snapshot.error is not None
     assert "RuntimeError" in snapshot.error
     assert "event boom" in snapshot.error
-    assert rule.calls == 1
-
-    engine.apply(_state(), _metrics(0.0), StrategySnapshot(), 0.5)
-    assert rule.calls == 1
+    assert engine.last_evaluation is None
 
 
 def test_successful_rule_transition_is_published_when_a_later_rule_fails_once() -> None:

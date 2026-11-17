@@ -60,8 +60,10 @@ from f1_strategist.store import (
     Participant,
     SessionInfo,
     SessionStore,
+    StoredDetectedEvent,
     StoredError,
     StoredEvent,
+    StoredGateDecision,
     StoredStrategyEvaluation,
     TyreInventorySnapshot,
 )
@@ -96,6 +98,8 @@ class _FakeStore:
         self.stint_summaries: list[tuple[int, StintSummary]] = []
         self.tyre_inventory: list[tuple[int, TyreInventorySnapshot]] = []
         self.strategy_evaluations: list[tuple[int, StoredStrategyEvaluation]] = []
+        self.detected_events: list[tuple[int, StoredDetectedEvent]] = []
+        self.gate_decisions: list[tuple[int, StoredGateDecision]] = []
         self._next_id = 1
 
     @contextmanager
@@ -409,16 +413,24 @@ def test_ingesting_twice_is_idempotent_and_replace_does_not_duplicate(
 
     with SessionStore.open(tmp_path / "sessions.db") as store:
         first = ingest_capture(path, store, AppConfig())
+        first_detected = list(store.iter_detected_events(first.session_id))
+        first_decisions = list(store.iter_gate_decisions(first.session_id))
         second = ingest_capture(path, store, AppConfig())
         assert second.skipped
         assert second.session_id == first.session_id
         assert len(store.list_sessions()) == 1
+        assert list(store.iter_detected_events(first.session_id)) == first_detected
+        assert list(store.iter_gate_decisions(first.session_id)) == first_decisions
 
         replaced = ingest_capture(path, store, AppConfig(), replace=True)
         assert not replaced.skipped
         assert replaced.session_id != first.session_id
         assert replaced.laps == first.laps
         assert replaced.events == first.events
+        replaced_detected = list(store.iter_detected_events(replaced.session_id))
+        replaced_decisions = list(store.iter_gate_decisions(replaced.session_id))
+        assert len(replaced_detected) == len(first_detected)
+        assert len(replaced_decisions) == len(first_decisions)
         sessions = store.list_sessions()
         assert len(sessions) == 1
         assert sessions[0].id == replaced.session_id

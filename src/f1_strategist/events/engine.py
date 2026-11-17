@@ -126,6 +126,7 @@ class EventEngine:
         self._trackers: tuple[ConditionTracker, ...] = ()
         self._gate = EventGate(gate_cfg)
         self._snapshot = EventsSnapshot(muted=gate_cfg.muted)
+        self._last_evaluation: EventEvaluation | None = None
         self._error: str | None = None
         self._reset_rules()
 
@@ -152,9 +153,12 @@ class EventEngine:
         Nunca propaga un fallo al consumidor: lo deja en ``EventsSnapshot.error``
         y conserva el estado previamente publicado.
         """
+        self._last_evaluation = None
         if not self._config.enabled:
             return
 
+        signals: tuple[EventSignal, ...] = ()
+        decisions: tuple[GateDecision, ...] = ()
         try:
             _validate_observed_at(observed_at)
             lap = state.current_lap or 0
@@ -253,6 +257,11 @@ class EventEngine:
     def snapshot(self) -> EventsSnapshot:
         """Último estado publicado; inmutable y seguro para consumidores."""
         return self._snapshot
+
+    @property
+    def last_evaluation(self) -> EventEvaluation | None:
+        """Última evaluación completada por esta llamada a :meth:`apply`, si la hubo."""
+        return self._last_evaluation
 
     # ------------------------------------------------------------------
     # Cadencia y reinicios

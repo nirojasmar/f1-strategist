@@ -13,7 +13,7 @@ from collections import Counter, defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol, cast
 
 from rich.console import Console, Group
 from rich.live import Live
@@ -25,8 +25,10 @@ from . import __version__
 from .capture import CaptureError
 from .config import AppConfig, ConfigError, MetricsConfig, apply_overrides, load_config
 from .console import format_bytes, render, run_console
-from .console_messages import render_strategy_rows
+from .console_messages import render_event_message, render_strategy_rows
 from .datasets import DEFAULT_MANIFEST, Manifest, Scenario, load_manifest, verify_scenario
+from .events.engine import EventEngine
+from .events.types import Fact
 from .fingerprint import build_run_info, fingerprint_capture
 from .metrics.engine import MetricsEngine
 from .metrics.export import EXPORT_FORMATS, render_metrics_export, run_metrics_capture
@@ -49,7 +51,7 @@ from .store.queries import (
     session_events,
     session_laps,
 )
-from .strategy.engine import evaluate_once
+from .strategy.engine import StrategyEngine, evaluate_once
 from .strategy.export import STRATEGY_EXPORT_FORMATS, render_strategy_export
 from .strategy.review import review_strategy_evaluations
 from .strategy.types import StrategyEvaluation
@@ -425,7 +427,21 @@ def _build_parser() -> argparse.ArgumentParser:
         help="base de datos SQLite (por defecto, la de la configuración)",
     )
 
-    sub.add_parser("events", help="consulta eventos y alertas del agente")
+    events = sub.add_parser("events", help="consulta eventos y alertas del agente")
+    events_sub = events.add_subparsers(dest="events_command")
+    events_show = events_sub.add_parser("show", help="muestra detecciones y decisiones guardadas")
+    events_show.add_argument("--session", type=_positive_int, required=True, metavar="ID")
+    events_show.add_argument("--rule", help="filtra por clave de regla")
+    events_show.add_argument("--outcome", help="filtra por resultado de la compuerta")
+    events_show.add_argument("--db", type=Path, help="base SQLite (por defecto, configuración)")
+    events_summary = events_sub.add_parser("summary", help="resume detecciones y decisiones")
+    events_summary.add_argument("--session", type=_positive_int, required=True, metavar="ID")
+    events_summary.add_argument("--db", type=Path, help="base SQLite (por defecto, configuración)")
+    events_simulate = events_sub.add_parser("simulate", help="simula detecciones sobre una captura")
+    events_simulate.add_argument("file", type=Path, metavar="CAPTURA")
+    events_simulate.add_argument("--from-lap", type=_positive_int, metavar="A")
+    events_simulate.add_argument("--to-lap", type=_positive_int, metavar="B")
+    events_simulate.add_argument("--config", type=Path, help="archivo TOML de configuración")
     return parser
 
 
@@ -1862,8 +1878,13 @@ def _cmd_events_simulate(args: argparse.Namespace, console: Console, err: Consol
 
 
 def _cmd_events(args: argparse.Namespace, console: Console, err: Console) -> int:
-    """Punto de entrada del grupo; E10 añade los subcomandos y el panel."""
-    return 0
+    if args.events_command is None:
+        return 0
+    if args.events_command == "show":
+        return _cmd_events_show(args, console)
+    if args.events_command == "summary":
+        return _cmd_events_summary(args, console)
+    return _cmd_events_simulate(args, console, err)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
