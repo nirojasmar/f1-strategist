@@ -6,6 +6,7 @@ está vacío para que la integración pueda construirse antes que las reglas.
 
 from __future__ import annotations
 
+from .rules_damage import DamageDetectedRule, RivalPitStopRule
 from .rules_resources import (
     FuelMarginCriticalRule,
     FuelMarginLowRule,
@@ -38,4 +39,6 @@ EVENT_RULES: tuple[EventRule, ...] = (
     WeatherChangedRule(),
     RainExpectedRule(),
     DataStaleRule(),
+    DamageDetectedRule(),
+    RivalPitStopRule(),
 )
