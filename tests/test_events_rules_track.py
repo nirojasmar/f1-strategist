@@ -409,8 +409,13 @@ def test_rain_expected_needs_two_observations_and_uses_hysteresis() -> None:
         return _inputs(metrics=metrics, lap=lap, config=config)
 
     at_enter = rule.observe(inputs(50.0, lap=11))[0]
-    assert at_enter.active is False
-    assert tracker.update(at_enter, now=9.0, lap=11) == ()
+    assert at_enter.active is True
+
+    inclusive_tracker = ConditionTracker(rule.policy)
+    assert inclusive_tracker.update(at_enter, now=9.0, lap=11) == ()
+    inclusive_opened = inclusive_tracker.update(at_enter, now=10.0, lap=11)
+    assert len(inclusive_opened) == 1
+    assert inclusive_opened[0].signal.phase is EventPhase.OPENED
 
     first = _update(tracker, rule, inputs(60.0, lap=12), now=10.0)
     assert first == []

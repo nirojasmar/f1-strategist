@@ -190,6 +190,7 @@ class RainExpectedRule:
             enter=weather.rain_enter_pct,
             exit=weather.rain_exit_pct,
             direction="above",
+            enter_inclusive=True,
             update_min_delta=weather.update_delta_pct,
         )
 
@@ -215,7 +216,7 @@ class RainExpectedRule:
         return (
             Observation(
                 key=_RAIN_EXPECTED_KEY,
-                active=probability > self._config.weather.rain_enter_pct,
+                active=probability >= self._config.weather.rain_enter_pct,
                 value=probability,
                 facts=facts,
                 material_key=_RAIN_EXPECTED_KEY,

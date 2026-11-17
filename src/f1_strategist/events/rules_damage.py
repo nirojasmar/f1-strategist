@@ -50,6 +50,8 @@ class DamageDetectedRule:
         self._config = config or EventsConfig()
         self._last_session_uid: int | None = None
         self._announced: dict[str, float] = {}
+        self._announced_faults: set[str] = set()
+        self._repair_pending: set[str] = set()
 
     @property
     def policy(self) -> ConditionPolicy:
@@ -70,6 +72,7 @@ class DamageDetectedRule:
                 Observation(key=key, active=None, facts=_damage_facts(component, None, 0.0))
                 for component, key in _KEY_COMPONENTS
             )
+        self._mark_player_pit_stop(inputs)
 
         observations = [
             self._numeric_observation(
@@ -105,7 +108,6 @@ class DamageDetectedRule:
         quality = metric.quality if metric is not None else None
         value = _usable_number(metric)
         if value is None:
-            self._announced.pop(key, None)
             return Observation(
                 key=key,
                 active=None,
@@ -124,7 +126,6 @@ class DamageDetectedRule:
         car = inputs.state.player_car
         damage = car.damage if car is not None else None
         if damage is None or not damage.tyres_damage:
-            self._announced.pop(_TYRES_KEY, None)
             return Observation(
                 key=_TYRES_KEY,
                 active=None,
@@ -132,7 +133,6 @@ class DamageDetectedRule:
                 quality=Quality.UNAVAILABLE,
             )
         if quality not in _USABLE_QUALITIES:
-            self._announced.pop(_TYRES_KEY, None)
             return Observation(
                 key=_TYRES_KEY,
                 active=None,
@@ -162,9 +162,18 @@ class DamageDetectedRule:
                 priority=priority,
                 facts=_damage_facts(component, None, 0.0),
             )
+        active = fault in faults
+        if active:
+            self._announced_faults.add(key)
+        elif key in self._announced_faults:
+            if key in self._repair_pending:
+                self._announced_faults.remove(key)
+                self._repair_pending.remove(key)
+            else:
+                active = True
         return Observation(
             key=key,
-            active=fault in faults,
+            active=active,
             priority=priority,
             facts=_damage_facts(component, None, 0.0),
         )
@@ -177,8 +186,8 @@ class DamageDetectedRule:
         value: float,
         quality: Quality | None,
     ) -> Observation:
-        if value <= self._config.damage.warn_pct:
-            self._announced.pop(key, None)
+        announced = self._announced.get(key)
+        if announced is None and value <= self._config.damage.warn_pct:
             return Observation(
                 key=key,
                 active=False,
@@ -187,11 +196,20 @@ class DamageDetectedRule:
                 quality=quality,
             )
 
-        announced = self._announced.get(key)
         if announced is None:
             announced = value
             delta = 0.0
             self._announced[key] = announced
+        elif value <= self._config.damage.warn_pct and key in self._repair_pending:
+            self._announced.pop(key, None)
+            self._repair_pending.remove(key)
+            return Observation(
+                key=key,
+                active=False,
+                value=value,
+                facts=_damage_facts(component, value, 0.0),
+                quality=quality,
+            )
         else:
             delta = value - announced
             if delta >= self._config.damage.update_delta_pct:
@@ -208,11 +226,24 @@ class DamageDetectedRule:
             quality=quality,
         )
 
+    def _mark_player_pit_stop(self, inputs: EventInputs) -> None:
+        player_index = inputs.state.player_car_index
+        if player_index is None:
+            return
+        if any(
+            event.kind == "pit_stop_completed" and event.car_index == player_index
+            for event in inputs.new_state_events
+        ):
+            self._repair_pending.update(self._announced)
+            self._repair_pending.update(self._announced_faults)
+
     def _reset_for_new_session(self, state: RaceStateSnapshot) -> None:
         uid = state.session.uid
         if uid != self._last_session_uid:
             self._last_session_uid = uid
             self._announced.clear()
+            self._announced_faults.clear()
+            self._repair_pending.clear()
 
 
 class RivalPitStopRule:
@@ -262,6 +293,12 @@ class RivalPitStopRule:
                 continue
             rival = _car_by_index(state, event.car_index)
             if rival is None or _is_retired(rival):
+                continue
+            if (
+                player.position is None
+                or rival.position is None
+                or abs(player.position - rival.position) != 1
+            ):
                 continue
             gap_s = _gap_to_player_s(player, rival)
             if gap_s is None or gap_s > self._config.rivals.gap_s:

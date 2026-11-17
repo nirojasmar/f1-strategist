@@ -105,6 +105,8 @@ class ConditionTracker:
             raise ValueError("reason no puede estar vacío")
         _validate_time(now)
         self._states.clear()
+        if reason == "session_changed":
+            self._event_numbers.clear()
         return ()
 
     def _desired_active(self, observation: Observation, is_active: bool) -> bool | None:
@@ -119,7 +121,11 @@ class ConditionTracker:
         if self._policy.direction is None:
             raise RuntimeError("Una política con histéresis requiere una dirección")
         if self._policy.direction == "below":
+            if not is_active and self._policy.enter_inclusive:
+                return observation.value <= threshold
             return observation.value < threshold
+        if not is_active and self._policy.enter_inclusive:
+            return observation.value >= threshold
         return observation.value > threshold
 
     def _update_pending(

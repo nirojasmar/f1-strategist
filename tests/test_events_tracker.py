@@ -141,13 +141,17 @@ def test_one_shot_closes_once_and_waits_for_inactive_before_rearming() -> None:
 def test_reset_for_session_or_flashback_closes_silently_and_restarts_state() -> None:
     tracker = ConditionTracker(_policy())
 
-    tracker.update(_observation(True), now=1.0, lap=7)
+    first = tracker.update(_observation(True), now=1.0, lap=7)
+    assert first[0].signal.event_id == "fuel_margin_low:car:1"
+
     assert tracker.reset("session_changed", now=2.0) == ()
-    tracker.update(_observation(True), now=3.0, lap=8)
+    new_session = tracker.update(_observation(True), now=3.0, lap=8)
+    assert new_session[0].signal.event_id == "fuel_margin_low:car:1"
+
     assert tracker.reset("flashback", now=4.0) == ()
     opened = tracker.update(_observation(True), now=5.0, lap=3)
 
-    assert opened[0].signal.event_id == "fuel_margin_low:car:3"
+    assert opened[0].signal.event_id == "fuel_margin_low:car:2"
 
 
 def test_multiple_keys_have_independent_condition_ids_and_lifecycles() -> None:

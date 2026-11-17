@@ -301,7 +301,7 @@ def test_session_change_and_flashback_reset_the_engine() -> None:
     engine.apply(_state(uid=2, lap=1), _metrics(0.0, uid=2), StrategySnapshot(), 0.5)
     second = engine.snapshot()
     assert len(second.alerts) == 1
-    assert second.alerts[0].event_id != first.alerts[0].event_id
+    assert second.alerts[0].event_id == first.alerts[0].event_id
 
     engine.apply(_state(uid=2, lap=1), _metrics(1.0, uid=2), StrategySnapshot(), 1.5)
     assert rule.calls == 3

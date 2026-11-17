@@ -225,20 +225,30 @@ def _pit_entry(car_index: int = 1, *, lap: int = 20) -> RaceEvent:
     )
 
 
+def _pit_stop_completed(car_index: int = 0) -> RaceEvent:
+    return RaceEvent(
+        kind="pit_stop_completed",
+        occurred_at_monotonic=10.0,
+        car_index=car_index,
+    )
+
+
 def _rival_state(
     *,
     gap_ms: int = 1500,
+    player_position: int = 5,
+    rival_position: int = 6,
     result_status: str | None = None,
     driver_status: str | None = None,
     session: RaceSessionSnapshot | None = None,
     freshness: tuple[PacketFreshness, ...] = (),
 ) -> RaceStateSnapshot:
     cars = (
-        _car(0, name="Player", position=5, delta_ms=0),
+        _car(0, name="Player", position=player_position, delta_ms=0),
         _car(
             1,
             name="Rival",
-            position=6,
+            position=rival_position,
             delta_ms=gap_ms,
             result_status=result_status,
             driver_status=driver_status,
@@ -319,6 +329,59 @@ def test_announced_damage_only_updates_when_it_worsens_enough() -> None:
     updated = _update(tracker, rule, _inputs(metrics=_damage_metrics(wing=40.0)), 14.0)
     assert dict(updated[0].signal.facts)["damage_pct"] == 40.0
     assert updated[0].signal.event_id == opened[0].signal.event_id
+
+
+def test_announced_damage_stays_active_until_repaired_in_a_player_pit_stop() -> None:
+    rule = DamageDetectedRule()
+    tracker = ConditionTracker(rule.policy)
+
+    opened = _update(tracker, rule, _inputs(metrics=_damage_metrics(wing=20.0)), 10.0)
+    assert [item.signal.phase for item in opened] == [EventPhase.OPENED]
+
+    decreased_without_stop = _observations(
+        rule,
+        _inputs(metrics=_damage_metrics(wing=10.0)),
+    )
+    assert decreased_without_stop["damage_wing"].active is True
+    assert decreased_without_stop["damage_wing"].value == 20.0
+    assert (
+        _update(
+            tracker,
+            rule,
+            _inputs(metrics=_damage_metrics(wing=10.0)),
+            11.0,
+        )
+        == ()
+    )
+
+    repaired = _update(
+        tracker,
+        rule,
+        _inputs(
+            metrics=_damage_metrics(wing=10.0),
+            new_state_events=(_pit_stop_completed(),),
+        ),
+        12.0,
+        include_silent_closures=True,
+    )
+    assert [item.signal.phase for item in repaired] == [EventPhase.CLOSED]
+    assert repaired[0].signal.event_id == opened[0].signal.event_id
+
+
+def test_pit_stop_without_repair_keeps_announced_damage_active() -> None:
+    rule = DamageDetectedRule()
+    tracker = ConditionTracker(rule.policy)
+    _update(tracker, rule, _inputs(metrics=_damage_metrics(wing=20.0)), 10.0)
+
+    after_stop = _observations(
+        rule,
+        _inputs(
+            metrics=_damage_metrics(wing=20.0),
+            new_state_events=(_pit_stop_completed(),),
+        ),
+    )
+
+    assert after_stop["damage_wing"].active is True
 
 
 def test_engine_failure_is_critical_and_other_faults_are_strategic() -> None:
@@ -455,6 +518,19 @@ def test_rival_pit_stop_far_from_player_generates_no_alert() -> None:
 
     assert rule.observe(inputs) == ()
     assert _update(ConditionTracker(rule.policy), rule, inputs, 10.0) == ()
+
+
+def test_rival_pit_stop_requires_position_adjacency_even_with_known_deltas() -> None:
+    inputs = _inputs(
+        state=_rival_state(
+            gap_ms=1000,
+            player_position=5,
+            rival_position=8,
+        ),
+        new_state_events=(_pit_entry(1),),
+    )
+
+    assert RivalPitStopRule().observe(inputs) == ()
 
 
 def test_rival_pit_stop_adjacency_boundary_is_inclusive() -> None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import socket
+import sqlite3
 import struct
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,11 +11,17 @@ import pytest
 import f1_strategist.cli as cli_module
 from f1_strategist.capture import CapturedPacket, CaptureWriter
 from f1_strategist.cli import main
-from f1_strategist.config import EventsConfig
+from f1_strategist.config import AppConfig, EventsConfig
+from f1_strategist.events.engine import EventEvaluation
 from f1_strategist.events.types import (
     ConditionPolicy,
     EventInputs,
+    EventPhase,
     EventPriority,
+    EventSignal,
+    EventsSnapshot,
+    GateDecision,
+    GateOutcome,
     Observation,
 )
 from f1_strategist.packets import HEADER_SIZE
@@ -87,9 +94,12 @@ def test_events_summary_reads_rows_and_reports_suppression(
 
     class Store:
         def __enter__(self) -> Store:
+            self.connection = sqlite3.connect(":memory:")
+            self.connection.execute("PRAGMA user_version = 8")
             return self
 
         def __exit__(self, *_: object) -> None:
+            self.connection.close()
             return None
 
         def get_session(self, session_id: int) -> object:
@@ -107,6 +117,23 @@ def test_events_summary_reads_rows_and_reports_suppression(
     assert "Decisiones suprimidas: 1" in output
     assert "quiet_period" in output
     assert "fuel_margin" in output
+
+
+def test_events_commands_reject_v7_without_event_history(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = tmp_path / "v7.db"
+    with SessionStore.open(path) as store:
+        session_id = store.create_session(
+            SessionInfo(session_uid=0xE17, source="live", started_at_utc="2026-11-05T10:00:00Z")
+        )
+    with sqlite3.connect(path) as connection:
+        connection.execute("DROP TABLE gate_decisions")
+        connection.execute("DROP TABLE detected_events")
+        connection.execute("PRAGMA user_version = 7")
+
+    assert main(["events", "show", "--session", str(session_id), "--db", str(path)]) == 2
+    assert "requiere esquema v8" in capsys.readouterr().err
 
 
 def test_events_commands_report_missing_session(
@@ -428,3 +455,42 @@ def test_events_simulate_keeps_engine_state_across_packets(
     ]
     assert len(event_rows) == 1
     assert event_rows[0].split("│")[2].strip() == "2"
+
+
+def test_events_simulate_includes_decisions_from_the_deferred_queue() -> None:
+    collector = cli_module._EventsCaptureCollector(AppConfig(), None, None, {})
+    signal = EventSignal(
+        rule="data_stale",
+        event_id="data_stale_lap_data:1",
+        phase=EventPhase.OPENED,
+        priority=EventPriority.INFORMATIONAL,
+        category="data",
+        message_key="event.data_stale",
+        facts=(("group", "lap_data"), ("age_s", 4.0)),
+        lap=3,
+        observed_at=1.0,
+    )
+    collector._append_evaluation(EventEvaluation((signal,), (), EventsSnapshot()), current_lap=3)
+    collector._append_evaluation(
+        EventEvaluation(
+            (),
+            (
+                GateDecision(
+                    event_id=signal.event_id,
+                    phase=EventPhase.OPENED,
+                    outcome=GateOutcome.DEFER,
+                    reason="deferred",
+                    observed_at=2.0,
+                ),
+            ),
+            EventsSnapshot(),
+        ),
+        current_lap=3,
+    )
+
+    assert len(collector.timeline) == 2
+    deferred_row = collector.timeline[1]
+    assert deferred_row[0] == 2.0
+    assert deferred_row[2] == "data_stale"
+    assert deferred_row[4] == collector.timeline[0][4]
+    assert deferred_row[5:] == ("defer", "deferred")

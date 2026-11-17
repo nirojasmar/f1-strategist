@@ -7,6 +7,7 @@ import json
 import os
 import select
 import signal
+import sqlite3
 import sys
 import time
 from collections import Counter, defaultdict
@@ -27,8 +28,13 @@ from .config import AppConfig, ConfigError, MetricsConfig, apply_overrides, load
 from .console import format_bytes, render, run_console
 from .console_messages import render_event_message, render_strategy_rows
 from .datasets import DEFAULT_MANIFEST, Manifest, Scenario, load_manifest, verify_scenario
-from .events.engine import EventEngine
-from .events.types import Fact
+from .events.engine import EventEngine, EventEvaluation
+from .events.types import (
+    EventPhase,
+    EventSignal,
+    Fact,
+    GateDecision,
+)
 from .fingerprint import build_run_info, fingerprint_capture
 from .metrics.engine import MetricsEngine
 from .metrics.export import EXPORT_FORMATS, render_metrics_export, run_metrics_capture
@@ -51,6 +57,7 @@ from .store.queries import (
     session_events,
     session_laps,
 )
+from .store.schema import SCHEMA_VERSION
 from .strategy.engine import StrategyEngine, evaluate_once
 from .strategy.export import STRATEGY_EXPORT_FORMATS, render_strategy_export
 from .strategy.review import review_strategy_evaluations
@@ -1658,6 +1665,8 @@ class _GateDecisionRow(Protocol):
 class _EventSessionReader(Protocol):
     """Contrato de lectura E9, intencionadamente separado del SessionStore actual."""
 
+    connection: sqlite3.Connection
+
     def iter_detected_events(self, session_id: int) -> Iterable[_DetectedEventRow]: ...
 
     def iter_gate_decisions(self, session_id: int) -> Iterable[_GateDecisionRow]: ...
@@ -1668,6 +1677,13 @@ def _event_session_rows(
 ) -> tuple[Sequence[_DetectedEventRow], Sequence[_GateDecisionRow]]:
     require_session(store, session_id)
     reader = cast(_EventSessionReader, store)
+    version_row = reader.connection.execute("PRAGMA user_version").fetchone()
+    schema_version = 0 if version_row is None else int(version_row[0])
+    if schema_version < SCHEMA_VERSION:
+        raise StoreError(
+            "El historial de eventos requiere esquema "
+            f"v{SCHEMA_VERSION}; la base actual es v{schema_version}."
+        )
     try:
         return (
             tuple(reader.iter_detected_events(session_id)),
@@ -1801,10 +1817,22 @@ class _EventsCaptureCollector:
         self.strategy = StrategyEngine(cfg.strategy, cfg.metrics)
         self.engine = EventEngine(cfg)
         self.timeline: list[tuple[float, int, str, str, str, str, str]] = []
+        self._known_signals: dict[str, EventSignal] = {}
+        self._last_session_uid: int | None = None
+        self._last_lap: int | None = None
 
     def apply(self, packet: ParsedPacket, observed_at: float) -> None:
         self.race.apply(packet, observed_at)
         state = self.race.snapshot()
+        if state.session.uid != self._last_session_uid or (
+            state.current_lap is not None
+            and self._last_lap is not None
+            and state.current_lap < self._last_lap
+        ):
+            self._known_signals.clear()
+        self._last_session_uid = state.session.uid
+        if state.current_lap is not None:
+            self._last_lap = state.current_lap
         session = state.session
         profile = (
             self.profiles_by_uid.get(session.uid)
@@ -1827,11 +1855,22 @@ class _EventsCaptureCollector:
         evaluation = self.engine.last_evaluation
         if evaluation is None:
             return
-        decisions = {(item.event_id, item.phase): item for item in evaluation.decisions}
+        self._append_evaluation(evaluation, state.current_lap or 0)
+
+    def _append_evaluation(self, evaluation: EventEvaluation, current_lap: int) -> None:
+        decisions_by_signal: dict[tuple[str, EventPhase], list[tuple[int, GateDecision]]] = (
+            defaultdict(list)
+        )
+        for index, decision in enumerate(evaluation.decisions):
+            decisions_by_signal[(decision.event_id, decision.phase)].append((index, decision))
+
+        consumed_decisions: set[int] = set()
         for event_signal in evaluation.signals:
+            self._known_signals[event_signal.event_id] = event_signal
+            matching = decisions_by_signal.get((event_signal.event_id, event_signal.phase), [])
+            consumed_decisions.update(index for index, _ in matching)
             if not self._lap_in_range(event_signal.lap):
                 continue
-            decision = decisions.get((event_signal.event_id, event_signal.phase))
             self.timeline.append(
                 (
                     event_signal.observed_at,
@@ -1839,8 +1878,31 @@ class _EventsCaptureCollector:
                     event_signal.rule,
                     event_signal.priority.value,
                     render_event_message(event_signal.message_key, event_signal.facts),
-                    "sin decisión" if decision is None else decision.outcome.value,
-                    "—" if decision is None else decision.reason,
+                    ", ".join(item.outcome.value for _, item in matching) or "sin decisión",
+                    ", ".join(item.reason for _, item in matching) or "—",
+                )
+            )
+
+        for index, decision in enumerate(evaluation.decisions):
+            if index in consumed_decisions:
+                continue
+            event_signal = self._known_signals.get(decision.event_id)
+            lap = event_signal.lap if event_signal is not None else current_lap
+            if not self._lap_in_range(lap):
+                continue
+            self.timeline.append(
+                (
+                    decision.observed_at,
+                    lap,
+                    "—" if event_signal is None else event_signal.rule,
+                    "—" if event_signal is None else event_signal.priority.value,
+                    (
+                        "—"
+                        if event_signal is None
+                        else render_event_message(event_signal.message_key, event_signal.facts)
+                    ),
+                    decision.outcome.value,
+                    decision.reason,
                 )
             )
 
