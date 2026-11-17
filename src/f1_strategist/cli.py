@@ -123,6 +123,11 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     run.add_argument("--no-capture", action="store_true", help="no grabar la sesión")
     run.add_argument("--capture-dir", type=Path, help="directorio de capturas")
+    run.add_argument(
+        "--mute-agent",
+        action="store_true",
+        help="detectar y registrar eventos sin emitir avisos",
+    )
 
     replay = sub.add_parser("replay", help="reenvía una captura por UDP (sin abrir el juego)")
     replay.add_argument("file", type=Path)
@@ -443,6 +448,10 @@ def _cmd_run(args: argparse.Namespace, console: Console, err: Console) -> int:
         capture_enabled=False if args.no_capture else None,
         capture_directory=args.capture_dir,
     )
+    if args.mute_agent:
+        cfg = cfg.model_copy(
+            update={"gate": cfg.gate.model_copy(update={"muted": True})},
+        )
     session = CaptureSession(cfg)
     try:
         session.start()
@@ -594,6 +603,8 @@ def _cmd_play(args: argparse.Namespace, console: Console, err: Console) -> int:
         start_lap=args.start_lap,
         profiles_by_uid=profiles,
         strategy_config=cfg.strategy,
+        events_config=cfg.events,
+        gate_config=cfg.gate,
     )
     _install_signal_handlers()
     try:
