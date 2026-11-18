@@ -45,4 +45,13 @@ Las capturas de Sakhir son fixtures opcionales y no se versionan: la carrera ocu
 localmente; las pruebas que las necesitan las omiten con una razón explícita si faltan.
 La verificación del manifiesto informa esas entradas como no disponibles sin invalidar
 las capturas presentes.powershell
+
+## Captura de Jeddah del 17 de noviembre
+
+La captura local `captures/session-20261117-171149.f1cap` se conserva fuera del repositorio.
+El manifiesto registra su huella y los momentos relevantes en `[[capture_note]]`: daño del ala
+delantera izquierda en la vuelta 5, parada en la 6, bandera roja en la 11 con reanudación en la
+13 y cambio de `clear` a `light_cloud` en la 13. `events simulate` confirma las detecciones en
+la captura. No contiene un paquete `FinalClassification`, así que no se incorpora como
+`[[scenario]]` verificable por el catálogo.powershell
   uv run f1-strategist trim captures\session-20261101-233816.f1cap tests\fixtures\real\monza-13-laps.f1cap.gz --types 1,2,3,4,7,8,10,11,12 --decimate 2=6 --decimate 7=6 --decimate 10=6 --decimate 11=2 --decimate 12=2 --laps 1-13 --anonymize

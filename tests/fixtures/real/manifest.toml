@@ -10,6 +10,12 @@ sha256 = "fe5c2f7d2ebd391b5f79c8cb4246476470d0c6e9d83df1a94a749494896670cc"
 bytes = 5592587
 description = "Gran Premio de Monza, carrera de 13 vueltas con paradas en boxes."
 tags = ["pit_stops"]
+moments = [
+    "Sin safety car observado.",
+    "Vueltas 1 y 12: daño en el ala delantera izquierda, 52% y 67%.",
+    "Vuelta 6: parada del piloto.",
+    "Vuelta 1: clima clear -> light_cloud; vuelta 8: light_cloud -> overcast.",
+]
 
 [scenario.expected]
 track = "monza"
@@ -27,6 +33,10 @@ sha256 = "d1106b972055d0176a3f1119f5ae6c0d1c1e188100c64a7d77f6d513aabccddf"
 bytes = 3919907
 description = "Práctica 1 de Suzuka, 12 vueltas registradas, recortada y anonimizada."
 tags = ["practice", "suzuka", "real_capture", "h1", "h2"]
+moments = [
+    "No se observan safety car, paradas, daño de ala/suelo ni cambios de clima.",
+    "Vuelta 7: se registra un contacto, sin daño de ala/suelo observado.",
+]
 
 [scenario.expected]
 track = "suzuka"
@@ -44,6 +54,12 @@ sha256 = "88da5c862d3860391a84c3cfa09b93b7d153063b3a689e19ccb8af5ef8e0d072"
 bytes = 10057657
 description = "Carrera de Suzuka de 19 vueltas con una parada por coche, recortada y anonimizada."
 tags = ["race", "suzuka", "real_capture", "h1", "h2", "pit_stops"]
+moments = [
+    "Sin safety car observado.",
+    "Vuelta 2: daño en alas delanteras, hasta 28% izquierda y 47% derecha.",
+    "Vuelta 3: parada del piloto y daño reparado.",
+    "Vuelta 5: clima overcast -> light_cloud.",
+]
 
 [scenario.expected]
 track = "suzuka"
@@ -61,6 +77,12 @@ sha256 = "da470e4c0f79328af8addcbbe5dc60dee72f1ad03b77a11d15f937fa55837c7d"
 bytes = 2733874
 description = "Carrera de Baku de 13 vueltas; VSC, parada y DNF del piloto, aislada de una captura de tres sesiones."
 tags = ["virtual_safety_car", "retirement", "pit_stops", "multi_session_capture"]
+moments = [
+    "Vueltas 1-2: VSC desplegado y retirado.",
+    "Vueltas 1-6: daño progresivo en las alas delanteras; alcanza 100% en ambas en la vuelta 6.",
+    "Vuelta 6: parada del piloto.",
+    "No se observa cambio de clima.",
+]
 
 [scenario.expected]
 track = "baku"
@@ -78,6 +100,11 @@ sha256 = "c6a0ac256b6ddc7ee165bdb568e3339c41f4bbdef0a1f3c213aa6c64873d6e55"
 bytes = 9303462
 description = "Carrera de Melbourne de 20 vueltas finalizada con una parada; captura tomada tras ajustes de métricas."
 tags = ["retirement", "pit_stops", "multi_session_capture", "post_metrics_adjustments"]
+moments = [
+    "Sin safety car ni daño de ala/suelo observados.",
+    "Vuelta 8: parada del piloto.",
+    "Vuelta 14: clima light_cloud -> clear.",
+]
 
 [scenario.expected]
 track = "melbourne"
@@ -95,6 +122,10 @@ sha256 = "cc6e071a0ac4e44f8a026131debd4267af8661324efabba54ea45b2cdedcbbaa"
 bytes = 8803751
 description = "Práctica 1 de Sakhir, 12 vueltas registradas, recortada y anonimizada."
 tags = ["practice", "sakhir", "real_capture", "strategy"]
+moments = [
+    "No se observan safety car, paradas, daño de ala/suelo ni cambios de clima.",
+    "Vuelta 6: se registra un contacto, sin daño de ala/suelo observado.",
+]
 
 [scenario.expected]
 track = "sakhir"
@@ -112,6 +143,11 @@ sha256 = "81881672dc8f0179454aa1efb7ae2ac10d89ea2b05a8020cadc6e96cae80d4c1"
 bytes = 25132303
 description = "Carrera de Sakhir de 20 vueltas con alta degradación y safety car, recortada y anonimizada."
 tags = ["race", "sakhir", "real_capture", "strategy", "high_wear", "safety_car", "pit_stops"]
+moments = [
+    "Vuelta 9: parada del piloto.",
+    "Vueltas 17-19: safety car desplegado y retirado.",
+    "No se observa daño de ala/suelo ni cambio de clima.",
+]
 
 [scenario.expected]
 track = "sakhir"
@@ -121,3 +157,19 @@ cars = 22
 pit_stops_total = 22
 best_lap_ms = 91699
 game_version = "1.26"
+
+[[capture_note]]
+id = "jeddah-18-laps-red-flag-damage-weather"
+source = "../../../captures/session-20261117-171149.f1cap"
+sha256 = "5335bd35a6d6c088f59e6c5f1bcac2ec9498f6ecca78c1a8b09dac85bd9aa1b11"
+bytes = 566079182
+description = "Carrera de Jeddah de 18 vueltas; captura local del 17 de noviembre, no versionada."
+tags = ["jeddah", "real_capture", "red_flag", "damage", "weather_change", "pit_stop"]
+moments = [
+    "Vuelta 5: colisión y daño del 73% en el ala delantera izquierda.",
+    "Vuelta 6: parada del piloto; el daño del ala vuelve a 0%.",
+    "Vuelta 11: bandera roja; reanudación observada en la vuelta 13.",
+    "Vuelta 13: clima clear -> light_cloud; no se observa lluvia.",
+    "No se observan transiciones de safety car o VSC.",
+]
+limitation = "No contiene paquete FinalClassification; se registra como nota, no como escenario verificable del catálogo."
