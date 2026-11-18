@@ -72,12 +72,29 @@ tiempo(vuelta) = base_s + slope_s_por_vuelta · edad_vuelta
 ```
 
 - Se exigen **al menos 3 vueltas limpias**; con menos no hay ajuste y el
-  compuesto queda sin modelo propio.
+  compuesto queda sin modelo propio. Tampoco se ajusta una pendiente si todas
+  las vueltas comparten la misma edad de neumático.
 - Una vuelta deja de ser limpia si está marcada como inválida, si es de
   entrada o salida de boxes, si hay bandera amarilla, coche de seguridad o
   condiciones de lluvia, o si el compuesto no coincide.
 - `quality` se degrada según el número de muestras (`ok` / `low` / `stale`) y
   por la antigüedad de la última vuelta utilizable.
+
+**Vueltas con tráfico.** El ajuste limpio es siempre la primera opción. Solo
+cuando el compuesto montado no alcanza un ajuste suficiente se consideran, con
+los mismos requisitos de muestras y edades, las vueltas cuyo **único** motivo de
+exclusión es el tráfico. El resultado es un ritmo **condicionado**, no aire
+limpio: se publica con `n_race_laps` real, una calidad degradada un nivel
+(`ok` → `low`, `low` → `insufficient`, nunca mejor) y la nota
+`pace_conditioned_by_traffic`. El tráfico no rescata vueltas inválidas, de
+boxes, neutralizadas, con cambio de compuesto ni parciales, y no se usa para
+estimar el desgaste.
+
+**Daño activo o desconocido.** Una vuelta que registra un cambio de daño queda
+excluida y, como el daño persiste aunque el delta de la vuelta siguiente sea
+cero, también se excluyen las vueltas posteriores del mismo coche. El modelo
+añade `laps_excluded_after_damage`; el daño no se convierte en un coste en
+segundos ni se asume que el coche está sano.
 
 ### 3.2 Mezcla con el prior del fin de semana
 
@@ -99,6 +116,13 @@ compuesto montado (`aligned_prior_base`); así el prior aporta forma (pendiente)
 sin arrastrar un nivel de ritmo de otra sesión. Si la mezcla se aplica, la
 evaluación declara `profile_prior_used` en los supuestos y la calidad resultante
 es la peor de las dos fuentes.
+
+Un prior con calidad `insufficient` o `unavailable` no se mezcla ni se usa para
+anclar: no condiciona la base, la pendiente ni el desgaste, y no degrada un
+ajuste de carrera que ya cumple los criterios. La exclusión se declara con
+`prior_excluded_insufficient` y el modelo conserva la fuente `race`, de modo que
+la confianza no descuenta un prior que no se utilizó. Un prior `stale` sí se
+sigue mezclando y degrada la calidad.
 
 ### 3.3 Sin ajuste suficiente
 
@@ -251,6 +275,10 @@ El coste de tráfico solo se suma al tiempo cuando
 parámetro, el tráfico es un **riesgo declarado** (`traffic_not_priced`) y nunca
 un tiempo inventado. Si se aplica, se añade `traffic_cost_applied`.
 
+El tráfico que ensucia una vuelta no se traduce en segundos: en el modelo de
+ritmo solo puede producir una estimación condicionada y degradada (sección 3.1),
+nunca un descuento por «aire sucio».
+
 La posición de reincorporación se presenta siempre etiquetada: es la de la
 **recomendación** o la de una **alternativa** que no se recomienda. Nunca se
 publica una reincorporación de alternativa como si fuera una recomendación.
@@ -278,6 +306,14 @@ Con `min_gain_s = 1.0` por defecto. Si ninguna parada cumple, la respuesta es
 calidad de las entradas, el número de muestras de ritmo, el peso del prior, el
 ancho del intervalo respecto a `min_gain_s` y una penalización si los datos son
 obsoletos. Se acota a `[0, 1]` y se publica junto a la recomendación.
+
+Un ritmo **condicionado por tráfico** no recibe un descuento en segundos ni se
+trata como aire limpio: su calidad degradada reduce la confianza y la ventaja
+sigue exigiendo que el límite inferior del intervalo de los nueve escenarios
+supere `min_gain_s`. Si la muestra condicionada no basta para acotar la
+comparación (3 o 4 vueltas, `insufficient`), la decisión conserva
+`INSUFFICIENT_DATA` con el motivo `pace_quality_insufficient` y explica qué
+falta en lugar de recomendar con una ganancia espuria.
 
 `decide` declara además:
 
@@ -310,6 +346,14 @@ Condiciones no modeladas que suspenden la recomendación: `wet_conditions`,
 `safety_car_conditions`, `red_flag_conditions`, `damage_not_modelled` y
 `tyre_damage_not_modelled`. El motor no inventa una estrategia bajo safety car
 ni bajo lluvia: lo dice.
+
+Notas del modelo de ritmo que explican una degradación sin inventar cifras:
+
+| Nota | Significado |
+| --- | --- |
+| `pace_conditioned_by_traffic` | El ajuste usó vueltas cuyo único motivo de exclusión era el tráfico; es ritmo condicionado, no aire limpio. |
+| `laps_excluded_after_damage` | Se descartaron vueltas posteriores a un cambio de daño; el coche no se asume sano. |
+| `prior_excluded_insufficient` | El prior del fin de semana no era utilizable y no se mezcló; la estimación es de carrera. |
 
 ## 10. Cómo leer una evaluación
 
@@ -390,7 +434,10 @@ Limitaciones del MVP, fuera del alcance de la Fase 4:
 - **Safety car y bandera roja** no se modelan: suspenden la recomendación.
 - **Lluvia** no se modela con compuestos de mojado: se declara
   `wet_conditions`.
-- **Daños** de coche y de neumático no se modelan.
+- **Daños** de coche y de neumático no se modelan como coste en segundos. Las
+  vueltas posteriores a un cambio de daño se excluyen del ajuste de ritmo y el
+  coche no se trata como sano mientras el daño pueda persistir; una vuelta sin
+  evidencia de daño no se convierte en una penalización inventada.
 - La **posición de reincorporación** depende de los huecos conocidos en vivo y
   del supuesto de que los rivales no paran; el prior externo por circuito
   (S13) mejora la pérdida, no la posición.

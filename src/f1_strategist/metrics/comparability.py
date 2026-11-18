@@ -52,3 +52,13 @@ def is_clean(flags: frozenset[str] | set[str], *, allow_traffic: bool = False) -
     if allow_traffic:
         return flags <= {"traffic"}
     return not flags
+
+
+def is_traffic_only(flags: frozenset[str] | set[str]) -> bool:
+    """True solo si el tráfico es el único motivo de exclusión de la vuelta."""
+    return flags == {"traffic"}
+
+
+def has_damage_change(flags: frozenset[str] | set[str]) -> bool:
+    """True si la vuelta registró un cambio de daño relevante."""
+    return "damage_change" in flags
