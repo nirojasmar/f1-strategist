@@ -18,9 +18,8 @@ de carrera para identificar sus causas y limitaciones.
   clasificación `short_qualifying` y carrera `race`. Todas indican Sakhir; la
   carrera tiene 20 vueltas y una longitud de 5.408 m.
 - Se generaron dos recortes independientes y anonimizados para el
-  [manifiesto de capturas reales](../../tests/fixtures/real/manifest.toml):
-  [práctica](../../tests/fixtures/real/sakhir-practice-12-laps.f1cap.gz) y
-  [carrera](../../tests/fixtures/real/sakhir-race-20-laps-high-wear.f1cap.gz).
+  [manifiesto de capturas reales](../../tests/fixtures/real/manifest.toml). Los archivos de
+  captura son opcionales y no se versionan; el manifiesto conserva sus hashes y expectativas.
   Se conservaron paquetes de sesión, vueltas, eventos, participantes, estado,
   daños, historial de tandas, juegos y posiciones; estado e historial se
   diezmaron a uno de cada dos paquetes. El recorte de carrera conserva los

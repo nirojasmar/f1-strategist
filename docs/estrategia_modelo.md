@@ -48,7 +48,9 @@ misma secuencia:
 4. `tyre_options`: enumera los juegos disponibles y el límite de vida de cada
    uno.
 5. `_unmodeled_conditions`: detecta condiciones que el MVP no modela (lluvia,
-   safety car, bandera roja, daños) y las publica como riesgos.
+   safety car, bandera roja) y las publica como riesgos. El daño no bloquea la
+   decisión: excluye las vueltas posteriores del ajuste de ritmo y no se
+   convierte en un coste inventado.
 6. `_data_quality`: resume la disponibilidad de ritmo, pérdida, vueltas
    restantes, antigüedad y muestras.
 7. `decide`: evalúa alternativas bajo nueve escenarios de perturbación y elige
@@ -72,12 +74,29 @@ tiempo(vuelta) = base_s + slope_s_por_vuelta · edad_vuelta
 ```
 
 - Se exigen **al menos 3 vueltas limpias**; con menos no hay ajuste y el
-  compuesto queda sin modelo propio.
+  compuesto queda sin modelo propio. Tampoco se ajusta una pendiente si todas
+  las vueltas comparten la misma edad de neumático.
 - Una vuelta deja de ser limpia si está marcada como inválida, si es de
   entrada o salida de boxes, si hay bandera amarilla, coche de seguridad o
   condiciones de lluvia, o si el compuesto no coincide.
 - `quality` se degrada según el número de muestras (`ok` / `low` / `stale`) y
   por la antigüedad de la última vuelta utilizable.
+
+**Vueltas con tráfico.** El ajuste limpio es siempre la primera opción. Solo
+cuando el compuesto montado no alcanza un ajuste suficiente se consideran, con
+los mismos requisitos de muestras y edades, las vueltas cuyo **único** motivo de
+exclusión es el tráfico. El resultado es un ritmo **condicionado**, no aire
+limpio: se publica con `n_race_laps` real, una calidad degradada un nivel
+(`ok` → `low`, `low` → `insufficient`, nunca mejor) y la nota
+`pace_conditioned_by_traffic`. El tráfico no rescata vueltas inválidas, de
+boxes, neutralizadas, con cambio de compuesto ni parciales, y no se usa para
+estimar el desgaste.
+
+**Daño activo o desconocido.** Una vuelta que registra un cambio de daño queda
+excluida y, como el daño persiste aunque el delta de la vuelta siguiente sea
+cero, también se excluyen las vueltas posteriores del mismo coche. El modelo
+añade `laps_excluded_after_damage`; el daño no se convierte en un coste en
+segundos ni se asume que el coche está sano.
 
 ### 3.2 Mezcla con el prior del fin de semana
 
@@ -99,6 +118,13 @@ compuesto montado (`aligned_prior_base`); así el prior aporta forma (pendiente)
 sin arrastrar un nivel de ritmo de otra sesión. Si la mezcla se aplica, la
 evaluación declara `profile_prior_used` en los supuestos y la calidad resultante
 es la peor de las dos fuentes.
+
+Un prior con calidad `insufficient` o `unavailable` no se mezcla ni se usa para
+anclar: no condiciona la base, la pendiente ni el desgaste, y no degrada un
+ajuste de carrera que ya cumple los criterios. La exclusión se declara con
+`prior_excluded_insufficient` y el modelo conserva la fuente `race`, de modo que
+la confianza no descuenta un prior que no se utilizó. Un prior `stale` sí se
+sigue mezclando y degrada la calidad.
 
 ### 3.3 Sin ajuste suficiente
 
@@ -177,6 +203,14 @@ Se evalúan tres familias de alternativas:
 - **`pit_in_N`**: parar dentro de `N` vueltas, con `N` desde 1 hasta el final de
   la ventana (`max_pit_in_laps`) y cada compuesto elegible.
 
+La regla de los dos compuestos secos se deduce de los stints declarados por el
+juego, conservando el compuesto que la telemetría observó vuelta a vuelta si el
+juego reescribe un stint abierto (por ejemplo, tras una bandera roja). Si el
+histórico no cubre todas las vueltas con compuesto conocido, o falta el visual
+de un compuesto usado del que depende acreditar el medio o duro, la regla queda
+como no acreditada (`two_compounds_unverified`): no se declara parada
+obligatoria ni se afirma que la regla esté cumplida.
+
 El tiempo restante de una alternativa es:
 
 ```text
@@ -214,6 +248,20 @@ disponible:
 
 Reglas que la implementación respeta:
 
+- Las muestras de campo se separan por evidencia de reparación. Una parada con
+  tiempo detenido superior a 5 s (umbral provisional) y un cambio de daño por
+  encima del umbral configurado confirman la reparación; una sola de las dos
+  señales la deja como sospechosa. Las muestras de reparación no entran en la
+  media de parada normal y su duración adicional no se suma como segundos: se
+  declara el riesgo (`repair_duration_unknown`) porque no hay una fuente
+  medible.
+- Un dato de daño ausente no se interpreta como ausencia de daño: una parada
+  corta sigue contando como normal, pero se declara la incertidumbre
+  (`damage_signal_missing`).
+- Con menos de tres muestras normales la estimación de campo es provisional
+  (`provisional_field_pit_loss`): si existe un prior se conserva y se identifica
+  la muestra escasa; si no existe, se publica la estimación provisional con
+  banda fija. Al reunir muestras suficientes, el campo sustituye al prior.
 - Una muestra **parcial** de carril (por ejemplo, una vuelta de entrada cerrada
   con 1,933 s) no es una pérdida completa y se descarta. Solo se acepta la
   vuelta que ya ha salido del carril.
@@ -243,6 +291,10 @@ El coste de tráfico solo se suma al tiempo cuando
 parámetro, el tráfico es un **riesgo declarado** (`traffic_not_priced`) y nunca
 un tiempo inventado. Si se aplica, se añade `traffic_cost_applied`.
 
+El tráfico que ensucia una vuelta no se traduce en segundos: en el modelo de
+ritmo solo puede producir una estimación condicionada y degradada (sección 3.1),
+nunca un descuento por «aire sucio».
+
 La posición de reincorporación se presenta siempre etiquetada: es la de la
 **recomendación** o la de una **alternativa** que no se recomienda. Nunca se
 publica una reincorporación de alternativa como si fuera una recomendación.
@@ -271,14 +323,34 @@ calidad de las entradas, el número de muestras de ritmo, el peso del prior, el
 ancho del intervalo respecto a `min_gain_s` y una penalización si los datos son
 obsoletos. Se acota a `[0, 1]` y se publica junto a la recomendación.
 
+Un ritmo **condicionado por tráfico** no recibe un descuento en segundos ni se
+trata como aire limpio: su calidad degradada reduce la confianza y la ventaja
+sigue exigiendo que el límite inferior del intervalo de los nueve escenarios
+supere `min_gain_s`. Si la muestra condicionada no basta para acotar la
+comparación (3 o 4 vueltas, `insufficient`), la decisión conserva
+`INSUFFICIENT_DATA` con el motivo `pace_quality_insufficient` y explica qué
+falta en lugar de recomendar con una ganancia espuria.
+
 `decide` declara además:
 
 - **`sensitive_to`**: `wear_slope` o `pit_loss_s` cuando la acción o la
   alternativa elegida cambian al perturbar ese parámetro.
-- **`mandatory_stop`**: la regla de los dos compuestos secos impide mantener; se
-  publica el plan de referencia, no una recomendación libre.
+- **`mandatory_stop`**: la regla de los dos compuestos secos, acreditada con el
+  histórico, impide mantener; se publica el plan de referencia, no una
+  recomendación libre.
 - **`alternative_unstable`** / **`alternative_quality_insufficient`**: las
-  alternativas existen pero no son defendibles.
+  alternativas existen pero no son defendibles; cada motivo se publica solo si
+  se verifica su causa. `alternative_unstable` exige que la alternativa
+  desaparezca al perturbar un parámetro; que todas tengan poca calidad no la
+  convierte en inestable.
+
+Cada alternativa hereda la calidad de los datos que realmente usa. `stay_out`
+solo depende del ritmo montado; una parada añade el modelo del compuesto de
+destino, la disponibilidad de juegos, la pérdida en boxes y la reincorporación
+(si está disponible), además del ritmo montado cuando se espera para parar. Una
+alternativa insuficiente no invalida a las demás: la decisión no la selecciona y
+puede seguir recomendando otra parada defendible o `NO_CHANGE` con el compuesto
+montado.
 
 ## 9. Estados, motivos y honestidad
 
@@ -301,6 +373,14 @@ Condiciones no modeladas que suspenden la recomendación: `wet_conditions`,
 `tyre_damage_not_modelled`. El motor no inventa una estrategia bajo safety car
 ni bajo lluvia: lo dice.
 
+Notas del modelo de ritmo que explican una degradación sin inventar cifras:
+
+| Nota | Significado |
+| --- | --- |
+| `pace_conditioned_by_traffic` | El ajuste usó vueltas cuyo único motivo de exclusión era el tráfico; es ritmo condicionado, no aire limpio. |
+| `laps_excluded_after_damage` | Se descartaron vueltas posteriores a un cambio de daño; el coche no se asume sano. |
+| `prior_excluded_insufficient` | El prior del fin de semana no era utilizable y no se mezcló; la estimación es de carrera. |
+
 ## 10. Cómo leer una evaluación
 
 Una `StrategyEvaluation` guardada contiene, en este orden de lectura:
@@ -322,7 +402,9 @@ Una `StrategyEvaluation` guardada contiene, en este orden de lectura:
 6. **`sensitive_to`**: parámetros cuya variación cambia la recomendación.
 7. **`data_quality`** y **`pit_loss_quality`**: calidad global y de la pérdida.
 8. **`inputs_hash`** y **`profile_hash`**: huellas de las entradas y del perfil.
-   Permiten comprobar que dos evaluaciones parten de los mismos datos.
+   Permiten comprobar que dos evaluaciones parten de los mismos datos. La
+   huella no incluye relojes monotónicos, pero sí qué grupos de paquetes están
+   obsoletos en el instante de evaluación y las configuraciones efectivas.
 9. **`projected_lap_times_s`**: proyección por vuelta del compuesto montado,
    para el coche y compuesto indicados en `forecast_car_index` /
    `forecast_compound`.
@@ -378,14 +460,17 @@ Limitaciones del MVP, fuera del alcance de la Fase 4:
 - **Safety car y bandera roja** no se modelan: suspenden la recomendación.
 - **Lluvia** no se modela con compuestos de mojado: se declara
   `wet_conditions`.
-- **Daños** de coche y de neumático no se modelan.
+- **Daños** de coche y de neumático no se modelan como coste en segundos. Las
+  vueltas posteriores a un cambio de daño se excluyen del ajuste de ritmo y el
+  coche no se trata como sano mientras el daño pueda persistir; una vuelta sin
+  evidencia de daño no se convierte en una penalización inventada.
 - La **posición de reincorporación** depende de los huecos conocidos en vivo y
   del supuesto de que los rivales no paran; el prior externo por circuito
   (S13) mejora la pérdida, no la posición.
 - La **calibración** de umbrales y bandas queda para la Fase 9.
 
-Incidencias medidas en la validación de extremo a extremo (S10), registradas y
-no corregidas dentro de esa tarea:
+Incidencias medidas en la validación de extremo a extremo (S10), con su estado
+posterior:
 
 - **S10-R1, rendimiento.** Con los doce juegos del escenario de referencia, una
   evaluación tarda del orden de 13 ms de media (p99 ≈ 16 ms) y crece de forma
@@ -393,10 +478,20 @@ no corregidas dentro de esa tarea:
   (media < 1 ms, p99 < 5 ms) no se cumple; el coste es admisible para la
   cadencia de evaluación en vivo, pero debe optimizarse antes de ampliar la
   ventana de alternativas.
-- **S10-H1, huella entre velocidades de reproducción.** `inputs_hash` incluye
-  marcas de reloj monotónico del estado y del histórico, por lo que difiere al
-  reproducir a 0x, 1x y 4x aunque la recomendación sea idéntica. La
-  recomendación es estable; la huella no.
+- **S10-H1, huella entre velocidades de reproducción.** Corregida en la fase 5
+  (tareas H1 y H2): `inputs_hash` excluye los relojes monotónicos y el instante
+  de evaluación, e incluye la clasificación de obsolescencia de los grupos de
+  paquetes cuando hay alguno obsoleto. Dos entradas idénticas salvo por un grupo
+  obsoleto ya no comparten huella, y con todo fresco la huella coincide con la
+  de H1. `play` y `replay` conservan el tiempo de la captura a cualquier
+  velocidad, así que la huella no depende de las esperas. El runner offline
+  expone `clock_scale` (rechaza cero): comprime el reloj completo, pero los
+  umbrales de obsolescencia están en segundos absolutos, de modo que comprimirlo
+  puede cambiar la frescura y la huella.
+- **Bandera roja en la captura de Jeddah.** La recomendación sigue suspendida
+  durante la vuelta 14 porque la vuelta 13, primera tras la reanudación, todavía
+  declara `red_flag`; se libera al cerrarse la vuelta 14 con estado limpio. No
+  es un bloqueo artificial: es el contrato de esperar evidencia de reanudación.
 
 ## 13. Resumen de fórmulas
 

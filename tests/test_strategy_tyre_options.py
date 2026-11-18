@@ -8,6 +8,7 @@ import pytest
 
 from f1_strategist.config import MetricsConfig, StrategyConfig
 from f1_strategist.metrics.history import (
+    LapHistory,
     LapHistorySnapshot,
     LapRecord,
     MetricInputs,
@@ -31,6 +32,7 @@ from f1_strategist.strategy.tyre_options import (
     NOTE_RULE_SATISFIED,
     NOTE_RULE_SESSION_UNKNOWN,
     NOTE_RULE_SPRINT,
+    NOTE_RULE_UNVERIFIED,
     NOTE_RULE_WET_WAIVED,
     NOTE_WET,
     NOTE_WET_SETS_SKIPPED,
@@ -239,10 +241,12 @@ def test_a_visual_hard_or_medium_stint_satisfies_the_mandatory_compound() -> Non
 def test_sprint_is_exempt_and_main_race_in_sprint_weekend_is_not() -> None:
     inventory = (_tyre_set(1, "soft", visual="soft"), _tyre_set(2, "hard", visual="hard"))
     car = _car(current_lap=5, actual_tyre_compound="soft", visual_tyre_compound="soft")
+    stints = (TyreStint(compound="soft", visual_compound="soft", start_lap=1),)
     sprint = tyre_options(
         _inputs(
             inventory=inventory,
             car=car,
+            stints=stints,
             session_fields={
                 "session_type": "race",
                 "weekend_structure": ("short_sprint_shootout", "race", "race_2"),
@@ -254,6 +258,7 @@ def test_sprint_is_exempt_and_main_race_in_sprint_weekend_is_not() -> None:
         _inputs(
             inventory=inventory,
             car=car,
+            stints=stints,
             session_fields={
                 "session_type": "race_2",
                 "weekend_structure": ("short_sprint_shootout", "race", "race_2"),
@@ -349,9 +354,12 @@ def test_missing_inventory_returns_no_options_with_a_note() -> None:
 def test_wet_weather_sets_the_flag() -> None:
     inventory = (_tyre_set(1, "hard"),)
     car = _car(current_lap=5, actual_tyre_compound="medium")
+    stints = (TyreStint(compound="medium", start_lap=1),)
 
     options = tyre_options(
-        _inputs(inventory=inventory, car=car, session_fields={"weather": "heavy_rain"}),
+        _inputs(
+            inventory=inventory, car=car, stints=stints, session_fields={"weather": "heavy_rain"}
+        ),
         StrategyConfig(),
     )
 
@@ -365,10 +373,11 @@ def test_wet_weather_sets_the_flag() -> None:
 def test_forecast_rain_within_the_window_sets_the_flag() -> None:
     inventory = (_tyre_set(1, "hard"),)
     car = _car(current_lap=5, actual_tyre_compound="medium")
+    stints = (TyreStint(compound="medium", start_lap=1),)
     session = {"weather": "clear", "forecast": (_forecast(20, 70),)}
 
     options = tyre_options(
-        _inputs(inventory=inventory, car=car, session_fields=session),
+        _inputs(inventory=inventory, car=car, stints=stints, session_fields=session),
         StrategyConfig(),
     )
 
@@ -477,8 +486,9 @@ def test_unknown_life_is_reported_without_risk() -> None:
 def test_no_valid_option_reports_insufficient_quality() -> None:
     inventory = (_tyre_set(1, "medium"),)
     car = _car(current_lap=5, actual_tyre_compound="medium")
+    stints = (TyreStint(compound="medium", start_lap=1),)
 
-    options = tyre_options(_inputs(inventory=inventory, car=car), StrategyConfig())
+    options = tyre_options(_inputs(inventory=inventory, stints=stints, car=car), StrategyConfig())
 
     assert options.requires_stop
     assert options.options == ()
@@ -544,6 +554,80 @@ def test_tyre_option_rejects_invalid_values() -> None:
         TyreOption(compound="soft", initial_wear_pct=120.0)
     with pytest.raises(ValueError, match="useful_life_laps"):
         TyreOption(compound="soft", useful_life_laps=-1.0)
+
+
+def test_red_flag_rewrite_keeps_both_compounds_and_the_rule_satisfied() -> None:
+    history = LapHistory(history_max_laps=20)
+    for lap in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14):
+        history.upsert(
+            LapRecord(
+                car_index=0,
+                lap_number=lap,
+                compound="c4" if lap <= 5 or lap >= 13 else "c3",
+            )
+        )
+    history.replace_tyre_stints(
+        0,
+        (TyreStint("c4", 1, 4, "medium"), TyreStint("c3", 5, None, "hard")),
+    )
+    # El juego reescribe el stint abierto tras la bandera roja; la telemetría ya
+    # vio C3 en las vueltas 6-11 y debe conservarse.
+    history.replace_tyre_stints(
+        0,
+        (TyreStint("c4", 1, 4, "medium"), TyreStint("c4", 5, None, "medium")),
+    )
+    car = _car(current_lap=15, actual_tyre_compound="c4", visual_tyre_compound="medium")
+    base = _inputs(inventory=(_tyre_set(1, "hard"),), car=car)
+    inputs = MetricInputs(base.state, history.snapshot(), MetricsConfig(), 10.0, 0)
+
+    options = tyre_options(inputs, StrategyConfig())
+
+    assert options.used_dry_compounds == ("c3", "c4")
+    assert not options.requires_stop
+    assert options.stay_out_allowed
+    assert NOTE_RULE_SATISFIED in options.notes
+    assert NOTE_MANDATORY_COMPOUND_PENDING not in options.notes
+
+
+def test_partial_history_does_not_assert_the_rule_is_pending() -> None:
+    car = _car(current_lap=15, actual_tyre_compound="c4")
+    records = (
+        LapRecord(car_index=0, lap_number=13, compound="c4"),
+        LapRecord(car_index=0, lap_number=14, compound="c4"),
+    )
+
+    options = tyre_options(
+        _inputs(
+            inventory=(_tyre_set(1, "hard"),),
+            car=car,
+            records=records,
+        ),
+        StrategyConfig(),
+    )
+
+    assert not options.requires_stop
+    assert options.stay_out_allowed
+    assert NOTE_RULE_UNVERIFIED in options.notes
+    assert NOTE_RULE_PENDING not in options.notes
+    assert NOTE_MANDATORY_COMPOUND_PENDING not in options.notes
+
+
+def test_unknown_visual_compound_does_not_prove_the_mandatory_compound() -> None:
+    car = _car(current_lap=10, actual_tyre_compound="c3")
+    stints = (
+        TyreStint(compound="c4", start_lap=1, end_lap=5),
+        TyreStint(compound="c3", start_lap=6),
+    )
+
+    options = tyre_options(
+        _inputs(inventory=(_tyre_set(1, "hard"),), car=car, stints=stints),
+        StrategyConfig(),
+    )
+
+    assert not options.requires_stop
+    assert options.stay_out_allowed
+    assert NOTE_RULE_UNVERIFIED in options.notes
+    assert NOTE_MANDATORY_COMPOUND_PENDING not in options.notes
 
 
 def _closed_lap(lap: int, lap_time_s: float = 100.0) -> LapRecord:

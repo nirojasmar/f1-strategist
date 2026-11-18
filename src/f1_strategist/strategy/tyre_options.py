@@ -53,6 +53,7 @@ NOTE_RULE_SATISFIED = "two_compounds_satisfied"
 NOTE_RULE_SPRINT = "two_compounds_not_applicable_sprint"
 NOTE_RULE_SESSION_UNKNOWN = "race_type_unknown_rule_not_applied"
 NOTE_RULE_WET_WAIVED = "two_compounds_waived_wet"
+NOTE_RULE_UNVERIFIED = "two_compounds_unverified"
 NOTE_MANDATORY_COMPOUND_PENDING = "medium_or_hard_pending"
 NOTE_LIFE_RISK = "tyre_life_risk"
 NOTE_LIFE_UNKNOWN = "tyre_life_unknown"
@@ -226,6 +227,56 @@ def _used_wet_compounds(inputs: MetricInputs, current: str | None) -> bool:
     )
 
 
+def _rule_evidence_complete(
+    inputs: MetricInputs,
+    current: str | None,
+    used: tuple[str, ...],
+    *,
+    mandatory_compound_used: bool,
+) -> bool:
+    """Indica si el histórico permite afirmar que la regla sigue pendiente.
+
+    Una vuelta sin compuesto conocido pudo usar otro compuesto, y un visual
+    desconocido no permite descartar que ya se haya usado uno medio o duro. En
+    ambos casos la regla no se puede acreditar ni incumplir.
+    """
+    car = inputs.car
+    current_lap = car.current_lap if car is not None else None
+    if current_lap is None or current_lap < 1:
+        return False
+    known: set[int] = set()
+    for stint in inputs.history.stints_for(inputs.car_index):
+        if stint.compound is None:
+            continue
+        end = current_lap if stint.end_lap is None else min(stint.end_lap, current_lap)
+        if end >= stint.start_lap:
+            known.update(range(stint.start_lap, end + 1))
+    known.update(
+        record.lap_number
+        for record in inputs.history.records_for(inputs.car_index)
+        if record.compound is not None
+    )
+    if current is not None:
+        known.add(current_lap)
+    if any(lap not in known for lap in range(1, current_lap + 1)):
+        return False
+    if mandatory_compound_used:
+        return True
+    visuals = {
+        stint.compound: stint.visual_compound
+        for stint in inputs.history.stints_for(inputs.car_index)
+        if stint.compound is not None
+    }
+    if current is not None and car is not None:
+        fitted = car.fitted_tyre
+        visual = car.visual_tyre_compound or (
+            fitted.visual_tyre_compound if fitted is not None else None
+        )
+        if visual is not None:
+            visuals.setdefault(current, visual)
+    return all(visuals.get(compound) is not None for compound in used)
+
+
 def _stale(inputs: MetricInputs) -> bool:
     try:
         freshness = inputs.state.freshness_for("tyre_sets")
@@ -391,9 +442,14 @@ def tyre_options(inputs: MetricInputs, cfg: StrategyConfig) -> TyreOptions:
     rule_waived = wet_tyres_used
     mandatory_compound_used = _has_mandatory_dry_compound(inputs)
     requires_mandatory_compound = rule_enabled and not rule_waived and not mandatory_compound_used
-    requires_stop = (
-        rule_enabled and not rule_waived and (len(used) < 2 or requires_mandatory_compound)
+    pending = rule_enabled and not rule_waived and (len(used) < 2 or requires_mandatory_compound)
+    evidence_complete = pending and _rule_evidence_complete(
+        inputs,
+        current,
+        used,
+        mandatory_compound_used=mandatory_compound_used,
     )
+    requires_stop = pending and evidence_complete
     if not rule_enabled:
         if sprint is True:
             notes.append(NOTE_RULE_SPRINT)
@@ -407,6 +463,8 @@ def tyre_options(inputs: MetricInputs, cfg: StrategyConfig) -> TyreOptions:
         notes.append(NOTE_RULE_PENDING)
         if requires_mandatory_compound:
             notes.append(NOTE_MANDATORY_COMPOUND_PENDING)
+    elif pending:
+        notes.append(NOTE_RULE_UNVERIFIED)
     else:
         notes.append(NOTE_RULE_SATISFIED)
 
@@ -481,6 +539,7 @@ __all__ = [
     "NOTE_RULE_SATISFIED",
     "NOTE_RULE_SESSION_UNKNOWN",
     "NOTE_RULE_SPRINT",
+    "NOTE_RULE_UNVERIFIED",
     "NOTE_RULE_WET_WAIVED",
     "NOTE_WET",
     "NOTE_WET_SETS_SKIPPED",

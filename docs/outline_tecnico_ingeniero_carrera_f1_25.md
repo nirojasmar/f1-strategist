@@ -372,33 +372,46 @@ entrada que aún no ha salido del pit lane, no se acepta como pérdida completa.
 
 ### 3.6 Event Detector
 
-Evalúa métricas y estado para detectar: - Ventana de parada. - Ventaja
-material de una estrategia alternativa. - Degradación anormal. -
-Combustible proyectado insuficiente. - Cambio meteorológico. - Safety
-car o bandera relevante. - Daño o pérdida de rendimiento. - Cambios
-relevantes en la situación de un rival.
+Implementado en `src/f1_strategist/events/`. Lee los snapshots ya
+publicados de estado, métricas y estrategia y convierte condiciones en
+señales con ciclo de vida; no recalcula estrategia ni escribe en el
+registro. Cubre ventana de parada, recomendación de parada, combustible
+proyectado insuficiente, vida y degradación de neumático, safety car,
+banderas, clima, daño, datos obsoletos y paradas de rivales.
 
-Usar: - Umbrales configurables. - Persistencia para filtrar
-fluctuaciones. - Histéresis para evitar oscilaciones. - Identificadores
-de evento para deduplicación. - Condiciones de cierre cuando el evento
-deja de estar activo.
+Cada regla declara prioridad, categoría, umbrales, persistencia,
+histéresis y condición de cierre. La persistencia filtra fluctuaciones y
+la histéresis evita oscilaciones en el límite. Un dato desconocido o de
+calidad insuficiente no abre ni cierra la condición. El identificador es
+determinista (`regla:clave[:n]`) y un cambio de sesión o un flashback
+reinicia el estado sin arrastrar condiciones anteriores. El catálogo de
+reglas y sus parámetros está en `docs/eventos_y_gate.md`.
 
 ### 3.7 Event Gate / Priority Manager
 
-Es la barrera que decide si una situación merece una llamada al LLM y
-una posible interrupción al piloto.
+Implementado como `EventGate` en el mismo paquete. Es la barrera que
+decide si una señal se emite, se actualiza, se aplaza o se suprime; no
+llama al LLM. La salida es una `GateDecision` con resultado y motivo
+estables, y un `AgentAlert` inmutable solo cuando hay emisión.
 
-Prioridades iniciales: - **Critical:** puede interrumpir y saltarse el
-cooldown. - **Strategic:** requiere una decisión o acción útil; respeta
-reglas de frecuencia. - **Informational:** se comunica solo si aporta
-valor y hay espacio para hacerlo. - **No-op:** no genera llamada al LLM.
+Prioridades: - **Critical:** puede interrumpir (`interrupt=True`) y está
+exento de cooldown. - **Strategic:** requiere una decisión o acción útil;
+respeta cooldown global y por categoría y puede aplazarse. -
+**Informational:** se comunica solo si aporta valor y hay espacio
+contextual; en caso contrario se suprime. El silencio no es una cuarta
+prioridad, sino el resultado normal de la compuerta.
 
-Controles: - Cooldown global y/o por categoría. - Deduplicación por
-`event_id`. - Umbral mínimo de beneficio estratégico. - Persistencia del
-evento. - Supresión de mensajes equivalentes. - Cancelación o
-actualización de eventos obsoletos.
+Controles, en orden: silencio global, nivel de interrupción, coherencia
+de cierre, duplicado por `event_id`, calma informativa (primeras vueltas,
+interacción del piloto o aviso mayor), cooldown, intervalo mínimo de
+actualización, supresión de equivalentes recientes, arbitraje por
+prioridad y emisión. Los aplazados se revisan en cada evaluación, se
+cancelan si su condición se cierra y caducan; las actualizaciones
+bloqueadas quedan pendientes y no se pierden.
 
-La ausencia de evento debe finalizar el flujo sin llamar al LLM.
+Cada decisión se persiste con su motivo y alimenta `events show` y
+`events summary`, de modo que cualquier silencio se puede auditar. La
+ausencia de evento finaliza el flujo sin llamar al LLM.
 
 ### 3.8 Pilot Input e Intent Router
 

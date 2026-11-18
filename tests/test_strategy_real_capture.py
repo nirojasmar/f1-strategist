@@ -90,10 +90,10 @@ class _StrategyReplay:
 
 
 def _replay_once(
-    scenario: _Scenario, *, speed: float | None = None
+    scenario: _Scenario, *, clock_scale: float | None = None
 ) -> tuple[tuple[int, StrategyEvaluation], ...]:
     replay = _StrategyReplay()
-    result = run_capture_offline(scenario.path, [replay], speed=speed)
+    result = run_capture_offline(scenario.path, [replay], clock_scale=clock_scale)
     assert not result.integrity_problems(), (
         f"{scenario.name}: captura íntegra requerida; " + "; ".join(result.integrity_problems())
     )
@@ -102,10 +102,10 @@ def _replay_once(
 
 @cache
 def _replay(
-    scenario: _Scenario, speed: float | None = None
+    scenario: _Scenario, clock_scale: float | None = None
 ) -> tuple[tuple[int, StrategyEvaluation], ...]:
-    """Reproducción memorizada: cada escenario se procesa una vez por velocidad."""
-    return _replay_once(scenario, speed=speed)
+    """Reproducción memorizada: cada escenario se procesa una vez por escala."""
+    return _replay_once(scenario, clock_scale=clock_scale)
 
 
 def _signature(evaluation: StrategyEvaluation) -> tuple[str, str, float | None]:
@@ -171,10 +171,16 @@ def test_repeated_replays_are_deterministic() -> None:
     ]
 
 
-def test_replay_speed_does_not_change_the_recommendation() -> None:
-    """La velocidad de reproducción solo cambia los tiempos observados."""
+def test_clock_scale_does_not_change_the_recommendation_on_this_capture() -> None:
+    """Observación sobre la captura: comprimir el reloj no cambió la acción.
+
+    No es una garantía general: los umbrales de obsolescencia están en segundos
+    absolutos y comprimir el reloj puede cambiar la frescura (y la huella). La
+    invariancia del reloj de referencia se comprueba con ``play`` en
+    ``tests/test_playback.py``.
+    """
     scenario = _smallest_race_scenario()
-    baseline = _replay(scenario, 0)
+    baseline = _replay(scenario)
     faster = _replay(scenario, 4.0)
     realtime = _replay(scenario, 1.0)
 
@@ -184,7 +190,7 @@ def test_replay_speed_does_not_change_the_recommendation() -> None:
     for index, (lap, evaluation) in enumerate(baseline):
         for other in (faster[index][1], realtime[index][1]):
             assert _signature(other) == _signature(evaluation), (
-                f"vuelta {lap}: la recomendación cambia con la velocidad de reproducción"
+                f"vuelta {lap}: la recomendación cambia con la escala del reloj"
             )
 
 

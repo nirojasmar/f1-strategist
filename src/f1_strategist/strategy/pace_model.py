@@ -19,7 +19,7 @@ from statistics import linear_regression, mean
 from typing import TYPE_CHECKING, Literal
 
 from ..config import StrategyConfig
-from ..metrics.comparability import classify_lap, is_clean
+from ..metrics.comparability import classify_lap, has_damage_change, is_clean, is_traffic_only
 from ..metrics.history import LapRecord, MetricInputs, current_stint_bounds
 from ..metrics.types import Quality, assess_quality
 from ..race_state import TyreSetSnapshot
@@ -43,6 +43,9 @@ NOTE_INVENTORY_UNAVAILABLE = "inventory_unavailable"
 NOTE_NO_COMPOUNDS = "no_compounds"
 NOTE_USED_SET = "used_set_initial_age_from_wear"
 NOTE_WEAR_BLENDED = "wear_blended_with_prior"
+NOTE_TRAFFIC_CONDITIONED = "pace_conditioned_by_traffic"
+NOTE_DAMAGE_TAINTED = "laps_excluded_after_damage"
+NOTE_PRIOR_EXCLUDED = "prior_excluded_insufficient"
 
 _MIN_RACE_LAPS = 3
 
@@ -65,6 +68,13 @@ def canonical_compound(value: str | None) -> str | None:
 
 def _worst_quality(left: Quality, right: Quality) -> Quality:
     return left if _QUALITY_ORDER[left] >= _QUALITY_ORDER[right] else right
+
+
+def _conditioned_quality(quality: Quality) -> Quality:
+    """Degrada un ajuste condicionado por tráfico; nunca mejora la calidad."""
+    if quality is Quality.OK:
+        return Quality.LOW
+    return _worst_quality(quality, Quality.INSUFFICIENT)
 
 
 def _finite(value: float, name: str, *, minimum: float | None = None) -> float:
@@ -196,15 +206,44 @@ def _freshness_is_stale(inputs: MetricInputs) -> bool:
     return False
 
 
-def _clean_laps(
+def _damage_tainted_laps(inputs: MetricInputs) -> frozenset[int]:
+    """Vueltas posteriores a un cambio de daño: el daño persiste aunque el delta sea 0."""
+    # shortcut: el taint no se limpia tras una reparación en boxes; revisar cuando
+    # el modelo de boxes exponga reparaciones confirmadas.
+    tainted: set[int] = set()
+    damaged = False
+    records = sorted(
+        inputs.history.records_for(inputs.car_index),
+        key=lambda record: record.lap_number,
+    )
+    for record in records:
+        if not record.closed or record.lap_time_s is None:
+            continue
+        if has_damage_change(classify_lap(record, inputs.config)):
+            damaged = True
+        elif damaged:
+            tainted.add(record.lap_number)
+    return frozenset(tainted)
+
+
+def _eligible_laps(
     inputs: MetricInputs,
     compound: str,
     bounds: tuple[int, int | None] | None,
-) -> tuple[LapRecord, ...]:
-    """Vueltas cerradas, limpias y del compuesto indicado, sin mirar al futuro."""
+    *,
+    allow_traffic: bool = False,
+    tainted: frozenset[int] = frozenset(),
+) -> tuple[tuple[LapRecord, ...], bool]:
+    """Vueltas cerradas elegibles del compuesto indicado, sin mirar al futuro.
+
+    Devuelve las vueltas y si alguna se descartó por daño activo o desconocido.
+    El modo ``allow_traffic`` solo admite vueltas cuyo único motivo de exclusión
+    sea el tráfico; nunca rescata una vuelta inválida, de boxes o neutralizada.
+    """
     car = inputs.car
     current_lap = car.current_lap if car is not None and car.current_lap is not None else None
     records: list[LapRecord] = []
+    damage_excluded = False
     for record in inputs.history.records_for(inputs.car_index):
         if not record.closed or record.lap_time_s is None:
             continue
@@ -222,11 +261,18 @@ def _clean_laps(
                 continue
         if record.valid is False or "telemetry_partial" in record.flags:
             continue
-        if not is_clean(classify_lap(record, inputs.config)):
+        if record.lap_number in tainted:
+            damage_excluded = True
+            continue
+        flags = classify_lap(record, inputs.config)
+        if allow_traffic:
+            if not is_traffic_only(flags):
+                continue
+        elif not is_clean(flags):
             continue
         records.append(record)
     records.sort(key=lambda record: record.lap_number)
-    return tuple(records)
+    return tuple(records), damage_excluded
 
 
 def _fit_compound(
@@ -423,26 +469,45 @@ def _build_model(
     fits: dict[str, _Fit],
     reference: str | None,
     inventory: TyreSetSnapshot | None,
+    *,
+    conditioned: bool = False,
+    reference_conditioned: bool = False,
+    damage_excluded: bool = False,
+    tainted: frozenset[int] = frozenset(),
 ) -> CompoundModel | None:
     profile = inputs.profile
     profile_entry = _profile_compound(profile, compound)
     prior_quality = profile_entry.quality if profile_entry is not None else Quality.UNAVAILABLE
+    # Un prior insuficiente no puede condicionar ni degradar un ajuste de carrera
+    # defendible, pero su exclusión debe quedar declarada.
+    prior_excluded = profile_entry is not None and prior_quality in {
+        Quality.INSUFFICIENT,
+        Quality.UNAVAILABLE,
+    }
+    active_profile = None if prior_excluded else profile
     fit = fits.get(compound)
     reference_fit = fits.get(reference) if reference is not None else None
+    # Un ajuste condicionado por tráfico no ancla el ritmo absoluto de otros compuestos.
+    if reference_conditioned:
+        reference_fit = None
     reference_slope = reference_fit.slope_s_per_lap if reference_fit is not None else None
     reference_base = reference_fit.base_lap_s if reference_fit is not None else None
-    delta = _relative_delta(profile, compound, reference)
+    delta = _relative_delta(active_profile, compound, reference)
     aligned_prior_base = (
         reference_base + delta if reference_base is not None and delta is not None else None
     )
     notes: list[str] = []
+    if prior_excluded:
+        notes.append(NOTE_PRIOR_EXCLUDED)
     source: CompoundSource
     base: float | None
     slope: float | None
     stale = _freshness_is_stale(inputs)
 
     if fit is not None:
-        prior_slope, slope_note = _scaled_slope(profile, compound, reference, reference_slope)
+        prior_slope, slope_note = _scaled_slope(
+            active_profile, compound, reference, reference_slope
+        )
         base = blend_with_prior(
             aligned_prior_base,
             fit.base_lap_s,
@@ -455,9 +520,14 @@ def _build_model(
         quality = assess_quality(fit.n_laps, ok, low, stale)
         if source == "blend":
             quality = _worst_quality(quality, prior_quality)
+        if conditioned:
+            quality = _conditioned_quality(quality)
+            notes.append(NOTE_TRAFFIC_CONDITIONED)
         n_race_laps = fit.n_laps
     else:
-        scaled_slope, slope_note = _scaled_slope(profile, compound, reference, reference_slope)
+        scaled_slope, slope_note = _scaled_slope(
+            active_profile, compound, reference, reference_slope
+        )
         slope = scaled_slope
         if slope is None:
             slope = reference_slope
@@ -496,11 +566,13 @@ def _build_model(
                 low,
                 stale,
             )
-            if prior_quality is not Quality.UNAVAILABLE:
+            if prior_quality is not Quality.UNAVAILABLE and not prior_excluded:
                 quality = _worst_quality(quality, prior_quality)
         elif source == "game_delta":
             quality = _worst_quality(
-                prior_quality if prior_quality is not Quality.UNAVAILABLE else Quality.LOW,
+                prior_quality
+                if prior_quality is not Quality.UNAVAILABLE and not prior_excluded
+                else Quality.LOW,
                 Quality.LOW,
             )
         else:
@@ -514,15 +586,21 @@ def _build_model(
         notes.append(NOTE_SLOPE_UNAVAILABLE)
     elif slope_note is not None:
         notes.append(slope_note)
+    if damage_excluded:
+        notes.append(NOTE_DAMAGE_TAINTED)
 
-    wear_fit = _wear_rate_from_laps(
-        _clean_laps(
-            inputs,
-            compound,
-            current_stint_bounds(inputs, inputs.car_index) if compound == fitted else None,
-        )
+    wear_records, _ = _eligible_laps(
+        inputs,
+        compound,
+        current_stint_bounds(inputs, inputs.car_index) if compound == fitted else None,
+        tainted=tainted,
     )
-    prior_wear = profile_entry.wear_rate_pct_per_lap.value if profile_entry is not None else None
+    wear_fit = _wear_rate_from_laps(wear_records)
+    prior_wear = (
+        profile_entry.wear_rate_pct_per_lap.value
+        if profile_entry is not None and not prior_excluded
+        else None
+    )
     if wear_fit is not None:
         race_wear, wear_samples = wear_fit
         wear_rate = blend_with_prior(prior_wear, race_wear, wear_samples, cfg.prior_strength_k)
@@ -576,12 +654,38 @@ def build_compound_models(inputs: MetricInputs, cfg: StrategyConfig) -> Compound
         return CompoundModels(notes=(NOTE_NO_COMPOUNDS,))
 
     bounds = current_stint_bounds(inputs, inputs.car_index)
+    tainted = _damage_tainted_laps(inputs)
     fits: dict[str, _Fit] = {}
+    damage_excluded: dict[str, bool] = {}
     for compound in targets:
-        records = _clean_laps(inputs, compound, bounds if compound == fitted else None)
+        records, excluded = _eligible_laps(
+            inputs,
+            compound,
+            bounds if compound == fitted else None,
+            tainted=tainted,
+        )
+        damage_excluded[compound] = excluded
         fit = _fit_compound(records)
         if fit is not None:
             fits[compound] = fit
+
+    # El ajuste limpio es la primera opción. Solo si el compuesto montado no
+    # tiene uno suficiente se aceptan vueltas condicionadas únicamente por
+    # tráfico, dentro del stint actual y con los mismos requisitos de pendiente.
+    conditioned: str | None = None
+    if fitted is not None and fitted not in fits and bounds is not None:
+        records, excluded = _eligible_laps(
+            inputs,
+            fitted,
+            bounds,
+            allow_traffic=True,
+            tainted=tainted,
+        )
+        damage_excluded[fitted] = damage_excluded.get(fitted, False) or excluded
+        fit = _fit_compound(records)
+        if fit is not None:
+            fits[fitted] = fit
+            conditioned = fitted
 
     reference = _select_reference(fits, fitted)
     models: list[CompoundModel] = []
@@ -594,6 +698,10 @@ def build_compound_models(inputs: MetricInputs, cfg: StrategyConfig) -> Compound
             fits,
             reference,
             _inventory_set(inputs, compound),
+            conditioned=compound == conditioned,
+            reference_conditioned=conditioned is not None and reference == conditioned,
+            damage_excluded=damage_excluded.get(compound, False),
+            tainted=tainted,
         )
         if model is not None:
             models.append(model)
@@ -672,11 +780,14 @@ def project_tyre_option_lap_times(
 
 
 __all__ = [
+    "NOTE_DAMAGE_TAINTED",
     "NOTE_INVENTORY_UNAVAILABLE",
     "NOTE_NO_COMPOUNDS",
+    "NOTE_PRIOR_EXCLUDED",
     "NOTE_SLOPE_FROM_REFERENCE",
     "NOTE_SLOPE_SCALED",
     "NOTE_SLOPE_UNAVAILABLE",
+    "NOTE_TRAFFIC_CONDITIONED",
     "NOTE_USED_SET",
     "NOTE_WEAR_BLENDED",
     "SOURCES",

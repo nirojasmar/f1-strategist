@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from f1_strategist.config import StrategyConfig
 from f1_strategist.metrics.types import Quality
 from f1_strategist.strategy.decision import (
     NOTE_ALTERNATIVE_QUALITY,
+    NOTE_ALTERNATIVE_UNSTABLE,
+    NOTE_DEFAULT_NO_CHANGE,
     NOTE_MANDATORY_STOP,
     NOTE_NO_ALTERNATIVES,
     NOTE_NO_LAPS_REMAINING,
@@ -156,6 +160,67 @@ def test_unstable_mandatory_stop_is_not_used_as_a_fallback() -> None:
     assert decision.action is StrategyAction.INSUFFICIENT_DATA
     assert decision.confidence == 0.0
     assert NOTE_MANDATORY_STOP in decision.notes
+    assert NOTE_ALTERNATIVE_UNSTABLE in decision.notes
+    assert NOTE_ALTERNATIVE_QUALITY not in decision.notes
+
+
+def test_low_quality_mandatory_stop_is_not_reported_as_unstable() -> None:
+    def evaluate(_perturbation: Perturbation) -> tuple[AlternativeResult, ...]:
+        return (_pit(gain=-1.0, quality=Quality.INSUFFICIENT),)
+
+    decision = decide(evaluate, _quality(), StrategyConfig())
+
+    assert decision.action is StrategyAction.INSUFFICIENT_DATA
+    assert NOTE_MANDATORY_STOP in decision.notes
+    assert NOTE_ALTERNATIVE_QUALITY in decision.notes
+    assert NOTE_ALTERNATIVE_UNSTABLE not in decision.notes
+
+
+def test_insufficient_alternative_does_not_block_a_valid_stay_out() -> None:
+    def evaluate(_perturbation: Perturbation) -> tuple[AlternativeResult, ...]:
+        return (
+            _stay_out(),
+            _pit(
+                key="pit_now:soft",
+                gain=8.0,
+                compound="soft",
+                quality=Quality.INSUFFICIENT,
+            ),
+        )
+
+    decision = decide(evaluate, _quality(), StrategyConfig())
+
+    assert decision.action is StrategyAction.NO_CHANGE
+    assert decision.key == BASELINE_STAY_OUT
+    assert decision.gain_vs_baseline_s is None
+    assert NOTE_DEFAULT_NO_CHANGE in decision.notes
+    assert NOTE_ALTERNATIVE_QUALITY not in decision.notes
+    assert NOTE_ALTERNATIVE_UNSTABLE not in decision.notes
+
+
+def test_low_quality_but_stable_alternatives_are_not_reported_unstable() -> None:
+    def evaluate(_perturbation: Perturbation) -> tuple[AlternativeResult, ...]:
+        return (
+            replace(_stay_out(), quality=Quality.LOW),
+            _pit(
+                key="pit_now:soft",
+                gain=8.0,
+                compound="soft",
+                quality=Quality.INSUFFICIENT,
+            ),
+            _pit(
+                key="pit_in_2:hard",
+                gain=6.0,
+                action=StrategyAction.PIT_IN,
+                quality=Quality.STALE,
+            ),
+        )
+
+    decision = decide(evaluate, _quality(), StrategyConfig())
+
+    assert decision.action is StrategyAction.NO_CHANGE
+    assert decision.key == BASELINE_STAY_OUT
+    assert NOTE_ALTERNATIVE_UNSTABLE not in decision.notes
     assert NOTE_ALTERNATIVE_QUALITY not in decision.notes
 
 

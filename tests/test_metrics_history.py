@@ -158,6 +158,72 @@ def test_discard_after_removes_later_laps_for_one_car() -> None:
     assert [record.lap_number for record in snapshot.records_for(1)] == [3]
 
 
+def test_official_rewrite_keeps_the_observed_compound() -> None:
+    history = LapHistory(history_max_laps=20)
+    for lap in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14):
+        compound = "c4" if lap <= 5 or lap >= 13 else "c3"
+        history.upsert(LapRecord(car_index=0, lap_number=lap, compound=compound))
+    history.replace_tyre_stints(
+        0,
+        (TyreStint("c4", 1, 4, "medium"), TyreStint("c3", 5, None, "hard")),
+    )
+
+    history.replace_tyre_stints(
+        0,
+        (TyreStint("c4", 1, 4, "medium"), TyreStint("c4", 5, None, "medium")),
+    )
+
+    assert history.snapshot().stints_for(0) == (
+        TyreStint("c4", 1, 4, "medium"),
+        TyreStint("c4", 5, 5, "medium"),
+        TyreStint("c3", 6, 11, "hard"),
+        TyreStint("c4", 12, None, "medium"),
+    )
+
+
+def test_merged_stints_are_idempotent_and_never_guess_a_visual_compound() -> None:
+    history = LapHistory(history_max_laps=20)
+    for lap in range(1, 9):
+        history.upsert(
+            LapRecord(car_index=0, lap_number=lap, compound="soft" if lap <= 4 else "c3")
+        )
+    stints = (TyreStint("soft", 1, 4, "soft"), TyreStint("c4", 5, None, "medium"))
+
+    history.replace_tyre_stints(0, stints)
+    first = history.snapshot().stints_for(0)
+    history.replace_tyre_stints(0, stints)
+
+    assert first == (
+        TyreStint("soft", 1, 4, "soft"),
+        TyreStint("c3", 5, 8, None),
+        TyreStint("c4", 9, None, "medium"),
+    )
+    assert history.snapshot().stints_for(0) == first
+
+
+def test_flashback_and_session_reset_do_not_keep_discarded_compounds() -> None:
+    history = LapHistory(history_max_laps=20)
+    for lap in range(1, 9):
+        history.upsert(LapRecord(car_index=0, lap_number=lap, compound="c4" if lap <= 4 else "c3"))
+    history.replace_tyre_stints(
+        0, (TyreStint("c4", 1, 4, "medium"), TyreStint("c3", 5, None, "hard"))
+    )
+
+    history.discard_after(0, 4)
+    history.replace_tyre_stints(
+        0,
+        (TyreStint("c4", 1, 4, "medium"), TyreStint("c4", 5, None, "medium")),
+    )
+    assert history.snapshot().stints_for(0) == (
+        TyreStint("c4", 1, 4, "medium"),
+        TyreStint("c4", 5, None, "medium"),
+    )
+
+    history.reset(99)
+    history.replace_tyre_stints(0, (TyreStint("c4", 1, None, "medium"),))
+    assert history.snapshot().stints_for(0) == (TyreStint("c4", 1, None, "medium"),)
+
+
 def test_tyre_stints_are_replaced_and_copied_per_car() -> None:
     history = LapHistory(history_max_laps=5)
     stints = (TyreStint("soft", 1, 5), TyreStint("medium", 6))

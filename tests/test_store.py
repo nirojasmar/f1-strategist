@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 import threading
-from dataclasses import fields
+from dataclasses import fields, replace
 from pathlib import Path
 
 import pytest
@@ -19,8 +19,10 @@ from f1_strategist.store import (
     Participant,
     SessionInfo,
     SessionStore,
+    StoredDetectedEvent,
     StoredError,
     StoredEvent,
+    StoredGateDecision,
     StoredStrategyEvaluation,
     StoreError,
     apply_migrations,
@@ -521,6 +523,65 @@ def test_strategy_evaluations_roundtrip_and_upsert_by_sequence(tmp_path: Path) -
 
         assert store.get_session(session_id).strategy_fingerprint == "e" * 64  # type: ignore[union-attr]
         assert list(store.iter_strategy_evaluations(session_id)) == [earlier, record]
+
+
+def test_events_and_gate_decisions_roundtrip_and_upsert_by_sequence(tmp_path: Path) -> None:
+    event = StoredDetectedEvent(
+        seq=1,
+        t_sim_s=4.5,
+        lap=2,
+        rule="traffic",
+        event_id="traffic:1",
+        phase="opened",
+        priority="strategic",
+        category="traffic",
+        message_key="event.traffic",
+        facts_json='{"gap_s":1.2}',
+        material_key="traffic:1",
+    )
+    decision = StoredGateDecision(
+        seq=1,
+        t_sim_s=4.5,
+        event_id="traffic:1",
+        phase="opened",
+        outcome="emit",
+        reason="eligible",
+        alert_id="alert:1",
+        interrupt=True,
+    )
+    with SessionStore.open(tmp_path / "sessions.db") as store:
+        session_id = store.create_session(_session(gate_fingerprint="f" * 64))
+        store.add_detected_events(session_id, [event])
+        store.add_detected_events(session_id, [replace(event, facts_json='{"gap_s":1.1}')])
+        store.add_gate_decisions(session_id, [decision])
+        assert store.get_session(session_id).gate_fingerprint == "f" * 64  # type: ignore[union-attr]
+        assert list(store.iter_detected_events(session_id)) == [
+            replace(event, facts_json='{"gap_s":1.1}')
+        ]
+        assert list(store.iter_gate_decisions(session_id)) == [decision]
+
+
+def test_schema_v7_migrates_without_losing_session_data(tmp_path: Path) -> None:
+    path = tmp_path / "v7.db"
+    connection = sqlite3.connect(path)
+    try:
+        apply_migrations(connection, MIGRATIONS[:-1])
+        connection.execute(
+            "INSERT INTO sessions (session_uid, source, started_at_utc, fingerprint) "
+            "VALUES ('123', 'live', '2026-11-05T10:00:00Z', ?)",
+            ("f" * 64,),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    with SessionStore.open(path) as store:
+        session = store.get_session(1)
+        assert session is not None
+        assert session.session_uid == 123
+        assert session.fingerprint == "f" * 64
+        assert session.gate_fingerprint is None
+        assert store.connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
 
 
 def test_schema_v5_migrates_without_losing_session_data(tmp_path: Path) -> None:

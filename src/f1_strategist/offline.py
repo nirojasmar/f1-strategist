@@ -11,6 +11,11 @@ from types import MappingProxyType
 from typing import Protocol
 
 from .capture import CaptureReader
+from .config import AppConfig
+from .events.engine import EventEngine
+from .events.types import EventsSnapshot
+from .metrics.engine import MetricsEngine, MetricsSnapshot
+from .metrics.history import LapHistorySnapshot
 from .packets import parse_header
 from .parser import (
     PacketParseError,
@@ -20,10 +25,80 @@ from .parser import (
     parse_packet,
     record_parser_rejection,
 )
+from .race_state import RaceState, RaceStateSnapshot
+from .strategy.engine import StrategyEngine
+from .strategy.types import StrategySnapshot
+from .weekend_profile import WeekendProfile
+
+_RACE_SESSION_TYPES = frozenset({"race", "race_2", "race_3"})
 
 
 class PacketConsumer(Protocol):
     def apply(self, packet: ParsedPacket, observed_at: float) -> None: ...
+
+
+class OfflineEventPipeline:
+    """Pipeline completo reutilizable por reproducir capturas sin red.
+
+    Reproduce el mismo orden que la sesión en vivo y el reproductor: estado,
+    métricas, estrategia y eventos. El reloj siempre lo aporta el llamador, de
+    modo que ``run_capture_offline`` puede usar su reloj de captura por defecto.
+    """
+
+    def __init__(
+        self,
+        config: AppConfig,
+        *,
+        profiles_by_uid: Mapping[int, WeekendProfile] | None = None,
+    ) -> None:
+        self._config = config
+        self._profiles_by_uid = dict(profiles_by_uid or {})
+        self._race_state = RaceState()
+        self._metrics_engine = MetricsEngine(config.metrics)
+        self._strategy_engine = StrategyEngine(config.strategy, config.metrics)
+        self._event_engine = EventEngine(config)
+
+    def apply(self, packet: ParsedPacket, observed_at: float) -> None:
+        self._race_state.apply(packet, observed_at)
+        state = self._race_state.snapshot()
+        session = state.session
+        profile = (
+            self._profiles_by_uid.get(session.uid)
+            if session.uid is not None
+            and session.session_type is not None
+            and session.session_type.lower() in _RACE_SESSION_TYPES
+            else None
+        )
+        self._metrics_engine.set_profile(profile)
+        self._metrics_engine.apply(packet, observed_at, state)
+        self._strategy_engine.apply(
+            state,
+            self._metrics_engine.snapshot(),
+            self._metrics_engine.history.snapshot(),
+            profile,
+            observed_at,
+        )
+        self._event_engine.apply(
+            state,
+            self._metrics_engine.snapshot(),
+            self._strategy_engine.snapshot(),
+            observed_at,
+        )
+
+    def race_snapshot(self) -> RaceStateSnapshot:
+        return self._race_state.snapshot()
+
+    def metrics_snapshot(self) -> MetricsSnapshot:
+        return self._metrics_engine.snapshot()
+
+    def history_snapshot(self) -> LapHistorySnapshot:
+        return self._metrics_engine.history.snapshot()
+
+    def strategy_snapshot(self) -> StrategySnapshot:
+        return self._strategy_engine.snapshot()
+
+    def events_snapshot(self) -> EventsSnapshot:
+        return self._event_engine.snapshot()
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,19 +127,22 @@ def run_capture_offline(
     path: Path,
     consumers: Iterable[PacketConsumer],
     *,
-    speed: float | None = None,
+    clock_scale: float | None = None,
     stop_when: Callable[[], bool] | None = None,
 ) -> OfflineResult:
     """Procesa una captura sin red, hilos ni esperas.
 
-    `speed` escala el reloj simulado como en `replay`: 2.0 acelera el tiempo
-    a la mitad y 0.0 asigna el mismo instante a todos los paquetes.
+    ``clock_scale`` escala el reloj simulado: 2.0 comprime el tiempo a la mitad.
+    No usar en comprobaciones de determinismo: ``play`` y ``replay`` aceptan
+    ``--speed``, que solo escala las esperas y conserva el tiempo de la captura.
+    El valor por defecto (``None``) usa el tiempo transcurrido de la captura.
+    Cero se rechaza porque colapsa el reloj y cambia los datos registrados.
     Las excepciones inesperadas de consumidores y parser se propagan; solo
     `PacketParseError` se cuenta como rechazo, para no ocultar fallos offline.
     """
-    playback_speed = 1.0 if speed is None else speed
-    if not math.isfinite(playback_speed) or playback_speed < 0:
-        raise ValueError("speed debe ser un número finito no negativo")
+    scale = 1.0 if clock_scale is None else clock_scale
+    if not math.isfinite(scale) or scale <= 0:
+        raise ValueError("clock_scale debe ser un número finito mayor que cero")
 
     reader = CaptureReader(path)
     packet_consumers = tuple(consumers)
@@ -81,8 +159,7 @@ def run_capture_offline(
             first_recv_time_ns = captured.recv_time_ns
 
         elapsed = (captured.recv_time_ns - first_recv_time_ns) / 1_000_000_000
-        observed_at = 0.0 if playback_speed == 0 else elapsed / playback_speed
-        observed_at = max(last_observed_at, observed_at)
+        observed_at = max(last_observed_at, elapsed / scale)
         last_observed_at = observed_at
 
         header = parse_header(captured.payload)

@@ -40,8 +40,8 @@ def test_offline_runner_is_deterministic_and_scales_observed_time(tmp_path: Path
     second_consumer = RecordingConsumer()
     first_state = RaceState()
     second_state = RaceState()
-    first = run_capture_offline(path, [first_consumer, first_state], speed=2.0)
-    second = run_capture_offline(path, [second_consumer, second_state], speed=2.0)
+    first = run_capture_offline(path, [first_consumer, first_state], clock_scale=2.0)
+    second = run_capture_offline(path, [second_consumer, second_state], clock_scale=2.0)
 
     assert first == second
     assert first.packets_read == first.packets_parsed == 2
@@ -72,16 +72,25 @@ def test_offline_runner_counts_rejections_and_ignored_packets(tmp_path: Path) ->
     assert not result.truncated
 
 
-def test_offline_runner_reports_last_observed_time_and_zero_speed(tmp_path: Path) -> None:
-    path = tmp_path / "zero-speed.f1cap"
+def test_offline_runner_uses_the_capture_clock_by_default(tmp_path: Path) -> None:
+    path = tmp_path / "default-clock.f1cap"
     payload = (Path(__file__).parent / "fixtures" / "car_status.bin").read_bytes()
     _write_capture(path, [payload, payload], [1_000_000_000, 8_000_000_000])
     consumer = RecordingConsumer()
 
-    result = run_capture_offline(path, [consumer], speed=0)
+    result = run_capture_offline(path, [consumer])
 
-    assert result.last_observed_at == 0.0
-    assert [observed_at for _, observed_at in consumer.received] == [0.0, 0.0]
+    assert result.last_observed_at == 7.0
+    assert [observed_at for _, observed_at in consumer.received] == [0.0, 7.0]
+
+
+def test_offline_runner_rejects_zero_clock_scale(tmp_path: Path) -> None:
+    path = tmp_path / "zero-clock.f1cap"
+    with CaptureWriter(path):
+        pass
+
+    with pytest.raises(ValueError, match="clock_scale"):
+        run_capture_offline(path, [], clock_scale=0)
 
 
 def test_offline_runner_stops_after_consumers_request_it(tmp_path: Path) -> None:
@@ -131,11 +140,11 @@ def test_offline_runner_reports_truncated_capture(tmp_path: Path) -> None:
     assert result.truncated
 
 
-@pytest.mark.parametrize("speed", [-1.0, float("nan"), float("inf")])
-def test_offline_runner_rejects_invalid_speed(tmp_path: Path, speed: float) -> None:
+@pytest.mark.parametrize("clock_scale", [-1.0, 0.0, float("nan"), float("inf")])
+def test_offline_runner_rejects_invalid_clock_scale(tmp_path: Path, clock_scale: float) -> None:
     path = tmp_path / "empty.f1cap"
     with CaptureWriter(path):
         pass
 
-    with pytest.raises(ValueError, match="speed"):
-        run_capture_offline(path, [], speed=speed)
+    with pytest.raises(ValueError, match="clock_scale"):
+        run_capture_offline(path, [], clock_scale=clock_scale)

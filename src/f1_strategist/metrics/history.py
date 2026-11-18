@@ -114,6 +114,67 @@ class TyreStint:
             raise ValueError("end_lap no puede ser anterior a start_lap")
 
 
+def _stints_with_observed_compounds(
+    incoming: tuple[TyreStint, ...],
+    previous: tuple[TyreStint, ...],
+    records: Mapping[int, LapRecord],
+) -> tuple[TyreStint, ...]:
+    """Conserva el compuesto observado vuelta a vuelta sobre el declarado.
+
+    El juego puede reescribir retrospectivamente el compuesto de un stint
+    abierto, por ejemplo después de una bandera roja. La telemetría ya vio el
+    compuesto real de cada vuelta, así que prevalece. Los compuestos visuales se
+    reutilizan de los stints conocidos; uno que no aparezca en ninguno queda
+    desconocido, nunca se adivina.
+    """
+    observed = {
+        lap: record.compound for lap, record in records.items() if record.compound is not None
+    }
+    if not observed or not incoming:
+        return incoming
+    horizon = max(observed)
+    visuals: dict[str, str] = {}
+    for stint in (*previous, *incoming):
+        if stint.compound is not None and stint.visual_compound is not None:
+            visuals.setdefault(stint.compound, stint.visual_compound)
+
+    merged: list[TyreStint] = []
+    for stint in incoming:
+        last = stint.end_lap if stint.end_lap is not None else horizon
+        if last < stint.start_lap:
+            merged.append(stint)
+            continue
+        groups: list[tuple[str | None, int, int]] = []
+        for lap in range(stint.start_lap, last + 1):
+            compound = observed.get(lap, stint.compound)
+            if groups and groups[-1][0] == compound:
+                _, start, _ = groups[-1]
+                groups[-1] = (compound, start, lap)
+            else:
+                groups.append((compound, lap, lap))
+        for index, (compound, start, end) in enumerate(groups):
+            is_last = index == len(groups) - 1
+            open_tail = stint.end_lap is None and is_last and compound == stint.compound
+            merged.append(
+                TyreStint(
+                    compound=compound,
+                    start_lap=start,
+                    end_lap=None if open_tail else end,
+                    visual_compound=(visuals.get(compound) if compound is not None else None),
+                )
+            )
+        if stint.end_lap is None and groups[-1][0] != stint.compound:
+            merged.append(
+                TyreStint(
+                    compound=stint.compound,
+                    start_lap=last + 1,
+                    end_lap=None,
+                    visual_compound=visuals.get(stint.compound) if stint.compound else None,
+                )
+            )
+    return tuple(merged)
+
+
 @dataclass(frozen=True, slots=True)
 class LapHistorySnapshot:
     """Vista inmutable del histórico de vueltas y stints."""
@@ -239,7 +300,11 @@ class LapHistory:
         """Reemplaza los stints conocidos de un coche."""
         if car_index < 0:
             raise ValueError("car_index no puede ser negativo")
-        self._tyre_stints[car_index] = tuple(stints)
+        self._tyre_stints[car_index] = _stints_with_observed_compounds(
+            tuple(stints),
+            self._tyre_stints.get(car_index, ()),
+            self._records.get(car_index, {}),
+        )
 
     def snapshot(self) -> LapHistorySnapshot:
         """Devuelve una copia inmutable sin compartir estado con el histórico."""
