@@ -155,6 +155,23 @@ _STRATEGY_KEY_LABELS = {
     "data_stale": "Datos obsoletos",
     "wear_slope": "Pendiente de desgaste",
     "pit_loss_s": "Pérdida en boxes",
+    "decision_without_alternatives": "No hay alternativas que evaluar",
+    "decision_default_no_change": "Ninguna parada superó el mínimo de ganancia",
+    "session_is_not_a_race": "La sesión actual no es una carrera",
+    "laps_remaining_unavailable": "Vueltas restantes no disponibles o agotadas",
+    "alternative_unstable": "Una alternativa de parada no se sostiene dentro de la incertidumbre",
+    "baseline_alternative": "Alternativa de referencia (línea base), no una recomendación",
+    "two_compounds_satisfied": "Regla de dos compuestos secos ya cumplida",
+    "two_compounds_unverified": "No se puede verificar la regla de dos compuestos secos",
+    "pace_conditioned_by_traffic": "Ritmo condicionado por tráfico; no es ritmo en aire limpio",
+    "laps_excluded_after_damage": "Se excluyeron vueltas posteriores a cambios de daño",
+    "prior_excluded_insufficient": (
+        "Prior del fin de semana descartado por insuficiente; estimación de carrera"
+    ),
+    "repair_pit_loss_samples_excluded": "Muestras de boxes con reparación excluidas",
+    "repair_duration_unknown": "Duración de la reparación desconocida",
+    "damage_signal_missing": "Sin señal de daño; no se pudo separar su efecto",
+    "provisional_field_pit_loss": "Pérdida en boxes provisional con muestras de carrera",
 }
 
 _PIT_LOSS_SOURCE_LABELS = {
@@ -280,20 +297,39 @@ def _strategy_reference_text(alternative: StrategyAlternative) -> str:
     return f"{detail} (alternativa, no recomendada)"
 
 
+def _format_laps(value: float) -> str:
+    """Muestra una fracción de vuelta positiva sin redondearla a cero."""
+    for precision in (1, 3, 6):
+        text = f"{value:.{precision}f}"
+        if value == 0.0 or float(text) != 0.0:
+            return text
+    return f"{value:.6g}"
+
+
 def render_strategy_rows(
     evaluation: StrategyEvaluation,
+    *,
+    session_ended: bool = False,
 ) -> tuple[tuple[str, str], ...]:
     """Devuelve las etiquetas y explicaciones del panel de estrategia.
 
-    Los campos de parada solo se rellenan cuando la acción recomienda una.
-    Para ``NO_CHANGE`` e ``INSUFFICIENT_DATA`` se marcan como no aplicables y
-    se muestra aparte la mejor parada calculada, identificada como alternativa
-    sin recomendación; así el panel distingue «no disponible» de «no aplica».
+    Los campos de parada solo se rellenan cuando la acción recomienda una y la
+    sesión sigue en curso. Para ``NO_CHANGE``, ``INSUFFICIENT_DATA`` o una
+    sesión finalizada se marcan como no aplicables y se muestra aparte la mejor
+    parada calculada, identificada como alternativa sin recomendación; así el
+    panel distingue «no disponible» de «no aplica». Una evaluación conservada
+    tras el final se etiqueta como histórica y no como acción vigente.
     """
     recommendation = evaluation.recommendation
     action = recommendation.action
     stop_action = action in {StrategyAction.PIT_NOW, StrategyAction.PIT_IN}
-    if action is StrategyAction.NO_CHANGE:
+    current_stop = stop_action and not session_ended
+    if session_ended:
+        explanation = (
+            "Sesión finalizada: la evaluación se conserva como referencia histórica, "
+            "sin acción vigente."
+        )
+    elif action is StrategyAction.NO_CHANGE:
         explanation = "Ninguna parada superó el mínimo de ganancia considerando la incertidumbre."
     elif action is StrategyAction.INSUFFICIENT_DATA:
         explanation = (
@@ -311,8 +347,8 @@ def render_strategy_rows(
         (item for item in evaluation.alternatives if item.key == recommendation.key),
         None,
     )
-    reference = None if stop_action else _strategy_reference_stop(evaluation)
-    if stop_action:
+    reference = None if current_stop else _strategy_reference_stop(evaluation)
+    if current_stop:
         if alternative is not None and alternative.rejoin_position is not None:
             rejoin = _render_rejoin_position(
                 alternative.rejoin_position, "recomendación", evaluation
@@ -328,13 +364,16 @@ def render_strategy_rows(
             reference.rejoin_position, "alternativa, no recomendación", evaluation
         )
 
+    recommendation_text = _STRATEGY_ACTION_LABELS[action]
+    if session_ended:
+        recommendation_text = f"{recommendation_text} (histórica, sesión finalizada)"
     rows: list[tuple[str, str]] = [
-        ("Recomendación", _STRATEGY_ACTION_LABELS[action]),
+        ("Recomendación", recommendation_text),
         ("Explicación", explanation),
         (
             "Compuesto",
             (recommendation.compound or _STRATEGY_UNKNOWN)
-            if stop_action
+            if current_stop
             else _STRATEGY_NOT_APPLICABLE,
         ),
         (
@@ -344,7 +383,7 @@ def render_strategy_rows(
                 if recommendation.set_index is None
                 else str(recommendation.set_index)
             )
-            if stop_action
+            if current_stop
             else _STRATEGY_NOT_APPLICABLE,
         ),
         (
@@ -356,7 +395,7 @@ def render_strategy_rows(
                 if recommendation.pit_lap is not None
                 else _STRATEGY_UNKNOWN
             )
-            if stop_action
+            if current_stop
             else _STRATEGY_NOT_APPLICABLE,
         ),
         (
@@ -366,13 +405,13 @@ def render_strategy_rows(
                 if recommendation.gain_vs_baseline_s is None
                 else f"{recommendation.gain_vs_baseline_s:.2f} s"
             )
-            if stop_action
+            if current_stop
             else _STRATEGY_NOT_APPLICABLE,
         ),
         (
             "Intervalo de ganancia",
             (_STRATEGY_UNKNOWN if interval is None else f"{interval[0]:.2f} a {interval[1]:.2f} s")
-            if stop_action
+            if current_stop
             else _STRATEGY_NOT_APPLICABLE,
         ),
         (
@@ -386,7 +425,7 @@ def render_strategy_rows(
     ]
     if reference is not None:
         rows.append(("Mejor parada calculada", _strategy_reference_text(reference)))
-    elif not stop_action and not evaluation.alternatives:
+    elif not current_stop and not evaluation.alternatives:
         rows.append(("Mejor parada calculada", "Ninguna calculada"))
     rows.extend(
         (
@@ -396,7 +435,7 @@ def render_strategy_rows(
                 "Vueltas restantes",
                 _STRATEGY_UNKNOWN
                 if evaluation.laps_remaining is None
-                else f"{evaluation.laps_remaining:.1f}",
+                else _format_laps(evaluation.laps_remaining),
             ),
             ("Supuestos", _render_strategy_keys(evaluation.assumptions)),
             ("Riesgos", _render_strategy_keys(evaluation.risks)),
@@ -524,8 +563,11 @@ def _render_metric_value(metric: Metric | None) -> str:
     if isinstance(value, bool):
         text = "sí" if value else "no"
     elif isinstance(value, float):
-        precision = 3 if metric.unit == "%/lap" else 1 if metric.unit == "lap" else 2
-        text = f"{value:.{precision}f}"
+        if metric.unit == "lap":
+            text = _format_laps(value)
+        else:
+            precision = 3 if metric.unit == "%/lap" else 2
+            text = f"{value:.{precision}f}"
     else:
         text = str(value)
     unit = _UNIT_LABELS.get(metric.unit, metric.unit)
