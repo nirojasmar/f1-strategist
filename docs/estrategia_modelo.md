@@ -177,6 +177,14 @@ Se evalúan tres familias de alternativas:
 - **`pit_in_N`**: parar dentro de `N` vueltas, con `N` desde 1 hasta el final de
   la ventana (`max_pit_in_laps`) y cada compuesto elegible.
 
+La regla de los dos compuestos secos se deduce de los stints declarados por el
+juego, conservando el compuesto que la telemetría observó vuelta a vuelta si el
+juego reescribe un stint abierto (por ejemplo, tras una bandera roja). Si el
+histórico no cubre todas las vueltas con compuesto conocido, o falta el visual
+de un compuesto usado del que depende acreditar el medio o duro, la regla queda
+como no acreditada (`two_compounds_unverified`): no se declara parada
+obligatoria ni se afirma que la regla esté cumplida.
+
 El tiempo restante de una alternativa es:
 
 ```text
@@ -275,10 +283,12 @@ obsoletos. Se acota a `[0, 1]` y se publica junto a la recomendación.
 
 - **`sensitive_to`**: `wear_slope` o `pit_loss_s` cuando la acción o la
   alternativa elegida cambian al perturbar ese parámetro.
-- **`mandatory_stop`**: la regla de los dos compuestos secos impide mantener; se
-  publica el plan de referencia, no una recomendación libre.
+- **`mandatory_stop`**: la regla de los dos compuestos secos, acreditada con el
+  histórico, impide mantener; se publica el plan de referencia, no una
+  recomendación libre.
 - **`alternative_unstable`** / **`alternative_quality_insufficient`**: las
-  alternativas existen pero no son defendibles.
+  alternativas existen pero no son defendibles; cada motivo se publica solo si
+  se verifica su causa.
 
 ## 9. Estados, motivos y honestidad
 

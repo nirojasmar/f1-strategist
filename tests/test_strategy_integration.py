@@ -380,15 +380,15 @@ def test_single_dry_compound_forces_a_stop() -> None:
         weekend_structure=("practice_1", "race"),
     )
     records = _stint(
-        compound="hard", first_lap=1, ages=range(0, 5), base_lap_s=95.0, slope_s_per_lap=0.0
-    ) + _stint(
         compound="soft", first_lap=6, ages=range(0, 10), base_lap_s=90.0, slope_s_per_lap=0.0
     )
     inputs = replace(
         _inputs(state=state, records=records),
         history=LapHistorySnapshot(
             records={CAR_INDEX: records},
-            tyre_stints={CAR_INDEX: (TyreStint(compound="soft", start_lap=6),)},
+            tyre_stints={
+                CAR_INDEX: (TyreStint(compound="soft", visual_compound="soft", start_lap=1),)
+            },
         ),
     )
 

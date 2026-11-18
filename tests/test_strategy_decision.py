@@ -8,6 +8,7 @@ from f1_strategist.config import StrategyConfig
 from f1_strategist.metrics.types import Quality
 from f1_strategist.strategy.decision import (
     NOTE_ALTERNATIVE_QUALITY,
+    NOTE_ALTERNATIVE_UNSTABLE,
     NOTE_MANDATORY_STOP,
     NOTE_NO_ALTERNATIVES,
     NOTE_NO_LAPS_REMAINING,
@@ -156,7 +157,20 @@ def test_unstable_mandatory_stop_is_not_used_as_a_fallback() -> None:
     assert decision.action is StrategyAction.INSUFFICIENT_DATA
     assert decision.confidence == 0.0
     assert NOTE_MANDATORY_STOP in decision.notes
+    assert NOTE_ALTERNATIVE_UNSTABLE in decision.notes
     assert NOTE_ALTERNATIVE_QUALITY not in decision.notes
+
+
+def test_low_quality_mandatory_stop_is_not_reported_as_unstable() -> None:
+    def evaluate(_perturbation: Perturbation) -> tuple[AlternativeResult, ...]:
+        return (_pit(gain=-1.0, quality=Quality.INSUFFICIENT),)
+
+    decision = decide(evaluate, _quality(), StrategyConfig())
+
+    assert decision.action is StrategyAction.INSUFFICIENT_DATA
+    assert NOTE_MANDATORY_STOP in decision.notes
+    assert NOTE_ALTERNATIVE_QUALITY in decision.notes
+    assert NOTE_ALTERNATIVE_UNSTABLE not in decision.notes
 
 
 def test_stable_mandatory_stop_is_used_when_baseline_is_unstable() -> None:

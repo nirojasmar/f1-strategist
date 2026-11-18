@@ -331,7 +331,12 @@ def decide(
         width = max((upper[item] - lower[item] for item in upper), default=0.0)
         notes = [NOTE_DEFAULT_NO_CHANGE]
         if mandatory_stop:
-            notes.append(NOTE_ALTERNATIVE_UNSTABLE)
+            if any(
+                item.action in {StrategyAction.PIT_NOW, StrategyAction.PIT_IN}
+                and item.key in unstable
+                for item in neutral
+            ):
+                notes.append(NOTE_ALTERNATIVE_UNSTABLE)
             notes.append(NOTE_MANDATORY_STOP)
             if not stable_stops:
                 if all(
