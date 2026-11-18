@@ -48,7 +48,9 @@ misma secuencia:
 4. `tyre_options`: enumera los juegos disponibles y el límite de vida de cada
    uno.
 5. `_unmodeled_conditions`: detecta condiciones que el MVP no modela (lluvia,
-   safety car, bandera roja, daños) y las publica como riesgos.
+   safety car, bandera roja) y las publica como riesgos. El daño no bloquea la
+   decisión: excluye las vueltas posteriores del ajuste de ritmo y no se
+   convierte en un coste inventado.
 6. `_data_quality`: resume la disponibilidad de ritmo, pérdida, vueltas
    restantes, antigüedad y muestras.
 7. `decide`: evalúa alternativas bajo nueve escenarios de perturbación y elige
