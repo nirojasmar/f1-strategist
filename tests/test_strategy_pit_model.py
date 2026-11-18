@@ -16,6 +16,7 @@ from f1_strategist.strategy.pit_model import (
     NOTE_CIRCUIT_SC_ESTIMATE,
     NOTE_CIRCUIT_SC_UNCERTAINTY,
     NOTE_CIRCUIT_VSC_ESTIMATE,
+    NOTE_DAMAGE_SIGNAL_MISSING,
     NOTE_FIELD_DISPERSION,
     NOTE_FIXED_BAND,
     NOTE_GAME_REJOIN_MISMATCH,
@@ -25,6 +26,9 @@ from f1_strategist.strategy.pit_model import (
     NOTE_NO_PIT_LOSS,
     NOTE_OVERRIDE,
     NOTE_PROFILE_PRIOR,
+    NOTE_PROVISIONAL_FIELD,
+    NOTE_REPAIR_DURATION_UNKNOWN,
+    NOTE_REPAIR_SAMPLES_EXCLUDED,
     NOTE_RIVAL_GAP_UNAVAILABLE,
     NOTE_RIVALS_DO_NOT_PIT,
     PitLossEstimate,
@@ -63,7 +67,13 @@ def _inputs(
     )
 
 
-def _stop_laps(car_index: int, *, loss_s: float = 20.0) -> tuple[LapRecord, ...]:
+def _stop_laps(
+    car_index: int,
+    *,
+    loss_s: float = 20.0,
+    lane_time_s: float | None = 25.0,
+    stop_time_s: float = 2.5,
+) -> tuple[LapRecord, ...]:
     """Tanda con una parada cuyo coste exacto es ``loss_s`` sobre 90 s de referencia."""
     entry_lap = 90.0 + loss_s / 2
     return (
@@ -74,8 +84,8 @@ def _stop_laps(car_index: int, *, loss_s: float = 20.0) -> tuple[LapRecord, ...]
             lap_time_s=entry_lap,
             valid=True,
             pit_entry=True,
-            pit_lane_time_s=25.0,
-            pit_stop_time_s=2.5,
+            pit_lane_time_s=lane_time_s,
+            pit_stop_time_s=stop_time_s,
             closed=True,
         ),
         LapRecord(
@@ -84,11 +94,28 @@ def _stop_laps(car_index: int, *, loss_s: float = 20.0) -> tuple[LapRecord, ...]
             lap_time_s=entry_lap,
             valid=True,
             pit_exit=True,
-            pit_lane_time_s=25.0,
+            pit_lane_time_s=lane_time_s,
             closed=True,
         ),
         LapRecord(car_index, 4, lap_time_s=90.0, valid=True, closed=True),
         LapRecord(car_index, 5, lap_time_s=90.0, valid=True, closed=True),
+    )
+
+
+def _repair_stop_laps(
+    car_index: int,
+    *,
+    loss_s: float = 26.22,
+    lane_time_s: float | None = 25.0,
+    stop_time_s: float = 12.0,
+    damage_pct: float = 40.0,
+) -> tuple[LapRecord, ...]:
+    """Parada larga con cambio de daño: reparación confirmada."""
+    return tuple(
+        replace(lap, damage_max_delta_pct=damage_pct) if lap.pit_entry or lap.pit_exit else lap
+        for lap in _stop_laps(
+            car_index, loss_s=loss_s, lane_time_s=lane_time_s, stop_time_s=stop_time_s
+        )
     )
 
 
@@ -608,3 +635,141 @@ def test_negative_field_samples_fall_back_instead_of_raising() -> None:
     assert estimate.available
     assert estimate.source == "lane"
     assert estimate.value_s == pytest.approx(25.0)
+
+
+def test_repair_stop_does_not_replace_normal_prior() -> None:
+    profile = _profile(ProfileValue(value=19.2, samples=6, quality=Quality.OK))
+    estimate = estimate_pit_loss(
+        _inputs({0: _repair_stop_laps(0)}, profile=profile), StrategyConfig()
+    )
+
+    assert estimate.source == "profile"
+    assert estimate.value_s == pytest.approx(19.2)
+    assert estimate.band_s == pytest.approx(2.0)
+    assert NOTE_REPAIR_SAMPLES_EXCLUDED in estimate.notes
+    assert NOTE_REPAIR_DURATION_UNKNOWN in estimate.notes
+    assert NOTE_PROVISIONAL_FIELD not in estimate.notes
+
+
+def test_repair_stop_without_prior_leaves_loss_unknown() -> None:
+    estimate = estimate_pit_loss(
+        _inputs({0: _repair_stop_laps(0, lane_time_s=None)}), StrategyConfig()
+    )
+
+    assert estimate.source == "none"
+    assert estimate.value_s is None
+    assert estimate.quality is Quality.UNAVAILABLE
+    assert NOTE_NO_PIT_LOSS in estimate.notes
+    assert NOTE_REPAIR_SAMPLES_EXCLUDED in estimate.notes
+    assert NOTE_REPAIR_DURATION_UNKNOWN in estimate.notes
+
+
+def test_single_normal_stop_is_provisional() -> None:
+    estimate = estimate_pit_loss(_inputs({0: _stop_laps(0, lane_time_s=None)}), StrategyConfig())
+
+    assert estimate.source == "field"
+    assert estimate.value_s == pytest.approx(20.0)
+    assert estimate.sample_count == 1
+    assert estimate.quality is Quality.LOW
+    assert estimate.band_s == pytest.approx(2.0)
+    assert NOTE_PROVISIONAL_FIELD in estimate.notes
+    assert NOTE_REPAIR_SAMPLES_EXCLUDED not in estimate.notes
+
+
+def test_single_normal_stop_keeps_prior() -> None:
+    profile = _profile(ProfileValue(value=19.2, samples=6, quality=Quality.OK))
+    estimate = estimate_pit_loss(
+        _inputs({0: _stop_laps(0, lane_time_s=None)}, profile=profile), StrategyConfig()
+    )
+
+    assert estimate.source == "profile"
+    assert estimate.value_s == pytest.approx(19.2)
+    assert NOTE_PROVISIONAL_FIELD in estimate.notes
+
+
+def test_enough_normal_stops_replace_prior() -> None:
+    records = {index: _stop_laps(index, lane_time_s=None) for index in range(5)}
+    profile = _profile(ProfileValue(value=19.2, samples=6, quality=Quality.OK))
+    estimate = estimate_pit_loss(_inputs(records, profile=profile), StrategyConfig())
+
+    assert estimate.source == "field"
+    assert estimate.value_s == pytest.approx(20.0)
+    assert estimate.sample_count == 5
+    assert estimate.quality is Quality.OK
+    assert NOTE_PROVISIONAL_FIELD not in estimate.notes
+
+
+def test_mixed_repairs_use_only_normal_samples() -> None:
+    records = {index: _stop_laps(index, lane_time_s=None) for index in range(5)}
+    records[5] = _repair_stop_laps(5, lane_time_s=None)
+    estimate = estimate_pit_loss(_inputs(records), StrategyConfig())
+
+    assert estimate.source == "field"
+    assert estimate.value_s == pytest.approx(20.0)
+    assert estimate.sample_count == 5
+    assert estimate.quality is Quality.OK
+    assert NOTE_REPAIR_SAMPLES_EXCLUDED in estimate.notes
+    assert NOTE_REPAIR_DURATION_UNKNOWN in estimate.notes
+
+
+def test_absent_damage_signal_is_declared() -> None:
+    records = {index: _stop_laps(index, lane_time_s=None) for index in range(5)}
+    estimate = estimate_pit_loss(_inputs(records), StrategyConfig())
+
+    assert estimate.source == "field"
+    assert NOTE_DAMAGE_SIGNAL_MISSING in estimate.notes
+    assert NOTE_REPAIR_SAMPLES_EXCLUDED not in estimate.notes
+
+
+def test_long_stop_without_damage_data_is_suspected() -> None:
+    estimate = estimate_pit_loss(
+        _inputs({0: _stop_laps(0, lane_time_s=None, stop_time_s=12.0)}), StrategyConfig()
+    )
+
+    assert estimate.source == "none"
+    assert estimate.value_s is None
+    assert NOTE_REPAIR_SAMPLES_EXCLUDED in estimate.notes
+
+
+def test_flashback_samples_do_not_contaminate_field() -> None:
+    records = {index: _stop_laps(index, lane_time_s=None) for index in range(5)}
+    records[5] = tuple(
+        replace(lap, flags=frozenset({"flashback"})) if lap.pit_entry or lap.pit_exit else lap
+        for lap in _stop_laps(5, loss_s=40.0, lane_time_s=None)
+    )
+    estimate = estimate_pit_loss(_inputs(records), StrategyConfig())
+
+    assert estimate.source == "field"
+    assert estimate.value_s == pytest.approx(20.0)
+    assert estimate.sample_count == 5
+
+
+def test_override_keeps_priority_over_repair_samples() -> None:
+    records = {0: _repair_stop_laps(0)}
+    cfg = StrategyConfig(pit_loss_override_s=18.5)
+    profile = _profile(ProfileValue(value=19.2, samples=6, quality=Quality.OK))
+    estimate = estimate_pit_loss(_inputs(records, profile=profile), cfg)
+
+    assert estimate.source == "override"
+    assert estimate.value_s == pytest.approx(18.5)
+    assert estimate.band_s == pytest.approx(2.0)
+
+
+def test_repair_aware_loss_feeds_rejoin_with_same_band() -> None:
+    profile = _profile(ProfileValue(value=20.0, samples=6, quality=Quality.OK))
+    cars = (
+        _car(0, position=3, delta_to_leader_ms=2200, current_lap=4),
+        _car(1, position=1, delta_to_leader_ms=0, current_lap=4),
+        _car(2, position=2, delta_to_leader_ms=1500, current_lap=4),
+        _car(3, position=4, delta_to_leader_ms=25000, current_lap=4),
+    )
+    inputs = _inputs({0: _repair_stop_laps(0)}, cars=cars, profile=profile)
+    cfg = StrategyConfig()
+    pit = estimate_pit_loss(inputs, cfg)
+    assert pit.value_s is not None
+    rejoin = estimate_rejoin(inputs, pit.value_s, cfg, pit_loss_band_s=pit.band_s or 0.0)
+
+    assert pit.source == "profile"
+    assert pit.band_s == pytest.approx(2.0)
+    assert rejoin.position == 3
+    assert rejoin.position_range == (3, 3)

@@ -214,6 +214,20 @@ disponible:
 
 Reglas que la implementación respeta:
 
+- Las muestras de campo se separan por evidencia de reparación. Una parada con
+  tiempo detenido superior a 5 s (umbral provisional) y un cambio de daño por
+  encima del umbral configurado confirman la reparación; una sola de las dos
+  señales la deja como sospechosa. Las muestras de reparación no entran en la
+  media de parada normal y su duración adicional no se suma como segundos: se
+  declara el riesgo (`repair_duration_unknown`) porque no hay una fuente
+  medible.
+- Un dato de daño ausente no se interpreta como ausencia de daño: una parada
+  corta sigue contando como normal, pero se declara la incertidumbre
+  (`damage_signal_missing`).
+- Con menos de tres muestras normales la estimación de campo es provisional
+  (`provisional_field_pit_loss`): si existe un prior se conserva y se identifica
+  la muestra escasa; si no existe, se publica la estimación provisional con
+  banda fija. Al reunir muestras suficientes, el campo sustituye al prior.
 - Una muestra **parcial** de carril (por ejemplo, una vuelta de entrada cerrada
   con 1,933 s) no es una pérdida completa y se descarta. Solo se acepta la
   vuelta que ya ha salido del carril.

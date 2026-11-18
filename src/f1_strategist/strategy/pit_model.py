@@ -20,7 +20,7 @@ import csv
 import math
 import re
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import lru_cache
 from importlib.resources import files
 from io import StringIO
@@ -58,6 +58,10 @@ NOTE_CIRCUIT_GREEN_NOT_OFFICIAL = "circuit_pit_loss_not_official"
 NOTE_CIRCUIT_VSC_ESTIMATE = "circuit_vsc_pit_loss_estimate"
 NOTE_CIRCUIT_SC_ESTIMATE = "circuit_sc_pit_loss_estimate"
 NOTE_CIRCUIT_SC_UNCERTAINTY = "circuit_sc_uncertainty"
+NOTE_REPAIR_SAMPLES_EXCLUDED = "repair_pit_loss_samples_excluded"
+NOTE_REPAIR_DURATION_UNKNOWN = "repair_duration_unknown"
+NOTE_DAMAGE_SIGNAL_MISSING = "damage_signal_missing"
+NOTE_PROVISIONAL_FIELD = "provisional_field_pit_loss"
 
 #: Estados de resultado que excluyen a un coche del cálculo de reincorporación.
 _RETIRED_STATUSES = frozenset(
@@ -76,6 +80,10 @@ _REFERENCE_WINDOW = 3
 
 #: Paradas mínimas del campo para considerar representativa la mediana.
 _MIN_FIELD_STOPS = 3
+
+#: Duración de parada (solo el tiempo detenido, sin carril) que ya no es normal.
+#: Valor provisional de calibración: el juego no publica un umbral propio.
+_NORMAL_STOP_TIME_S = 5.0
 
 #: Factor de consistencia de la desviación absoluta mediana (MAD).
 _MAD_FACTOR = 1.4826
@@ -391,14 +399,75 @@ def _stop_pairs(inputs: MetricInputs) -> tuple[tuple[LapRecord, LapRecord], ...]
     return tuple(pairs)
 
 
-def _loss_samples(inputs: MetricInputs) -> tuple[tuple[float, ...], int]:
-    """Muestras válidas de pérdida y cuántas se descartaron por ser negativas.
+@dataclass(frozen=True, slots=True)
+class _StopSample:
+    """Pérdida de una parada con las señales que delatan una reparación."""
+
+    value_s: float
+    stop_time_s: float | None
+    damage_delta_pct: float | None
+    repair: Literal["none", "suspected", "confirmed"]
+
+
+@dataclass(frozen=True, slots=True)
+class _FieldObservation:
+    """Muestras de campo separadas por evidencia de reparación."""
+
+    normal: tuple[_StopSample, ...]
+    repairs: tuple[_StopSample, ...]
+    discarded: int
+    damage_missing: bool
+
+
+def _stop_time_s(*records: LapRecord) -> float | None:
+    best: float | None = None
+    for record in records:
+        value = record.pit_stop_time_s
+        if value is not None and (best is None or value > best):
+            best = value
+    return best
+
+
+def _damage_delta_pct(*records: LapRecord) -> float | None:
+    best: float | None = None
+    for record in records:
+        value = record.damage_max_delta_pct
+        if value is not None and (best is None or value > best):
+            best = value
+    return best
+
+
+def _classify_stop(sample: _StopSample, threshold_pct: float) -> _StopSample:
+    """Marca la parada como posible reparación según su duración y el daño visto.
+
+    Ninguna señal por separado prueba una reparación: una parada larga puede ser
+    un problema de tuerca y un cambio de daño puede ser un golpe en la vuelta.
+    Ambas señales juntas confirman; una sola deja la muestra como sospechosa.
+    """
+    long_stop = sample.stop_time_s is not None and sample.stop_time_s > _NORMAL_STOP_TIME_S
+    damaged = sample.damage_delta_pct is not None and sample.damage_delta_pct >= threshold_pct
+    if long_stop and damaged:
+        repair = "confirmed"
+    elif long_stop or damaged:
+        repair = "suspected"
+    else:
+        repair = "none"
+    return _StopSample(sample.value_s, sample.stop_time_s, sample.damage_delta_pct, repair)
+
+
+def _observe_field(inputs: MetricInputs) -> _FieldObservation:
+    """Recoge las muestras válidas y las separa de las reparaciones.
 
     Una muestra negativa indica que las vueltas de referencia no son
     comparables (por ejemplo, tras un coche de seguridad); se descarta en lugar
-    de convertirla en cero o dejar que rompa la validación del resultado.
+    de convertirla en cero o dejar que rompa la validación del resultado. Un
+    dato de daño ausente no se interpreta como ausencia de daño: se declara.
     """
-    losses: list[float] = []
+    threshold = inputs.config.damage_change_threshold_pct
+    normal: list[_StopSample] = []
+    repairs: list[_StopSample] = []
+    discarded = 0
+    damage_missing = False
     for entry, exit_record in _stop_pairs(inputs):
         records = inputs.history.records_for(entry.car_index)
         reference = tuple(
@@ -415,9 +484,36 @@ def _loss_samples(inputs: MetricInputs) -> tuple[tuple[float, ...], int]:
         )
         if not reference or entry.lap_time_s is None or exit_record.lap_time_s is None:
             continue
-        losses.append(entry.lap_time_s + exit_record.lap_time_s - 2 * median(reference))
-    valid = tuple(sample for sample in losses if sample >= 0.0)
-    return valid, len(losses) - len(valid)
+        value = entry.lap_time_s + exit_record.lap_time_s - 2 * median(reference)
+        if value < 0.0:
+            discarded += 1
+            continue
+        sample = _StopSample(
+            value_s=value,
+            stop_time_s=_stop_time_s(entry, exit_record),
+            damage_delta_pct=_damage_delta_pct(entry, exit_record),
+            repair="none",
+        )
+        sample = _classify_stop(sample, threshold)
+        if sample.repair == "none":
+            normal.append(sample)
+            if sample.damage_delta_pct is None:
+                damage_missing = True
+        else:
+            repairs.append(sample)
+    return _FieldObservation(tuple(normal), tuple(repairs), discarded, damage_missing)
+
+
+def _field_signals(observation: _FieldObservation) -> tuple[str, ...]:
+    notes: list[str] = []
+    if observation.repairs:
+        notes.append(NOTE_REPAIR_SAMPLES_EXCLUDED)
+        notes.append(NOTE_REPAIR_DURATION_UNKNOWN)
+    if observation.damage_missing:
+        notes.append(NOTE_DAMAGE_SIGNAL_MISSING)
+    if observation.discarded:
+        notes.append(NOTE_NEGATIVE_SAMPLES_DISCARDED)
+    return tuple(notes)
 
 
 def _robust_dispersion(samples: tuple[float, ...]) -> float | None:
@@ -428,23 +524,32 @@ def _robust_dispersion(samples: tuple[float, ...]) -> float | None:
     return _MAD_FACTOR * median([abs(sample - center) for sample in samples])
 
 
-def _field_loss(inputs: MetricInputs, cfg: StrategyConfig, stale: bool) -> PitLossEstimate | None:
-    samples, discarded = _loss_samples(inputs)
+def _field_loss(
+    observation: _FieldObservation,
+    signals: tuple[str, ...],
+    cfg: StrategyConfig,
+    stale: bool,
+    *,
+    minimum_samples: int,
+    ok_samples: int,
+) -> PitLossEstimate | None:
+    samples = tuple(sample.value_s for sample in observation.normal)
     if not samples:
         return None
     value = median(samples)
     dispersion = _robust_dispersion(samples)
     if dispersion is not None and dispersion > 0:
         band = dispersion
-        notes = (NOTE_FIELD_DISPERSION,)
+        notes = (NOTE_FIELD_DISPERSION, *signals)
     else:
         band = cfg.pit_loss_band_s
-        notes = (NOTE_FIXED_BAND,)
-    if discarded:
-        notes = (*notes, NOTE_NEGATIVE_SAMPLES_DISCARDED)
-    _, ok = inputs.config.thresholds("pit")
-    enough = len(samples) >= ok and len(samples) >= _MIN_FIELD_STOPS
-    quality = Quality.OK if enough else Quality.LOW
+        notes = (NOTE_FIXED_BAND, *signals)
+    conclusive = len(samples) >= minimum_samples
+    if not conclusive:
+        # Una muestra escasa no define la parada normal: se publica como
+        # provisional y con banda fija, nunca como una mediana consolidada.
+        notes = (*notes, NOTE_PROVISIONAL_FIELD)
+    quality = Quality.OK if len(samples) >= ok_samples else Quality.LOW
     if stale:
         quality = Quality.STALE
     return PitLossEstimate(
@@ -560,15 +665,34 @@ def estimate_pit_loss(inputs: MetricInputs, cfg: StrategyConfig) -> PitLossEstim
             quality=Quality.OK,
             notes=(NOTE_OVERRIDE,),
         )
-    candidates = (
-        _field_loss(inputs, cfg, stale),
+    observation = _observe_field(inputs)
+    signals = _field_signals(observation)
+    low, ok = inputs.config.thresholds("pit")
+    field = _field_loss(
+        observation,
+        signals,
+        cfg,
+        stale,
+        minimum_samples=max(low, _MIN_FIELD_STOPS),
+        ok_samples=ok,
+    )
+    if field is not None and NOTE_PROVISIONAL_FIELD not in field.notes:
+        return field
+    # Con pocas muestras normales el prior disponible es más representativo que
+    # una mediana escasa: se conserva y se declara que el campo es provisional.
+    priors = (
         _profile_loss(inputs, cfg, stale),
         _lane_loss(inputs, cfg, stale),
         _circuit_loss(inputs, cfg, stale),
     )
-    for candidate in candidates:
-        if candidate is not None:
-            return candidate
+    for prior in priors:
+        if prior is not None:
+            notes = (*prior.notes, *signals)
+            if field is not None:
+                notes = (*notes, NOTE_PROVISIONAL_FIELD)
+            return replace(prior, notes=notes)
+    if field is not None:
+        return field
     return PitLossEstimate(
         value_s=None,
         band_s=None,
@@ -576,7 +700,7 @@ def estimate_pit_loss(inputs: MetricInputs, cfg: StrategyConfig) -> PitLossEstim
         source="none",
         sample_count=0,
         quality=Quality.UNAVAILABLE,
-        notes=(NOTE_NO_PIT_LOSS,),
+        notes=(NOTE_NO_PIT_LOSS, *signals),
     )
 
 
@@ -714,11 +838,15 @@ __all__ = [
     "NOTE_LANE_TIME_ONLY",
     "NOTE_LAPPED_CARS_IGNORED",
     "NOTE_LEADER_GAP_UNAVAILABLE",
+    "NOTE_DAMAGE_SIGNAL_MISSING",
     "NOTE_NO_PIT_LOSS",
     "NOTE_OVERRIDE",
     "NOTE_PLAYER_UNAVAILABLE",
     "NOTE_NEGATIVE_SAMPLES_DISCARDED",
     "NOTE_PROFILE_PRIOR",
+    "NOTE_PROVISIONAL_FIELD",
+    "NOTE_REPAIR_DURATION_UNKNOWN",
+    "NOTE_REPAIR_SAMPLES_EXCLUDED",
     "NOTE_RIVALS_DO_NOT_PIT",
     "NOTE_RIVAL_GAP_UNAVAILABLE",
     "NOTE_CIRCUIT_PRIOR",
