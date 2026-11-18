@@ -20,6 +20,7 @@ from f1_strategist.strategy.pace_model import (
     NOTE_DAMAGE_TAINTED,
     NOTE_PRIOR_EXCLUDED,
     NOTE_TRAFFIC_CONDITIONED,
+    _conditioned_quality,
     build_compound_models,
 )
 from f1_strategist.weekend_profile import CompoundProfile, ProfileValue, WeekendProfile
@@ -404,3 +405,76 @@ def test_jeddah_synthetic_race_decides_without_a_predetermined_stop() -> None:
         assert traffic_gain > config.min_gain_s
     elif traffic_evaluation.recommendation.action is StrategyAction.INSUFFICIENT_DATA:
         assert NOTE_PACE_INSUFFICIENT in traffic_evaluation.recommendation.notes
+
+
+def _two_compound_profile() -> WeekendProfile:
+    entries = tuple(
+        CompoundProfile(
+            compound=name,
+            visual_compounds=(),
+            stints=2,
+            representative_stints=2,
+            laps=10,
+            clean_laps=10,
+            wear_rate_pct_per_lap=ProfileValue(value=9.0, samples=4, quality=Quality.OK),
+            pace_mean_s=ProfileValue(value=95.0 + delta, samples=4, quality=Quality.OK),
+            pace_delta_vs_reference_s=ProfileValue(value=delta, samples=4, quality=Quality.OK),
+            fuel_consumption_kg_per_lap=ProfileValue(value=1.5, samples=4, quality=Quality.OK),
+            pit_loss_s=ProfileValue(value=None),
+            track_temperature_c=ProfileValue(value=30.0, samples=4, quality=Quality.OK),
+            fuel_range_kg=(40.0, 60.0),
+            weather=("clear",),
+            sessions=(1,),
+            quality=Quality.OK,
+        )
+        for name, delta in (("soft", 0.0), ("medium", 1.5))
+    )
+    return WeekendProfile(
+        compounds=entries, reference_compound="soft", sessions=(), quality=Quality.OK
+    )
+
+
+@pytest.mark.parametrize(
+    ("given", "expected"),
+    [
+        (Quality.OK, Quality.LOW),
+        (Quality.LOW, Quality.INSUFFICIENT),
+        (Quality.STALE, Quality.INSUFFICIENT),
+        (Quality.INSUFFICIENT, Quality.INSUFFICIENT),
+        (Quality.UNAVAILABLE, Quality.UNAVAILABLE),
+    ],
+)
+def test_conditioned_quality_never_improves(given: Quality, expected: Quality) -> None:
+    assert _conditioned_quality(given) is expected
+
+
+def test_conditioned_reference_does_not_anchor_other_compounds() -> None:
+    medium = tuple(
+        _record(1 + index, compound="medium", age_start=index, lap_time_s=90.0 + 0.10 * index)
+        for index in range(3)
+    )
+    soft = tuple(
+        _record(
+            4 + index,
+            age_start=index,
+            lap_time_s=100.0 + 0.10 * index,
+            flags=frozenset({"traffic"}),
+        )
+        for index in range(5)
+    )
+
+    models = build_compound_models(
+        _inputs(
+            medium + soft, car=replace(_car(8), tyre_age_laps=5), profile=_two_compound_profile()
+        ),
+        StrategyConfig(),
+    )
+
+    conditioned = models.get("soft")
+    other = models.get("medium")
+    assert conditioned is not None
+    assert NOTE_TRAFFIC_CONDITIONED in conditioned.notes
+    assert other is not None
+    # El ritmo inflado por tráfico no se traslada como ancla al otro compuesto.
+    assert other.source == "race"
+    assert other.base_lap_s == pytest.approx(90.0)

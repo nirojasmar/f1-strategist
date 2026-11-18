@@ -72,9 +72,9 @@ def _worst_quality(left: Quality, right: Quality) -> Quality:
 
 def _conditioned_quality(quality: Quality) -> Quality:
     """Degrada un ajuste condicionado por tráfico; nunca mejora la calidad."""
-    if _QUALITY_ORDER[quality] >= _QUALITY_ORDER[Quality.INSUFFICIENT]:
-        return quality
-    return Quality.LOW if quality is Quality.OK else Quality.INSUFFICIENT
+    if quality is Quality.OK:
+        return Quality.LOW
+    return _worst_quality(quality, Quality.INSUFFICIENT)
 
 
 def _finite(value: float, name: str, *, minimum: float | None = None) -> float:
@@ -208,6 +208,8 @@ def _freshness_is_stale(inputs: MetricInputs) -> bool:
 
 def _damage_tainted_laps(inputs: MetricInputs) -> frozenset[int]:
     """Vueltas posteriores a un cambio de daño: el daño persiste aunque el delta sea 0."""
+    # shortcut: el taint no se limpia tras una reparación en boxes; revisar cuando
+    # el modelo de boxes exponga reparaciones confirmadas.
     tainted: set[int] = set()
     damaged = False
     records = sorted(
@@ -469,6 +471,7 @@ def _build_model(
     inventory: TyreSetSnapshot | None,
     *,
     conditioned: bool = False,
+    reference_conditioned: bool = False,
     damage_excluded: bool = False,
     tainted: frozenset[int] = frozenset(),
 ) -> CompoundModel | None:
@@ -484,6 +487,9 @@ def _build_model(
     active_profile = None if prior_excluded else profile
     fit = fits.get(compound)
     reference_fit = fits.get(reference) if reference is not None else None
+    # Un ajuste condicionado por tráfico no ancla el ritmo absoluto de otros compuestos.
+    if reference_conditioned:
+        reference_fit = None
     reference_slope = reference_fit.slope_s_per_lap if reference_fit is not None else None
     reference_base = reference_fit.base_lap_s if reference_fit is not None else None
     delta = _relative_delta(active_profile, compound, reference)
@@ -693,6 +699,7 @@ def build_compound_models(inputs: MetricInputs, cfg: StrategyConfig) -> Compound
             reference,
             _inventory_set(inputs, compound),
             conditioned=compound == conditioned,
+            reference_conditioned=conditioned is not None and reference == conditioned,
             damage_excluded=damage_excluded.get(compound, False),
             tainted=tainted,
         )
