@@ -338,7 +338,17 @@ falta en lugar de recomendar con una ganancia espuria.
   recomendación libre.
 - **`alternative_unstable`** / **`alternative_quality_insufficient`**: las
   alternativas existen pero no son defendibles; cada motivo se publica solo si
-  se verifica su causa.
+  se verifica su causa. `alternative_unstable` exige que la alternativa
+  desaparezca al perturbar un parámetro; que todas tengan poca calidad no la
+  convierte en inestable.
+
+Cada alternativa hereda la calidad de los datos que realmente usa. `stay_out`
+solo depende del ritmo montado; una parada añade el modelo del compuesto de
+destino, la disponibilidad de juegos, la pérdida en boxes y la reincorporación
+(si está disponible), además del ritmo montado cuando se espera para parar. Una
+alternativa insuficiente no invalida a las demás: la decisión no la selecciona y
+puede seguir recomendando otra parada defendible o `NO_CHANGE` con el compuesto
+montado.
 
 ## 9. Estados, motivos y honestidad
 
@@ -476,6 +486,10 @@ posterior:
   expone `clock_scale` (rechaza cero): comprime el reloj completo, pero los
   umbrales de obsolescencia están en segundos absolutos, de modo que comprimirlo
   puede cambiar la frescura y la huella.
+- **Bandera roja en la captura de Jeddah.** La recomendación sigue suspendida
+  durante la vuelta 14 porque la vuelta 13, primera tras la reanudación, todavía
+  declara `red_flag`; se libera al cerrarse la vuelta 14 con estado limpio. No
+  es un bloqueo artificial: es el contrato de esperar evidencia de reanudación.
 
 ## 13. Resumen de fórmulas
 
