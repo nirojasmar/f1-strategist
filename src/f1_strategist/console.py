@@ -29,7 +29,7 @@ from .metrics.engine import MetricsSnapshot
 from .packets import packet_name
 from .ports import SessionPort
 from .race_state import RaceStateSnapshot
-from .strategy.types import StrategySnapshot
+from .strategy.types import StrategyEvaluation, StrategySnapshot
 
 _STATE_STYLE = {
     ConnectionState.WAITING: "yellow",
@@ -144,7 +144,21 @@ def _render_metrics_summary(
     return Panel(table, title=METRICS_PANEL_TITLE, expand=False)
 
 
-def _render_strategy_summary(snapshot: StrategySnapshot, cfg: AppConfig) -> Panel:
+def _evaluation_session_ended(
+    race: RaceStateSnapshot | None, evaluation: StrategyEvaluation
+) -> bool:
+    """Solo una evaluación de la sesión actual puede quedar marcada como histórica."""
+    if race is None or race.session.ended is not True:
+        return False
+    uid = race.session.uid
+    return (str(uid) if uid is not None else "unknown") == evaluation.session_uid
+
+
+def _render_strategy_summary(
+    snapshot: StrategySnapshot,
+    cfg: AppConfig,
+    race: RaceStateSnapshot | None = None,
+) -> Panel:
     table = Table.grid(padding=(0, 2))
     table.add_column(style="bold")
     table.add_column()
@@ -153,7 +167,10 @@ def _render_strategy_summary(snapshot: StrategySnapshot, cfg: AppConfig) -> Pane
     elif snapshot.evaluation is None:
         table.add_row("Estado", Text("Esperando la primera evaluación"))
     else:
-        for label, value in render_strategy_rows(snapshot.evaluation):
+        evaluation = snapshot.evaluation
+        for label, value in render_strategy_rows(
+            evaluation, session_ended=_evaluation_session_ended(race, evaluation)
+        ):
             table.add_row(label, Text(value))
     if snapshot.error is not None:
         table.add_row("Error del motor", Text(snapshot.error))
@@ -254,11 +271,12 @@ def render(
     else:
         info.add_row("Captura", "desactivada")
 
+    race = session.race_snapshot()
     parts: list[RenderableType] = [
         Panel(info, title="F1 Strategist · telemetría UDP", expand=False),
-        _render_race_summary(session.race_snapshot(), race_now),
-        _render_metrics_summary(session.metrics_snapshot(), session.race_snapshot(), race_now),
-        _render_strategy_summary(session.strategy_snapshot(), cfg),
+        _render_race_summary(race, race_now),
+        _render_metrics_summary(session.metrics_snapshot(), race, race_now),
+        _render_strategy_summary(session.strategy_snapshot(), cfg, race),
         _render_events_summary(session.events_snapshot()),
     ]
     if snap.packets_by_id:

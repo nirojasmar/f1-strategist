@@ -474,6 +474,12 @@ def test_metrics_update_error_renders_in_spanish() -> None:
         ("pace_quality_insufficient", "modelo de ritmo"),
         ("pit_loss_unavailable", "Pérdida en boxes"),
         ("data_stale", "Datos obsoletos"),
+        ("laps_remaining_unavailable", "Vueltas restantes"),
+        ("repair_duration_unknown", "reparación"),
+        ("two_compounds_unverified", "dos compuestos"),
+        ("baseline_alternative", "línea base"),
+        ("prior_excluded_insufficient", "descartado por insuficiente"),
+        ("pace_conditioned_by_traffic", "tráfico"),
     ],
 )
 def test_strategy_reason_keys_render_in_spanish(key: str, label: str) -> None:
@@ -651,6 +657,105 @@ def test_strategy_rows_mark_unknown_values_for_a_stop_without_details() -> None:
     assert rows["Juego"] == "Desconocido"
     assert rows["Reincorporación"] == "Desconocido"
     assert rows["Confianza"] == "Desconocido"
+
+
+@pytest.mark.parametrize(
+    ("laps_remaining", "expected"),
+    [(0.006290486, "0.006"), (0.0, "0.0")],
+)
+def test_strategy_rows_distinguish_a_tiny_lap_fraction_from_zero(
+    laps_remaining: float, expected: str
+) -> None:
+    from f1_strategist.console_messages import render_strategy_rows
+
+    evaluation = replace(
+        _strategy_evaluation(
+            recommendation=StrategyRecommendation(
+                action=StrategyAction.NO_CHANGE,
+                key="stay_out",
+            ),
+            alternatives=(),
+        ),
+        laps_remaining=laps_remaining,
+    )
+
+    rows = dict(render_strategy_rows(evaluation))
+
+    assert rows["Vueltas restantes"] == expected
+
+
+@pytest.mark.parametrize(
+    ("laps_remaining", "expected"),
+    [(0.006290486, "0.006 vueltas"), (0.0, "0.0 vueltas")],
+)
+def test_metrics_present_a_tiny_lap_fraction_as_nonzero(
+    laps_remaining: float, expected: str
+) -> None:
+    from f1_strategist.console_messages import _render_metric_value
+
+    metric = _metric("progress.laps_remaining", laps_remaining, "lap", Quality.OK)
+
+    assert _render_metric_value(metric) == expected
+
+
+def _pending_stop_evaluation() -> StrategyEvaluation:
+    return _strategy_evaluation(
+        recommendation=StrategyRecommendation(
+            action=StrategyAction.PIT_IN,
+            key="pit_in:hard",
+            pit_lap=8,
+            compound="hard",
+            gain_vs_baseline_s=2.0,
+        ),
+        alternatives=(
+            StrategyAlternative(
+                key="pit_in:hard",
+                remaining_time_s=900.0,
+                gain_vs_baseline_s=2.0,
+                rejoin_position=4,
+            ),
+        ),
+    )
+
+
+def test_ended_session_marks_a_kept_stop_as_historical(monkeypatch) -> None:
+    config = AppConfig()
+    session = CaptureSession(config)
+    evaluation = _pending_stop_evaluation()
+    monkeypatch.setattr(
+        session, "strategy_snapshot", lambda: StrategySnapshot(evaluation=evaluation)
+    )
+    race = session.race_snapshot()
+    ended = replace(race, session=replace(race.session, uid=123, ended=True))
+    monkeypatch.setattr(session, "race_snapshot", lambda: ended)
+
+    output = StringIO()
+    Console(file=output, width=180, no_color=True).print(render(config, session, now=2.0))
+    text = output.getvalue()
+
+    assert "Parar más adelante (histórica, sesión finalizada)" in text
+    assert "referencia histórica" in text
+    assert "Vuelta de parada" in text
+    assert "Vuelta 8" not in text
+
+
+def test_ended_session_does_not_age_an_evaluation_from_another_session(monkeypatch) -> None:
+    config = AppConfig()
+    session = CaptureSession(config)
+    evaluation = _pending_stop_evaluation()
+    monkeypatch.setattr(
+        session, "strategy_snapshot", lambda: StrategySnapshot(evaluation=evaluation)
+    )
+    race = session.race_snapshot()
+    ended = replace(race, session=replace(race.session, uid=999, ended=True))
+    monkeypatch.setattr(session, "race_snapshot", lambda: ended)
+
+    output = StringIO()
+    Console(file=output, width=180, no_color=True).print(render(config, session, now=2.0))
+    text = output.getvalue()
+
+    assert "Vuelta 8" in text
+    assert "histórica" not in text
 
 
 def test_metrics_panel_marks_live_rows_stale_when_lap_data_ages(monkeypatch) -> None:
