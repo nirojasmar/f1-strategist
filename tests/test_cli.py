@@ -95,7 +95,7 @@ def test_events_summary_reads_rows_and_reports_suppression(
     class Store:
         def __enter__(self) -> Store:
             self.connection = sqlite3.connect(":memory:")
-            self.connection.execute("PRAGMA user_version = 8")
+            self.connection.execute("PRAGMA user_version = 9")
             return self
 
         def __exit__(self, *_: object) -> None:
@@ -119,21 +119,21 @@ def test_events_summary_reads_rows_and_reports_suppression(
     assert "fuel_margin" in output
 
 
-def test_events_commands_reject_v7_without_event_history(
+def test_events_commands_reject_v8_without_event_history(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    path = tmp_path / "v7.db"
+    path = tmp_path / "v8.db"
     with SessionStore.open(path) as store:
         session_id = store.create_session(
             SessionInfo(session_uid=0xE17, source="live", started_at_utc="2026-11-05T10:00:00Z")
         )
     with sqlite3.connect(path) as connection:
-        connection.execute("DROP TABLE gate_decisions")
-        connection.execute("DROP TABLE detected_events")
-        connection.execute("PRAGMA user_version = 7")
+        connection.execute("DROP TABLE agent_messages")
+        connection.execute("DROP TABLE llm_calls")
+        connection.execute("PRAGMA user_version = 8")
 
     assert main(["events", "show", "--session", str(session_id), "--db", str(path)]) == 2
-    assert "requiere esquema v8" in capsys.readouterr().err
+    assert "requiere esquema v9" in capsys.readouterr().err
 
 
 def test_events_commands_report_missing_session(

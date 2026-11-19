@@ -11,7 +11,7 @@ import sqlite3
 from dataclasses import dataclass
 
 #: Versión que entiende este código.
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 MIN_READONLY_SCHEMA_VERSION = 6
 
 
@@ -335,6 +335,56 @@ _V8_STATEMENTS: tuple[str, ...] = (
     """,
 )
 
+_V9_STATEMENTS: tuple[str, ...] = (
+    "ALTER TABLE sessions ADD COLUMN agent_fingerprint TEXT",
+    """
+    CREATE TABLE llm_calls (
+        session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        seq INTEGER NOT NULL CHECK (seq > 0),
+        t_sim_s REAL NOT NULL,
+        alert_id TEXT,
+        kind TEXT NOT NULL,
+        model TEXT NOT NULL,
+        endpoint_host TEXT,
+        prompt_version TEXT,
+        parameters_json TEXT,
+        context_hash TEXT,
+        context_json TEXT,
+        response_text TEXT,
+        reply_json TEXT,
+        validation_valid INTEGER,
+        validation_errors_json TEXT,
+        outcome TEXT NOT NULL,
+        fallback_reason TEXT,
+        error TEXT,
+        ttft_s REAL,
+        total_s REAL,
+        prompt_tokens INTEGER,
+        completion_tokens INTEGER,
+        PRIMARY KEY (session_id, seq)
+    )
+    """,
+    """
+    CREATE TABLE agent_messages (
+        session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        seq INTEGER NOT NULL CHECK (seq > 0),
+        t_sim_s REAL NOT NULL,
+        message_id TEXT NOT NULL,
+        alert_id TEXT,
+        event_id TEXT,
+        priority TEXT NOT NULL,
+        language TEXT NOT NULL,
+        text TEXT NOT NULL,
+        source TEXT NOT NULL,
+        used_facts_json TEXT,
+        lap INTEGER,
+        llm_call_id TEXT,
+        interrupt INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (session_id, seq)
+    )
+    """,
+)
+
 #: Migraciones ordenadas; el índice 0 lleva el esquema a la versión 1.
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(version=1, statements=_V1_STATEMENTS),
@@ -345,6 +395,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration(version=6, statements=_V6_STATEMENTS),
     Migration(version=7, statements=_V7_STATEMENTS),
     Migration(version=8, statements=_V8_STATEMENTS),
+    Migration(version=9, statements=_V9_STATEMENTS),
 )
 
 
@@ -417,6 +468,8 @@ def check_supported_version(connection: sqlite3.Connection) -> int:
     }
     if current >= 8:
         required_tables.update({"detected_events", "gate_decisions"})
+    if current >= 9:
+        required_tables.update({"llm_calls", "agent_messages"})
     existing_tables = {
         str(row[0])
         for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
