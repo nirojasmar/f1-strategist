@@ -14,9 +14,17 @@ import time
 from collections.abc import Mapping
 from pathlib import Path
 
+from .agent.communicator import AgentCommunicator, AlertSources
 from .agent.types import AgentSnapshot
 from .capture import CaptureReader
-from .config import EventsConfig, GateConfig, MetricsConfig, StrategyConfig
+from .config import (
+    AgentConfig,
+    EventsConfig,
+    GateConfig,
+    LLMConfig,
+    MetricsConfig,
+    StrategyConfig,
+)
 from .events.engine import EventEngine
 from .events.types import EventsSnapshot
 from .metrics.engine import MetricsEngine, MetricsSnapshot
@@ -50,6 +58,9 @@ class PlaybackSession:
         strategy_config: StrategyConfig | None = None,
         events_config: EventsConfig | None = None,
         gate_config: GateConfig | None = None,
+        agent_config: AgentConfig | None = None,
+        llm_config: LLMConfig | None = None,
+        agent_communicator: AgentCommunicator | None = None,
     ) -> None:
         if start_lap is not None and start_lap < 1:
             raise ValueError("start_lap debe ser positivo")
@@ -58,6 +69,12 @@ class PlaybackSession:
         self._strategy_config = strategy_config or StrategyConfig()
         self._events_config = events_config or EventsConfig()
         self._gate_config = gate_config or GateConfig()
+        agent_config = agent_config or AgentConfig()
+        self._agent = agent_communicator or AgentCommunicator(
+            agent_config,
+            llm_config or LLMConfig(),
+            mode=agent_config.offline_mode,
+        )
         self._loop = loop
         self._speed = _validate_speed(speed)
         self._seek_lap = start_lap
@@ -102,6 +119,7 @@ class PlaybackSession:
             self._pending_seek = self._seek_lap
             self._thread = threading.Thread(target=self._run, name="playback", daemon=True)
             thread = self._thread
+        self._agent.start()
         thread.start()
 
     def pause(self) -> None:
@@ -137,6 +155,7 @@ class PlaybackSession:
             thread = self._thread
         if thread is not None and thread is not threading.current_thread():
             thread.join(timeout=5.0)
+        self._agent.stop()
 
     def wait(self, timeout: float | None = None) -> bool:
         """Espera a que termine la reproducción; devuelve si el hilo acabó."""
@@ -237,8 +256,8 @@ class PlaybackSession:
         return self._event_engine.snapshot()
 
     def agent_snapshot(self) -> AgentSnapshot:
-        """Stub de L1; el comunicador real llega en L7."""
-        return AgentSnapshot()
+        """Último estado publicado por el comunicador del agente."""
+        return self._agent.snapshot()
 
     # ------------------------------------------------------------------
     # Hilo de reproducción
@@ -281,6 +300,7 @@ class PlaybackSession:
             gate=self._gate_config,
             evaluation_min_interval_s=self._strategy_config.evaluation_min_interval_s,
         )
+        self._agent.reset()
         self._stats = Stats()
         with self._condition:
             self._observed_at = 0.0
@@ -349,6 +369,17 @@ class PlaybackSession:
                 self._metrics_engine.snapshot(),
                 self._strategy_engine.snapshot(),
                 observed_at,
+            )
+            events_snapshot = self._event_engine.snapshot()
+            self._agent.observe(
+                events_snapshot,
+                AlertSources(
+                    state=state,
+                    metrics=self._metrics_engine.snapshot(),
+                    strategy=self._strategy_engine.snapshot(),
+                    events=events_snapshot,
+                    observed_at=observed_at,
+                ),
             )
             last_state = state
             last_observed_at = observed_at

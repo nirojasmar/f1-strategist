@@ -11,6 +11,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from . import __version__
+from .agent.communicator import AgentCommunicator, AlertSources
 from .agent.types import AgentSnapshot
 from .capture import CapturedPacket, CaptureWriter
 from .config import AppConfig
@@ -42,6 +43,7 @@ class CaptureSession:
         *,
         metrics_engine: MetricsEngine | None = None,
         strategy_engine: StrategyEngine | None = None,
+        agent_communicator: AgentCommunicator | None = None,
     ) -> None:
         self.config = config
         self.stats = Stats()
@@ -49,6 +51,7 @@ class CaptureSession:
         self._metrics_engine = metrics_engine or MetricsEngine(config.metrics)
         self._strategy_engine = strategy_engine or StrategyEngine(config.strategy, config.metrics)
         self._event_engine = EventEngine(config)
+        self._agent = agent_communicator or AgentCommunicator(config.agent, config.llm)
         self._queue: queue.Queue[CapturedPacket] = queue.Queue(maxsize=queue_size)
         self._receiver = UdpReceiver(config.telemetry, self._queue, self.stats)
         self._writer: CaptureWriter | None = None
@@ -109,6 +112,7 @@ class CaptureSession:
         self._consumer = threading.Thread(
             target=self._consume, name="capture-consumer", daemon=True
         )
+        self._agent.start()
         self._consumer.start()
 
     def stop(self) -> None:
@@ -116,6 +120,7 @@ class CaptureSession:
         self._stop_consumer.set()
         if self._consumer is not None:
             self._consumer.join()
+        self._agent.stop()
         capture_sha256: str | None = None
         writer = self._writer
         if writer is not None:
@@ -308,8 +313,8 @@ class CaptureSession:
         return self._event_engine.snapshot()
 
     def agent_snapshot(self) -> AgentSnapshot:
-        """Stub de L1; el comunicador real llega en L7."""
-        return AgentSnapshot()
+        """Último estado publicado por el comunicador del agente."""
+        return self._agent.snapshot()
 
     def _consume(self) -> None:
         while not (self._stop_consumer.is_set() and self._queue.empty()):
@@ -459,6 +464,21 @@ class CaptureSession:
                             if not self._events_error_active:
                                 self._record_error(message("events_engine_error", error=str(exc)))
                             self._events_error_active = True
+                        try:
+                            events_snapshot = self._event_engine.snapshot()
+                            self._agent.observe(
+                                events_snapshot,
+                                AlertSources(
+                                    state=state_snapshot,
+                                    metrics=self._metrics_engine.snapshot(),
+                                    strategy=self._strategy_engine.snapshot(),
+                                    events=events_snapshot,
+                                    observed_at=observed_at,
+                                ),
+                            )
+                        except Exception as exc:
+                            _LOGGER.exception("Unexpected error while dispatching agent alerts")
+                            self._record_error(message("agent_communicator_error", error=str(exc)))
                         self._last_observed_at = observed_at
                         self._last_header = parsed_packet.header
         writer = self._writer
