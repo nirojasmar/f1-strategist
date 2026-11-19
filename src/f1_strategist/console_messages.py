@@ -20,10 +20,47 @@ from .strategy.types import (
 METRICS_PANEL_TITLE = "Métricas"
 STRATEGY_PANEL_TITLE = "Estrategia"
 EVENTS_PANEL_TITLE = "Avisos del agente"
+AGENT_PANEL_TITLE = "Radio"
+AGENT_STATUS_LABEL = "LLM"
+AGENT_LATENCY_LABEL = "Última latencia"
+AGENT_COUNTERS_LABEL = "Usados / respaldos / descartados"
+AGENT_MESSAGES_TITLE = "Mensajes de radio"
+AGENT_MESSAGES_COLUMNS = ("Tiempo", "Prioridad", "Vuelta", "Origen", "Texto")
+AGENT_EMPTY_MESSAGES = "La sesión {session_id} no tiene mensajes que coincidan."
+AGENT_SUMMARY_TITLE = "Resumen del agente · sesión {session_id}"
+AGENT_SUMMARY_SOURCES_TITLE = "Mensajes por origen"
+AGENT_SUMMARY_FALLBACKS_TITLE = "Respaldos por causa"
+AGENT_SUMMARY_VALIDATION_TITLE = "Errores de validación"
+AGENT_SUMMARY_LATENCY_TITLE = "Latencia total de llamadas"
+AGENT_SUMMARY_SOURCE_COLUMN = "Origen"
+AGENT_SUMMARY_CAUSE_COLUMN = "Causa"
+AGENT_SUMMARY_CODE_COLUMN = "Código"
+AGENT_SUMMARY_PERCENTILE_COLUMN = "Percentil"
+AGENT_SUMMARY_SECONDS_COLUMN = "Segundos"
+AGENT_SCHEMA_ERROR = (
+    "Los comandos agent requieren esquema v{required}; la base actual es v{actual}."
+)
+AGENT_READER_API_ERROR = "La base de datos no ofrece todavía la API de lectura del agente L9."
+AGENT_EXPORT_OVERWRITES_DB = "La salida no puede sobrescribir la base de datos."
+AGENT_EXPORT_WRITTEN = "Exportación del agente de la sesión {session_id} escrita en {path}"
+AGENT_UNKNOWN_VALUE = "desconocido"
+AGENT_EXPORT_SCHEMA_VERSION = 1
 
 #: Marcadores del panel: distinguen «no disponible» de «no aplica a la acción».
 _STRATEGY_UNKNOWN = "Desconocido"
 _STRATEGY_NOT_APPLICABLE = "No aplica"
+_AGENT_STATUS_LABELS = {
+    "disabled": "desactivado",
+    "unknown": "sin comprobar",
+    "available": "disponible",
+    "unavailable": "no disponible",
+}
+_AGENT_SOURCE_LABELS = {"llm": "LLM", "template": "plantilla"}
+_AGENT_PRIORITY_LABELS = {
+    "critical": "crítica",
+    "strategic": "estratégica",
+    "informational": "informativa",
+}
 
 _EVENT_TEMPLATES = {
     "event.strategy_pit_recommended": (
@@ -498,6 +535,21 @@ def render_event_message(message_key: str, facts: tuple[Fact, ...]) -> str:
         return template.format_map(_MissingEventFacts(values))
     except (ValueError, KeyError):
         return f"Falta la traducción al español del mensaje '{message_key}'."
+
+
+def render_agent_status(status: str, host: str | None = None) -> str:
+    label = _AGENT_STATUS_LABELS.get(status, status)
+    if status == "unavailable" and host:
+        return f"{label} ({host})"
+    return label
+
+
+def render_agent_source(source: str) -> str:
+    return _AGENT_SOURCE_LABELS.get(source, source)
+
+
+def render_agent_priority(priority: str) -> str:
+    return _AGENT_PRIORITY_LABELS.get(priority, priority)
 
 
 class _MissingEventFacts(dict[str, str]):

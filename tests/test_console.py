@@ -8,7 +8,14 @@ import pytest
 from rich.console import Console
 
 import f1_strategist.console as console_module
-from f1_strategist.config import AppConfig
+from f1_strategist.agent.types import (
+    AgentMessage,
+    AgentSnapshot,
+    LLMHealth,
+    LLMStatus,
+    MessageSource,
+)
+from f1_strategist.config import AppConfig, LLMConfig
 from f1_strategist.console import _render_metrics_summary, _render_race_summary, render
 from f1_strategist.console_messages import (
     render_diagnostic,
@@ -150,6 +157,44 @@ def test_console_shows_empty_event_panel() -> None:
     Console(file=output, width=180, no_color=True).print(render(config, session, now=2.0))
     assert "Avisos del agente" in output.getvalue()
     assert "Sin avisos recientes" in output.getvalue()
+    assert "Radio" in output.getvalue()
+    assert "desactivado" in output.getvalue()
+    assert "Usados / respaldos / descartados" not in output.getvalue()
+
+
+def test_console_shows_agent_messages_health_and_counters(monkeypatch) -> None:
+    snapshot = AgentSnapshot(
+        messages=(
+            AgentMessage(
+                message_id="message-1",
+                alert_id="alert-1",
+                event_id="event-1",
+                priority=EventPriority.STRATEGIC,
+                language="es",
+                text="[red]Box esta vuelta[/red]",
+                source=MessageSource.LLM,
+                lap=7,
+                emitted_at=12.0,
+            ),
+        ),
+        llm_status=LLMHealth(status=LLMStatus.UNAVAILABLE),
+        counters={"used": 2, "fallback": 3, "discarded_obsolete": 1},
+        last_latency_s=0.25,
+    )
+    monkeypatch.setattr(CaptureSession, "agent_snapshot", lambda self: snapshot)
+    config = AppConfig(llm=LLMConfig(enabled=True, model="test-model"))
+    session = CaptureSession(config)
+    output = StringIO()
+    Console(file=output, width=180, no_color=True).print(render(config, session, now=2.0))
+
+    text = output.getvalue()
+    assert "Avisos del agente" in text
+    assert "Radio" in text
+    assert "no disponible (127.0.0.1:1234)" in text
+    assert "0.250 s" in text
+    assert "2 / 3 / 1" in text
+    assert "estratégica · V7 · LLM" in text
+    assert "[red]Box esta vuelta[/red]" in text
 
 
 def test_console_shows_recent_event_alerts(monkeypatch) -> None:

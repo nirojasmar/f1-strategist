@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import csv
+import json
 import socket
 import sqlite3
 import struct
@@ -151,6 +153,173 @@ def test_events_commands_report_missing_session(
 
     monkeypatch.setattr(cli_module.SessionStore, "open", lambda *_args, **_kwargs: Store())
     assert main(["events", "show", "--session", "404", "--db", "unused.sqlite"]) == 2
+    assert "No existe la sesión 404" in capsys.readouterr().err
+
+
+def _install_agent_store(
+    monkeypatch: pytest.MonkeyPatch,
+    calls: tuple[object, ...],
+    messages: tuple[object, ...],
+    *,
+    session_exists: bool = True,
+) -> list[bool]:
+    opened_readonly: list[bool] = []
+
+    class Store:
+        def __enter__(self) -> Store:
+            self.connection = sqlite3.connect(":memory:")
+            self.connection.execute("PRAGMA user_version = 9")
+            return self
+
+        def __exit__(self, *_: object) -> None:
+            self.connection.close()
+            return None
+
+        def get_session(self, session_id: int) -> object | None:
+            return object() if session_exists else None
+
+        def iter_llm_calls(self, session_id: int) -> tuple[object, ...]:
+            return calls
+
+        def iter_agent_messages(self, session_id: int) -> tuple[object, ...]:
+            return messages
+
+    def open_store(*_args: object, **kwargs: object) -> Store:
+        opened_readonly.append(kwargs.get("readonly") is True)
+        return Store()
+
+    monkeypatch.setattr(cli_module.SessionStore, "open", open_store)
+    return opened_readonly
+
+
+def _agent_rows() -> tuple[tuple[object, ...], tuple[object, ...]]:
+    calls = (
+        {
+            "call_id": "call-1",
+            "outcome": "fallback",
+            "fallback_reason": "timeout",
+            "validation_errors": '["number_mismatch"]',
+            "total_s": 1.0,
+            "context_json": '{"facts":{"gain_s":2}}',
+            "api_key": "do-not-export-this",
+        },
+        {
+            "call_id": "call-2",
+            "outcome": "used",
+            "fallback_reason": None,
+            "validation_errors": "[]",
+            "total_s": 3.0,
+            "context_json": None,
+        },
+    )
+    messages = (
+        {
+            "llm_call_id": "call-1",
+            "source": "template",
+            "priority": "strategic",
+            "lap": 5,
+            "t_sim_s": 12.0,
+            "text": "Respaldo de prueba",
+        },
+        {
+            "llm_call_id": "call-2",
+            "source": "llm",
+            "priority": "informational",
+            "lap": 6,
+            "t_sim_s": 18.0,
+            "text": "Mensaje generado",
+        },
+    )
+    return calls, messages
+
+
+def test_agent_show_filters_source_and_outcome(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    calls, messages = _agent_rows()
+    opened_readonly = _install_agent_store(monkeypatch, calls, messages)
+
+    assert (
+        main(
+            [
+                "agent",
+                "show",
+                "--session",
+                "7",
+                "--source",
+                "template",
+                "--outcome",
+                "fallback",
+                "--db",
+                "unused.sqlite",
+            ]
+        )
+        == 0
+    )
+    output = capsys.readouterr().out
+    assert "Respaldo de prueba" in output
+    assert "Mensaje generado" not in output
+    assert opened_readonly == [True]
+
+
+def test_agent_summary_reports_counts_validation_errors_and_percentiles(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    calls, messages = _agent_rows()
+    _install_agent_store(monkeypatch, calls, messages)
+
+    assert main(["agent", "summary", "--session", "7", "--db", "unused.sqlite"]) == 0
+    output = capsys.readouterr().out
+    assert "timeout" in output
+    assert "number_mismatch" in output
+    assert "p50" in output and "2.000" in output
+    assert "p95" in output and "2.900" in output
+    assert "plantilla" in output and "LLM" in output
+
+
+@pytest.mark.parametrize("export_format", ("json", "jsonl", "csv"))
+def test_agent_export_formats_include_context_and_omit_secrets(
+    export_format: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls, messages = _agent_rows()
+    _install_agent_store(monkeypatch, calls, messages)
+    output_path = tmp_path / f"radio.{export_format}"
+
+    assert (
+        main(
+            [
+                "agent",
+                "export",
+                "--session",
+                "7",
+                "--format",
+                export_format,
+                "--out",
+                str(output_path),
+                "--db",
+                "unused.sqlite",
+            ]
+        )
+        == 0
+    )
+    content = output_path.read_text(encoding="utf-8")
+    assert "gain_s" in content
+    assert "Respaldo de prueba" in content
+    assert "do-not-export-this" not in content
+    if export_format == "json":
+        assert json.loads(content)["session_id"] == 7
+    elif export_format == "jsonl":
+        assert len(content.splitlines()) == 4
+    else:
+        assert len(list(csv.reader(content.splitlines()))) == 5
+
+
+def test_agent_commands_report_missing_session(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _install_agent_store(monkeypatch, (), (), session_exists=False)
+
+    assert main(["agent", "show", "--session", "404", "--db", "unused.sqlite"]) == 2
     assert "No existe la sesión 404" in capsys.readouterr().err
 
 

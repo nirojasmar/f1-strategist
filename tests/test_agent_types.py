@@ -184,8 +184,8 @@ def test_playback_session_agent_snapshot_stub_is_disabled(tmp_path: Path) -> Non
     assert snapshot.llm_status.status is LLMStatus.DISABLED
 
 
-def test_cli_has_agent_and_llm_groups_without_subcommands() -> None:
+def test_cli_registers_agent_commands_and_keeps_llm_group_pending() -> None:
     parser = cli_module._build_parser()
-    assert parser.parse_args(["agent"]).command == "agent"
+    assert parser.parse_args(["agent", "show", "--session", "7"]).agent_command == "show"
     assert parser.parse_args(["llm"]).command == "llm"
-    assert main(["agent"]) == 2
+    assert main(["llm"]) == 2
