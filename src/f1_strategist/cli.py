@@ -25,9 +25,11 @@ from rich.table import Table
 from rich.text import Text
 
 from . import __version__
+from .agent.bench import diagnostic_config, report_json, run_benchmark, run_check
+from .agent.llm_client import OpenAICompatibleClient
 from .agent.types import CallOutcome, MessageSource
 from .capture import CaptureError
-from .config import AppConfig, ConfigError, MetricsConfig, apply_overrides, load_config
+from .config import AppConfig, ConfigError, LLMConfig, MetricsConfig, apply_overrides, load_config
 from .console import format_bytes, render, run_console
 from .console_messages import (
     AGENT_EMPTY_MESSAGES,
@@ -136,6 +138,16 @@ def _positive_int(value: str) -> int:
         raise argparse.ArgumentTypeError("se esperaba un entero") from exc
     if number < 1:
         raise argparse.ArgumentTypeError("el valor debe ser mayor o igual que 1")
+    return number
+
+
+def _non_negative_int(value: str) -> int:
+    try:
+        number = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("se esperaba un entero") from exc
+    if number < 0:
+        raise argparse.ArgumentTypeError("el valor debe ser mayor o igual que 0")
     return number
 
 
@@ -505,8 +517,20 @@ def _build_parser() -> argparse.ArgumentParser:
     agent_export.add_argument("--out", type=Path, help="archivo de salida (por defecto, stdout)")
     agent_export.add_argument("--db", type=Path, help="base SQLite (por defecto, configuración)")
 
-    # El grupo llm y sus subcomandos pertenecen a L10.
-    sub.add_parser("llm", help="diagnóstico y medición del LLM")
+    llm = sub.add_parser("llm", help="diagnóstico y medición del LLM")
+    llm_sub = llm.add_subparsers(dest="llm_command", required=True)
+    llm_check = llm_sub.add_parser("check", help="comprueba las capacidades del endpoint")
+    llm_check.add_argument("--config", type=Path, help="archivo TOML de configuración")
+    llm_check.add_argument("--endpoint", help="URL base compatible con OpenAI")
+    llm_check.add_argument("--model", help="identificador del modelo")
+    llm_bench = llm_sub.add_parser("bench", help="mide latencia y respuestas")
+    llm_bench.add_argument("--runs", type=_positive_int, default=10, metavar="N")
+    llm_bench.add_argument("--warmup", type=_non_negative_int, default=1, metavar="K")
+    llm_bench.add_argument("--json", type=Path, metavar="ARCHIVO")
+    llm_bench.add_argument("--note", help="etiqueta para las condiciones de la medición")
+    llm_bench.add_argument("--config", type=Path, help="archivo TOML de configuración")
+    llm_bench.add_argument("--endpoint", help="URL base compatible con OpenAI")
+    llm_bench.add_argument("--model", help="identificador del modelo")
     return parser
 
 
@@ -2303,6 +2327,30 @@ def _cmd_events(args: argparse.Namespace, console: Console, err: Console) -> int
     return _cmd_events_simulate(args, console, err)
 
 
+def _cmd_llm(args: argparse.Namespace, console: Console) -> int:
+    base_config: LLMConfig = load_config(args.config).llm
+    config = diagnostic_config(base_config, endpoint=args.endpoint, model=args.model)
+    client = OpenAICompatibleClient(config)
+    if args.llm_command == "check":
+        report = run_check(client, config)
+        console.print(report_json(report), markup=False, end="")
+        return 0 if report["ok"] else 1
+
+    report = run_benchmark(
+        client,
+        config,
+        runs=args.runs,
+        warmup=args.warmup,
+        note=args.note,
+    )
+    output = report_json(report)
+    if args.json is not None:
+        with args.json.open("w", encoding="utf-8", newline="") as handle:
+            handle.write(output)
+    console.print(output, markup=False, end="")
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     console = Console()
@@ -2323,7 +2371,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "strategy": _cmd_strategy,
         "events": _cmd_events,
         "agent": lambda args, console, _err: _cmd_agent(args, console),
-        "llm": _cmd_pending_group,
+        "llm": lambda args, console, _err: _cmd_llm(args, console),
     }
     try:
         return handlers[args.command](args, console, err)

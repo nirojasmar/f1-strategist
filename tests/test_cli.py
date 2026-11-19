@@ -9,11 +9,14 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from pydantic import SecretStr
 
 import f1_strategist.cli as cli_module
+from f1_strategist.agent.llm_client import FakeLLMClient
+from f1_strategist.agent.types import LLMResponse
 from f1_strategist.capture import CapturedPacket, CaptureWriter
 from f1_strategist.cli import main
-from f1_strategist.config import AppConfig, EventsConfig
+from f1_strategist.config import AppConfig, EventsConfig, LLMConfig
 from f1_strategist.events.engine import EventEvaluation
 from f1_strategist.events.types import (
     ConditionPolicy,
@@ -51,6 +54,51 @@ def test_run_with_port_in_use_exits_with_error(capsys: pytest.CaptureFixture[str
         port = blocker.getsockname()[1]
         assert main(["run", "--port", str(port), "--no-capture"]) == 2
     assert "No se pudo abrir UDP" in capsys.readouterr().err
+
+
+def test_llm_bench_writes_only_the_requested_json_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    secret = "never-print-this-key"
+    config = AppConfig(llm=LLMConfig(model="test-model", api_key=SecretStr(secret)))
+    client = FakeLLMClient(
+        [
+            LLMResponse(
+                text=(
+                    '{"should_speak":true,"priority":"critical","language":"es",'
+                    '"message":"OK","reason":"","used_facts":[]}'
+                ),
+                ttft_s=0.1,
+                total_s=0.5,
+                completion_tokens=5,
+            ),
+            LLMResponse(
+                text=(
+                    '{"should_speak":true,"priority":"strategic","language":"es",'
+                    '"message":"OK","reason":"","used_facts":[]}'
+                ),
+                ttft_s=0.2,
+                total_s=0.6,
+                completion_tokens=6,
+            ),
+        ]
+    )
+    monkeypatch.setattr(cli_module, "load_config", lambda _path: config)
+    monkeypatch.setattr(cli_module, "OpenAICompatibleClient", lambda _config: client)
+    output_path = tmp_path / "bench.json"
+
+    assert main(["llm", "bench", "--runs", "1", "--warmup", "0", "--json", str(output_path)]) == 0
+
+    output = capsys.readouterr().out
+    assert output_path.read_text(encoding="utf-8") == output
+    assert json.loads(output)["metrics"]["valid_response_rate"] == 1.0
+    assert secret not in output
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["bench.json"]
+
+
+def test_llm_check_requires_a_configured_model(capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["llm", "check"]) == 2
+    assert "--model" in capsys.readouterr().err
 
 
 def test_inspect_prints_summary(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
