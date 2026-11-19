@@ -376,6 +376,14 @@ class LLMConfig(BaseModel):
         parsed = urlparse(value)
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
             raise ValueError("endpoint debe ser una URL http o https")
+        if parsed.username is not None or parsed.password is not None:
+            raise ValueError("endpoint no debe incluir credenciales")
+        if not parsed.hostname:
+            raise ValueError("endpoint debe incluir un host")
+        try:
+            _ = parsed.port
+        except ValueError as exc:
+            raise ValueError("endpoint tiene un puerto inválido") from exc
         return value.rstrip("/")
 
     @model_validator(mode="after")
@@ -418,7 +426,7 @@ class AgentConfig(BaseModel):
     )
 
     def timeout_for(self, priority: str) -> float:
-        """Tiempo de espera según la prioridad de la alerta."""
+        """Tiempo de espera según la prioridad; otras prioridades usan el informativo."""
         if priority == "critical":
             return self.timeout_critical_s
         if priority == "strategic":

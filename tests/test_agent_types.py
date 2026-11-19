@@ -80,6 +80,18 @@ def test_context_payload_is_immutable() -> None:
         payload.language = "en"  # type: ignore[misc]
     with pytest.raises(TypeError):
         payload.situation["lap"] = 13  # type: ignore[index]
+    nested = ContextPayload(
+        kind=ContextKind.QUESTION,
+        language="es",
+        situation={"strategy": {"assumptions": ["sin Safety Car"]}},
+    )
+    with pytest.raises(TypeError):
+        nested.situation["strategy"]["assumptions"] = ()  # type: ignore[index]
+
+
+def test_context_payload_rejects_a_mismatched_hash() -> None:
+    with pytest.raises(ValueError):
+        _payload(context_hash="0" * 64)
 
 
 def test_llm_reply_rejects_unknown_fields() -> None:
@@ -164,7 +176,7 @@ def test_capture_session_agent_snapshot_stub_is_disabled() -> None:
 
 def test_playback_session_agent_snapshot_stub_is_disabled(tmp_path: Path) -> None:
     path = tmp_path / "empty.f1cap"
-    with CaptureWriter(path):
+    with CaptureWriter(path, include_created_utc=False):
         pass
     session = PlaybackSession(path)
     snapshot = session.agent_snapshot()

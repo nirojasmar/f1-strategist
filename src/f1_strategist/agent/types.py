@@ -134,6 +134,10 @@ class ContextPayload:
         object.__setattr__(self, "recent_messages", tuple(self.recent_messages))
         if not self.context_hash:
             object.__setattr__(self, "context_hash", self.compute_hash())
+            return
+        computed = self.compute_hash()
+        if self.context_hash != computed:
+            raise ValueError("context_hash no coincide con el contenido del contexto")
 
     def compute_hash(self) -> str:
         """SHA-256 del contenido del contexto, sin incluir la propia huella."""
@@ -504,8 +508,13 @@ def _loads(text: str) -> dict[str, Any]:
     return _json_mapping(data, "payload")
 
 
-def _frozen(value: Mapping[str, Any] | None) -> Any:
-    return None if value is None else MappingProxyType(dict(value))
+def _frozen(value: Any) -> Any:
+    """Copia y congela mappings y secuencias anidadas."""
+    if isinstance(value, Mapping):
+        return MappingProxyType({key: _frozen(item) for key, item in value.items()})
+    if isinstance(value, (tuple, list)):
+        return tuple(_frozen(item) for item in value)
+    return value
 
 
 def _plain(value: Any) -> Any:

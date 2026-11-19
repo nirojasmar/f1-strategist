@@ -41,6 +41,13 @@ def test_llm_rejects_non_http_endpoints() -> None:
         LLMConfig(endpoint="ftp://127.0.0.1:1234/v1")
     with pytest.raises(ValueError):
         LLMConfig(endpoint="127.0.0.1:1234")
+    with pytest.raises(ValueError):
+        LLMConfig(endpoint="http://user:pass@127.0.0.1:1234/v1")
+    with pytest.raises(ValueError):
+        LLMConfig(endpoint="http://:1234/v1")
+    with pytest.raises(ValueError):
+        LLMConfig(endpoint="http://127.0.0.1:notaport/v1")
+    assert LLMConfig(endpoint="http://[::1]:1234/v1").endpoint == "http://[::1]:1234/v1"
 
 
 def test_enabled_llm_requires_a_model() -> None:
@@ -82,10 +89,13 @@ def test_example_config_loads_the_new_sections() -> None:
 
 
 def test_agent_timeout_lookup_covers_every_priority() -> None:
-    agent = AgentConfig()
-    for priority in ("critical", "strategic", "informational"):
-        assert agent.timeout_for(priority) > 0
-    assert agent.timeout_for("unknown-priority") == agent.timeout_strategic_s
+    agent = AgentConfig(
+        timeout_critical_s=1.0, timeout_strategic_s=2.0, timeout_informational_s=3.0
+    )
+    assert agent.timeout_for("critical") == 1.0
+    assert agent.timeout_for("strategic") == 2.0
+    assert agent.timeout_for("informational") == 3.0
+    assert agent.timeout_for("unknown-priority") == 3.0
 
 
 def test_snapshot_default_status_is_disabled() -> None:
