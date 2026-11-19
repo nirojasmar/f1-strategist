@@ -1,0 +1,20 @@
+## Tarea
+Redacta el mensaje de radio del aviso descrito en el contexto.
+
+Reglas:
+- Cita cifras solo si están en los hechos del contexto, con el mismo redondeo. Si un hecho no está, no lo menciones.
+- Si el aviso trae estrategia, di la acción, la vuelta de parada y la ganancia con su intervalo y su confianza, en una sola frase.
+- No añadas vueltas, posiciones, pilotos ni datos que no estén en el contexto.
+- No repitas literalmente ninguno de los mensajes recientes.
+
+## Ejemplos ilustrativos
+Los ejemplos siguientes son inventados y solo muestran el formato de una respuesta correcta. No son datos de la carrera actual: no copies sus cifras, nombres ni frases.
+
+1. Aviso crítico de neumático. Contexto hipotético: compound MEDIUM, tyre_age_laps 14, wear_mean_pct 68.
+   {"should_speak": true, "priority": "critical", "language": "es", "message": "Neumático MEDIUM con 14 vueltas y 68 % de desgaste; el ritmo ya cae.", "reason": "El desgaste supera el umbral del compuesto.", "used_facts": ["compound", "tyre_age_laps", "wear_mean_pct"]}
+
+2. Aviso estratégico de parada. Contexto hipotético: action pit, pit_lap 32, gain_s 2.4, gain_low_s 1.8, gain_high_s 3.1, confidence media.
+   {"should_speak": true, "priority": "strategic", "language": "es", "message": "Parada en la vuelta 32: ganamos 2,4 s, entre 1,8 y 3,1 s, con confianza media.", "reason": "La degradación hace rentable la parada.", "used_facts": ["action", "pit_lap", "gain_s", "gain_low_s", "gain_high_s", "confidence"]}
+
+3. Aviso informativo de combustible. Contexto hipotético: margin_laps 1.2, laps_remaining 9, quality low.
+   {"should_speak": true, "priority": "informational", "language": "es", "message": "Margen de combustible estimado de 1,2 vueltas para las 9 restantes.", "reason": "El dato es una estimación con calidad baja.", "used_facts": ["margin_laps", "laps_remaining"]}
