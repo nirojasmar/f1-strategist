@@ -71,11 +71,28 @@ class _Clock:
         return current
 
 
+class _StallingStream(httpx.SyncByteStream):
+    """Cuerpo que no termina hasta que el watcher cierra la conexión."""
+
+    def __init__(self) -> None:
+        self.started = threading.Event()
+        self.closed = threading.Event()
+
+    def __iter__(self) -> Any:
+        self.started.set()
+        self.closed.wait()
+        raise httpx.ReadError("closed")
+
+    def close(self) -> None:
+        self.closed.set()
+
+
 def _client(
     handler: Any,
     *,
-    clock: _Clock | None = None,
+    clock: Any = None,
     wall_clock: _Clock | None = None,
+    watcher_wait: Any = None,
     **overrides: Any,
 ) -> tuple[OpenAICompatibleClient, list[httpx.Request]]:
     seen: list[httpx.Request] = []
@@ -89,6 +106,7 @@ def _client(
         transport=httpx.MockTransport(transport_handler),
         monotonic=clock or _Clock(),
         wall_clock=wall_clock or _Clock(start=1000.0),
+        watcher_wait=watcher_wait,
     ), seen
 
 
@@ -111,6 +129,24 @@ def test_non_streaming_request_and_response(monkeypatch: pytest.MonkeyPatch) -> 
     assert body["response_format"]["type"] == "json_schema"
     assert body["temperature"] == 0.3
     assert "authorization" not in seen[0].headers
+
+
+def test_extra_body_cannot_override_typed_fields() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_completion())
+
+    client, seen = _client(handler)
+    request = _request(
+        extra_body={"stream": True, "model": "otro", "temperature": 2.0, "keep": "x"}
+    )
+    response = client.generate(request)
+
+    body = json.loads(seen[0].content)
+    assert response.error is None
+    assert body["stream"] is False
+    assert body["model"] == "test-model"
+    assert body["temperature"] == 0.3
+    assert body["keep"] == "x"
 
 
 def test_no_api_key_and_no_redirects() -> None:
@@ -277,26 +313,18 @@ def test_cancel_watcher_closes_connection() -> None:
 
 
 def test_cancellation_interrupts_a_stalled_body_read() -> None:
-    class _StallingStream(httpx.SyncByteStream):
-        def __init__(self) -> None:
-            self.started = threading.Event()
-            self.closed = threading.Event()
-
-        def __iter__(self) -> Any:
-            self.started.set()
-            self.closed.wait(timeout=5.0)
-            raise httpx.ReadError("closed")
-
-        def close(self) -> None:
-            self.closed.set()
-
     stream = _StallingStream()
 
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, stream=stream)
 
-    client, _ = _client(handler)
     cancel = threading.Event()
+
+    def wait(_timeout: float) -> bool:
+        cancel.wait()
+        return False
+
+    client, _ = _client(handler, watcher_wait=wait)
     result: list[LLMResponse] = []
 
     def run() -> None:
@@ -304,13 +332,33 @@ def test_cancellation_interrupts_a_stalled_body_read() -> None:
 
     worker = threading.Thread(target=run, daemon=True)
     worker.start()
-    assert stream.started.wait(timeout=2.0)
+    stream.started.wait()
     cancel.set()
-    worker.join(timeout=2.0)
+    worker.join()
 
     assert not worker.is_alive()
     assert stream.closed.is_set()
     assert result[0].error == "cancelled"
+
+
+def test_deadline_interrupts_a_stalled_body_read() -> None:
+    stream = _StallingStream()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, stream=stream)
+
+    now = [0.0]
+
+    def wait(_timeout: float) -> bool:
+        stream.started.wait()
+        now[0] = 6.0
+        return False
+
+    client, _ = _client(handler, clock=lambda: now[0], watcher_wait=wait)
+    result = client.generate(_request())
+
+    assert stream.closed.is_set()
+    assert result.error == "timeout"
 
 
 def test_health_available_and_model_missing() -> None:

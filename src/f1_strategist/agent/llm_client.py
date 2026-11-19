@@ -62,11 +62,13 @@ class OpenAICompatibleClient:
         transport: httpx.BaseTransport | None = None,
         monotonic: Callable[[], float] = time.perf_counter,
         wall_clock: Callable[[], float] = time.time,
+        watcher_wait: Callable[[float], bool] | None = None,
     ) -> None:
         self._config = config
         self._transport = transport
         self._monotonic = monotonic
         self._wall_clock = wall_clock
+        self._watcher_wait = watcher_wait
         # Nivel negociado: recuerda la degradación para no repetir el 400.
         self._level_index = 0
 
@@ -114,10 +116,19 @@ class OpenAICompatibleClient:
         timeout = httpx.Timeout(remaining, connect=min(self._config.connect_timeout_s, remaining))
         started = self._monotonic()
         active: list[httpx.Response] = []
+        expired = threading.Event()
         try:
             with (
                 httpx.Client(transport=self._transport, follow_redirects=False) as client,
-                _cancel_watcher(cancel, client.close, active),
+                _cancel_watcher(
+                    cancel,
+                    client.close,
+                    active,
+                    deadline=deadline,
+                    monotonic=self._monotonic,
+                    expired=expired,
+                    wait=self._watcher_wait,
+                ),
                 client.stream(
                     "POST",
                     f"{self._config.endpoint}/chat/completions",
@@ -133,30 +144,46 @@ class OpenAICompatibleClient:
                     return _error(FallbackReason.HTTP_ERROR), False
                 if request.stream:
                     return (
-                        self._read_stream(response, started, mode, plain_text, cancel, deadline),
+                        self._read_stream(
+                            response, started, mode, plain_text, cancel, deadline, expired
+                        ),
                         False,
                     )
                 return (
-                    self._read_message(response, started, mode, plain_text, cancel, deadline),
+                    self._read_message(
+                        response, started, mode, plain_text, cancel, deadline, expired
+                    ),
                     False,
                 )
         except httpx.TimeoutException:
-            return _error(FallbackReason.TIMEOUT), False
+            code = FallbackReason.CANCELLED if _is_set(cancel) else FallbackReason.TIMEOUT
+            return _error(code), False
         except httpx.HTTPError:
             # Cerrar la conexión desde el watcher también llega aquí.
-            code = FallbackReason.CANCELLED if _is_set(cancel) else FallbackReason.UNAVAILABLE
-            return _error(code), False
+            return _error(self._stopped_reason(cancel, expired)), False
         except Exception:
             # Cualquier fallo del transporte queda clasificado, nunca sin capturar.
-            code = FallbackReason.CANCELLED if _is_set(cancel) else FallbackReason.UNAVAILABLE
-            return _error(code), False
+            return _error(self._stopped_reason(cancel, expired)), False
+
+    @staticmethod
+    def _stopped_reason(cancel: threading.Event | None, expired: threading.Event) -> FallbackReason:
+        if _is_set(cancel):
+            return FallbackReason.CANCELLED
+        if expired.is_set():
+            return FallbackReason.TIMEOUT
+        return FallbackReason.UNAVAILABLE
 
     def _payload(self, request: LLMRequest, mode: str) -> dict[str, Any]:
-        payload: dict[str, Any] = {
-            "model": request.model,
-            "messages": [message.to_dict() for message in request.messages],
-            "stream": request.stream,
-        }
+        # Los campos tipados mandan: extra_body no puede saltarse el formato negociado.
+        payload = _plain(request.extra_body)
+        payload.pop("response_format", None)
+        payload.update(
+            {
+                "model": request.model,
+                "messages": [message.to_dict() for message in request.messages],
+                "stream": request.stream,
+            }
+        )
         for name in ("temperature", "top_p", "max_tokens", "seed"):
             value = getattr(request, name)
             if value is not None:
@@ -168,10 +195,6 @@ class OpenAICompatibleClient:
                 )
             else:
                 payload["response_format"] = {"type": "json_object"}
-        # Los campos tipados mandan: extra_body no puede saltarse el formato negociado.
-        extra = _plain(request.extra_body)
-        extra.pop("response_format", None)
-        payload.update(extra)
         return payload
 
     def _headers(self) -> dict[str, str]:
@@ -189,6 +212,7 @@ class OpenAICompatibleClient:
         plain_text: bool,
         cancel: threading.Event | None,
         deadline: float,
+        expired: threading.Event,
     ) -> LLMResponse:
         parts: list[str] = []
         ttft_s: float | None = None
@@ -241,9 +265,13 @@ class OpenAICompatibleClient:
         except httpx.HTTPError:
             if _is_set(cancel):
                 return _error(FallbackReason.CANCELLED)
+            if expired.is_set():
+                return _error(FallbackReason.TIMEOUT)
             return _error(FallbackReason.INVALID_JSON)
         if _is_set(cancel):
             return _error(FallbackReason.CANCELLED)
+        if expired.is_set():
+            return _error(FallbackReason.TIMEOUT)
         total_s = self._monotonic() - started
         text = "".join(parts)
         if finish_reason is None and not done:
@@ -270,6 +298,7 @@ class OpenAICompatibleClient:
         plain_text: bool,
         cancel: threading.Event | None,
         deadline: float,
+        expired: threading.Event,
     ) -> LLMResponse:
         if _is_set(cancel):
             return _error(FallbackReason.CANCELLED)
@@ -278,12 +307,21 @@ class OpenAICompatibleClient:
         except httpx.TimeoutException:
             return _error(FallbackReason.CANCELLED if _is_set(cancel) else FallbackReason.TIMEOUT)
         except ValueError:
+            if _is_set(cancel):
+                return _error(FallbackReason.CANCELLED)
+            if expired.is_set():
+                return _error(FallbackReason.TIMEOUT)
             return _error(FallbackReason.INVALID_JSON)
         except httpx.HTTPError:
-            code = FallbackReason.CANCELLED if _is_set(cancel) else FallbackReason.INVALID_JSON
-            return _error(code)
+            if _is_set(cancel):
+                return _error(FallbackReason.CANCELLED)
+            if expired.is_set():
+                return _error(FallbackReason.TIMEOUT)
+            return _error(FallbackReason.INVALID_JSON)
         if _is_set(cancel):
             return _error(FallbackReason.CANCELLED)
+        if expired.is_set():
+            return _error(FallbackReason.TIMEOUT)
         total_s = self._monotonic() - started
         if not isinstance(data, dict):
             return _error(FallbackReason.INVALID_JSON)
@@ -421,11 +459,14 @@ def _cancel_watcher(
     close: Callable[[], None],
     active: list[httpx.Response],
     *,
+    deadline: float | None = None,
+    monotonic: Callable[[], float] | None = None,
+    expired: threading.Event | None = None,
     wait: Callable[[float], bool] | None = None,
     run: Callable[[Callable[[], None]], None] | None = None,
 ) -> Iterator[None]:
-    """Cierra la conexión y la respuesta en curso en cuanto se señala la cancelación."""
-    if cancel is None:
+    """Cierra la conexión y la respuesta en curso al cancelar o vencer el plazo."""
+    if cancel is None and deadline is None:
         yield
         return
     stopped = threading.Event()
@@ -434,12 +475,18 @@ def _cancel_watcher(
     def watch() -> None:
         # shortcut: sondeo de 50 ms; basta para una radio que se cancela en segundos.
         while not wait_fn(0.05):
-            if cancel.is_set():
-                for response in list(active):
-                    with suppress(Exception):
-                        response.close()
-                close()
-                return
+            if cancel is not None and cancel.is_set():
+                break
+            if deadline is not None and monotonic is not None and monotonic() >= deadline:
+                if expired is not None:
+                    expired.set()
+                break
+        else:
+            return
+        for response in list(active):
+            with suppress(Exception):
+                response.close()
+        close()
 
     if run is None:
         thread = threading.Thread(target=watch, daemon=True, name="llm-cancel")

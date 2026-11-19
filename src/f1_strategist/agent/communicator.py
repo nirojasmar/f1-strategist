@@ -301,6 +301,12 @@ class AgentCommunicator:
             self._process(pending)
             return
         with self._condition:
+            # Las obsoletas ya no compiten por capacidad ni se emiten como víctimas.
+            self._queue = deque(
+                item
+                for item in self._queue
+                if not item.cancel.is_set() and not self._is_obsolete_locked(item)
+            )
             if self._is_obsolete_locked(pending):
                 self._count_locked("discarded_obsolete")
                 return
@@ -571,6 +577,7 @@ class AgentCommunicator:
     def _generate(self, pending: _Pending) -> _Generation:
         assert self._client is not None
         started = self._clock()
+        called = False
         try:
             prompt_set = (
                 self._registry.load(self.agent.language)
@@ -599,12 +606,13 @@ class AgentCommunicator:
                 extra_body=dict(self.llm.extra_body),
                 timeout_s=self.agent.timeout_for(pending.alert.priority.value),
             )
+            called = True
             response = self._client.generate(request, cancel=pending.cancel)
         except Exception as exc:
             return _Generation(
                 error=_reason_for_error(str(exc)),
                 latency_s=self._clock() - started,
-                called=True,
+                called=called,
                 error_text=f"{type(exc).__name__}: {exc}",
             )
         latency_s = self._clock() - started

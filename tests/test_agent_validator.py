@@ -168,6 +168,18 @@ def test_rounding_matches_format_fact() -> None:
     assert ValidationIssue.UNKNOWN_NUMBER in rejected.errors
 
 
+@pytest.mark.parametrize("laps", [0, 10, 20])
+def test_integer_facts_keep_trailing_zeros(laps: int) -> None:
+    context = _context(
+        alert={"facts": [["laps_left", laps]]},
+        situation={},
+        strategy={},
+        metrics={},
+    )
+    reply = _reply(message=f"Quedan {laps} vueltas.", used_facts=[])
+    assert _validate(reply, context, facts=(("laps_left", laps),)).valid
+
+
 def test_priority_cannot_change() -> None:
     result = _validate(_reply(priority="critical"))
     assert not result.valid

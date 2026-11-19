@@ -108,6 +108,11 @@ class FakeRegistry:
         return _PromptSet()
 
 
+class _FailingRegistry:
+    def load(self, language: str) -> PromptSet:
+        raise RuntimeError("boom")
+
+
 class FakeValidator:
     def __init__(self, *, valid: bool = True, should_speak: bool = True) -> None:
         self.valid = valid
@@ -182,6 +187,7 @@ def _communicator(
     critical_uses_llm: bool = False,
     fallback_on_failure: Literal["template", "drop"] = "template",
     queue_capacity: int = 64,
+    registry: Any = None,
 ) -> AgentCommunicator:
     return AgentCommunicator(
         AgentConfig(
@@ -192,7 +198,7 @@ def _communicator(
         LLMConfig(enabled=True, model="fake-model"),
         client=client or FakeClient(),
         builder=FakeBuilder(),
-        registry=FakeRegistry(),
+        registry=registry or FakeRegistry(),
         validator=validator or FakeValidator(),
         template_renderer=_renderer,
         mode=mode,
@@ -329,6 +335,41 @@ def test_full_queue_drops_the_oldest_without_blocking() -> None:
     snapshot = communicator.snapshot()
     assert [message.alert_id for message in snapshot.messages] == ["alert1", "alert3"]
     assert snapshot.counters["queue_overflow"] == 1
+
+
+def test_preparation_failure_does_not_count_as_a_call() -> None:
+    client = FakeClient()
+    communicator = _communicator(client, mode="recorded", registry=_FailingRegistry())
+    communicator.submit(_alert(), _sources())
+
+    calls, messages = communicator.drain_records()
+    snapshot = communicator.snapshot()
+    assert client.calls == []
+    assert calls == ()
+    assert [message.text for message in messages] == ["T:event.test"]
+    assert snapshot.counters["fallback:unavailable"] == 1
+
+
+def test_stale_queued_critical_does_not_block_new_alerts() -> None:
+    client = FakeClient(blocking=True)
+    communicator = _communicator(client, critical_uses_llm=True, queue_capacity=1)
+    communicator.start()
+    try:
+        communicator.submit(_alert("alert1", priority=EventPriority.CRITICAL), _sources())
+        assert client.started.wait(timeout=5.0)
+        communicator.submit(_alert("alert2", priority=EventPriority.CRITICAL), _sources())
+        communicator.cancel_obsolete(EventsSnapshot(active_events=(_signal(),)), 10.0)
+        communicator.cancel_obsolete(EventsSnapshot(), 10.0)
+        communicator.submit(_alert("alert3", event_id="event2"), _sources())
+        client.release.set()
+        assert communicator.wait_idle(timeout=5.0)
+    finally:
+        client.release.set()
+        communicator.stop()
+
+    snapshot = communicator.snapshot()
+    assert [message.alert_id for message in snapshot.messages] == ["alert3"]
+    assert snapshot.counters.get("queue_overflow", 0) == 0
 
 
 def test_critical_is_immediate_and_does_not_wait_for_the_model() -> None:

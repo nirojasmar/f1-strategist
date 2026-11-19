@@ -393,7 +393,9 @@ def _decimals(raw: str) -> int:
 def _rounds_to(token: Decimal, value: float, decimals: int) -> bool:
     """Mismo redondeo que ``format_fact``: formato fijo y ceros finales fuera."""
     try:
-        text = f"{value:.{decimals}f}".rstrip("0").rstrip(".")
+        text = f"{value:.{decimals}f}"
+        if "." in text:
+            text = text.rstrip("0").rstrip(".")
         return token == Decimal(text)
     except InvalidOperation:
         return False
