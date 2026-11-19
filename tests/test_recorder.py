@@ -9,12 +9,13 @@ import threading
 import time
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
-from dataclasses import replace
+from dataclasses import fields, replace
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from f1_strategist.agent.types import AgentMessage, MessageSource
 from f1_strategist.capture import CapturedPacket, CaptureWriter
 from f1_strategist.cli import main
 from f1_strategist.config import (
@@ -53,17 +54,19 @@ from f1_strategist.race_state import (
     RaceStateSnapshot,
     TyreSetSnapshot,
 )
-from f1_strategist.recorder import SessionRecorder, ingest_capture
+from f1_strategist.recorder import LLMCallRecord, SessionRecorder, ingest_capture
 from f1_strategist.session import CaptureSession
 from f1_strategist.store import (
     MetricSample,
     Participant,
     SessionInfo,
     SessionStore,
+    StoredAgentMessage,
     StoredDetectedEvent,
     StoredError,
     StoredEvent,
     StoredGateDecision,
+    StoredLLMCall,
     StoredStrategyEvaluation,
     TyreInventorySnapshot,
 )
@@ -100,6 +103,8 @@ class _FakeStore:
         self.strategy_evaluations: list[tuple[int, StoredStrategyEvaluation]] = []
         self.detected_events: list[tuple[int, StoredDetectedEvent]] = []
         self.gate_decisions: list[tuple[int, StoredGateDecision]] = []
+        self.llm_calls: list[tuple[int, StoredLLMCall]] = []
+        self.agent_messages: list[tuple[int, StoredAgentMessage]] = []
         self._next_id = 1
 
     @contextmanager
@@ -178,6 +183,12 @@ class _FakeStore:
 
     def add_gate_decisions(self, session_id: int, decisions: Iterable[StoredGateDecision]) -> None:
         self.gate_decisions.extend((session_id, item) for item in decisions)
+
+    def add_llm_calls(self, session_id: int, calls: Iterable[StoredLLMCall]) -> None:
+        self.llm_calls.extend((session_id, item) for item in calls)
+
+    def add_agent_messages(self, session_id: int, messages: Iterable[StoredAgentMessage]) -> None:
+        self.agent_messages.extend((session_id, item) for item in messages)
 
 
 class _BlockingStore(_FakeStore):
@@ -349,6 +360,23 @@ def _strategy_snapshot(
         projected_lap_times_s=projected_lap_times_s,
     )
     return StrategySnapshot(evaluation=evaluation, updated_at_monotonic=float(lap + revision))
+
+
+def _agent_message(message_id: str = "msg-1", **overrides: Any) -> AgentMessage:
+    values: dict[str, Any] = {
+        "message_id": message_id,
+        "alert_id": "alert:1",
+        "event_id": "test:1",
+        "priority": EventPriority.STRATEGIC,
+        "language": "es",
+        "text": "Box this lap.",
+        "source": MessageSource.TEMPLATE,
+        "used_facts": ("gap_s=1.2",),
+        "lap": 3,
+        "emitted_at": 2.0,
+    }
+    values.update(overrides)
+    return AgentMessage(**values)
 
 
 def _session_id(recorder: SessionRecorder) -> int:
@@ -550,6 +578,90 @@ def test_record_events_drops_without_advancing_sequences_when_queue_is_full() ->
     assert store.updated[-1][1].gate_fingerprint == compute_gate_fingerprint(
         (signals[0], decisions[0], signals[2], decisions[2])
     )
+
+
+def test_record_agent_persists_calls_and_messages_and_fingerprint(tmp_path: Path) -> None:
+    with SessionStore.open(tmp_path / "sessions.db") as store:
+        recorder = SessionRecorder(store, RecordingConfig(batch_size=1, flush_interval_s=0.01))
+        recorder.observe(1.0, 1.0, _snapshot(), _metrics(), _history())
+        recorder.record_agent(
+            (
+                LLMCallRecord(
+                    kind="alert",
+                    model="local-model",
+                    outcome="used",
+                    alert_id="alert:1",
+                    endpoint_host="127.0.0.1",
+                    context_hash="c" * 64,
+                    context_json='{"schema_version": 1, "kind": "alert"}',
+                    response_text='{"message": "box"}',
+                    validation_valid=True,
+                    ttft_s=0.2,
+                    total_s=0.4,
+                    prompt_tokens=120,
+                    completion_tokens=18,
+                ),
+            ),
+            (_agent_message(), _agent_message("msg-2")),
+            2.0,
+        )
+        recorder.stop()
+        session_id = _session_id(recorder)
+
+        calls = list(store.iter_llm_calls(session_id))
+        assert [call.seq for call in calls] == [1]
+        assert calls[0].outcome == "used"
+        assert calls[0].t_sim_s == 2.0
+        assert calls[0].model == "local-model"
+        assert calls[0].endpoint_host == "127.0.0.1"
+        assert calls[0].context_json == '{"schema_version": 1, "kind": "alert"}'
+        assert calls[0].prompt_tokens == 120
+        assert calls[0].completion_tokens == 18
+
+        messages = list(store.iter_agent_messages(session_id))
+        assert [item.seq for item in messages] == [1, 2]
+        assert [item.message_id for item in messages] == ["msg-1", "msg-2"]
+        assert messages[0].used_facts_json == '["gap_s=1.2"]'
+        assert messages[0].lap == 3
+        assert messages[0].source == "template"
+        assert messages[0].t_sim_s == 2.0
+
+        session = store.get_session(session_id)
+        assert session is not None
+        assert session.agent_fingerprint is not None
+        assert len(session.agent_fingerprint) == 64
+
+
+def test_record_agent_drops_without_advancing_sequences_when_queue_is_full() -> None:
+    store = _BlockingStore()
+    recorder = SessionRecorder(
+        store, RecordingConfig(queue_size=1, batch_size=1, flush_interval_s=0.01)
+    )
+    calls = tuple(
+        LLMCallRecord(kind="alert", model="local-model", outcome="used") for _ in range(3)
+    )
+    try:
+        recorder.observe(1.0, 1.0, _snapshot(), _metrics(), _history())
+        assert store.transaction_entered.wait(timeout=3.0)
+        recorder.record_agent((calls[0],), (_agent_message("m1"),), 1.0)
+        recorder.record_agent((calls[1],), (_agent_message("m2"),), 2.0)
+        assert recorder.dropped_batches > 0
+        assert recorder.incomplete
+        store.release_transaction.set()
+        _wait_until(lambda: bool(store.agent_messages))
+        recorder.record_agent((calls[2],), (_agent_message("m3"),), 3.0)
+    finally:
+        store.release_transaction.set()
+        recorder.stop()
+
+    assert [row.seq for _, row in store.llm_calls] == [1, 2]
+    assert [row.seq for _, row in store.agent_messages] == [1, 2]
+    assert [row.message_id for _, row in store.agent_messages] == ["m1", "m3"]
+
+
+def test_llm_call_record_has_no_secret_fields() -> None:
+    names = {field.name for field in fields(LLMCallRecord)}
+    assert names.isdisjoint({"api_key", "headers", "authorization"})
 
 
 def test_write_failure_is_reported_without_reaching_the_consumer() -> None:

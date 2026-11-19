@@ -767,6 +767,12 @@ class _MemoryStore:
     def add_gate_decisions(self, session_id: int, decisions: Any) -> None:
         return None
 
+    def add_llm_calls(self, session_id: int, calls: Any) -> None:
+        return None
+
+    def add_agent_messages(self, session_id: int, messages: Any) -> None:
+        return None
+
 
 def _benchmark_inputs(count: int) -> list[tuple[RaceStateSnapshot, MetricsSnapshot]]:
     session = RaceSessionSnapshot(
