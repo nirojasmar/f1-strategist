@@ -10,6 +10,8 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Protocol
 
+from .agent.communicator import AgentCommunicator, AlertSources
+from .agent.types import AgentSnapshot
 from .capture import CaptureReader
 from .config import AppConfig
 from .events.engine import EventEngine
@@ -50,6 +52,7 @@ class OfflineEventPipeline:
         config: AppConfig,
         *,
         profiles_by_uid: Mapping[int, WeekendProfile] | None = None,
+        agent_communicator: AgentCommunicator | None = None,
     ) -> None:
         self._config = config
         self._profiles_by_uid = dict(profiles_by_uid or {})
@@ -57,6 +60,12 @@ class OfflineEventPipeline:
         self._metrics_engine = MetricsEngine(config.metrics)
         self._strategy_engine = StrategyEngine(config.strategy, config.metrics)
         self._event_engine = EventEngine(config)
+        self._agent = agent_communicator or AgentCommunicator(
+            config.agent,
+            config.llm,
+            mode=config.agent.offline_mode,
+        )
+        self._agent.start()
 
     def apply(self, packet: ParsedPacket, observed_at: float) -> None:
         self._race_state.apply(packet, observed_at)
@@ -84,6 +93,17 @@ class OfflineEventPipeline:
             self._strategy_engine.snapshot(),
             observed_at,
         )
+        events_snapshot = self._event_engine.snapshot()
+        self._agent.observe(
+            events_snapshot,
+            AlertSources(
+                state=state,
+                metrics=self._metrics_engine.snapshot(),
+                strategy=self._strategy_engine.snapshot(),
+                events=events_snapshot,
+                observed_at=observed_at,
+            ),
+        )
 
     def race_snapshot(self) -> RaceStateSnapshot:
         return self._race_state.snapshot()
@@ -99,6 +119,10 @@ class OfflineEventPipeline:
 
     def events_snapshot(self) -> EventsSnapshot:
         return self._event_engine.snapshot()
+
+    def agent_snapshot(self) -> AgentSnapshot:
+        """Último estado publicado por el comunicador del agente."""
+        return self._agent.snapshot()
 
 
 @dataclass(frozen=True, slots=True)
