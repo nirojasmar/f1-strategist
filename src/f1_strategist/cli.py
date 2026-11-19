@@ -449,6 +449,10 @@ def _build_parser() -> argparse.ArgumentParser:
     events_simulate.add_argument("--from-lap", type=_positive_int, metavar="A")
     events_simulate.add_argument("--to-lap", type=_positive_int, metavar="B")
     events_simulate.add_argument("--config", type=Path, help="archivo TOML de configuración")
+
+    # Los subcomandos se añaden en L9 y L10; el grupo existe desde L1.
+    sub.add_parser("agent", help="panel y comandos del agente de radio")
+    sub.add_parser("llm", help="diagnóstico y medición del LLM")
     return parser
 
 
@@ -1939,6 +1943,12 @@ def _cmd_events_simulate(args: argparse.Namespace, console: Console, err: Consol
     return 0
 
 
+def _cmd_pending_group(args: argparse.Namespace, console: Console, err: Console) -> int:
+    """Grupo de L1 sin subcomandos; L9 y L10 los añaden."""
+    err.print(f"El grupo «{args.command}» todavía no tiene subcomandos.")
+    return 2
+
+
 def _cmd_events(args: argparse.Namespace, console: Console, err: Console) -> int:
     if args.events_command is None:
         return 0
@@ -1968,6 +1978,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         "weekend": _cmd_weekend,
         "strategy": _cmd_strategy,
         "events": _cmd_events,
+        "agent": _cmd_pending_group,
+        "llm": _cmd_pending_group,
     }
     try:
         return handlers[args.command](args, console, err)

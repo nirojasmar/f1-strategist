@@ -11,6 +11,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from . import __version__
+from .agent.types import AgentSnapshot
 from .capture import CapturedPacket, CaptureWriter
 from .config import AppConfig
 from .events.engine import EventEngine
@@ -305,6 +306,10 @@ class CaptureSession:
     def events_snapshot(self) -> EventsSnapshot:
         """Último estado publicado por el motor de eventos."""
         return self._event_engine.snapshot()
+
+    def agent_snapshot(self) -> AgentSnapshot:
+        """Stub de L1; el comunicador real llega en L7."""
+        return AgentSnapshot()
 
     def _consume(self) -> None:
         while not (self._stop_consumer.is_set() and self._queue.empty()):
