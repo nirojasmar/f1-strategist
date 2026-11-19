@@ -1,0 +1,206 @@
+from __future__ import annotations
+
+import json
+
+import pytest
+from hypothesis import given
+from hypothesis import strategies as st
+
+from f1_strategist.agent.types import ContextKind, ContextPayload, ValidationResult
+from f1_strategist.agent.validator import ResponseValidator, ValidationIssue
+from f1_strategist.config import AppConfig
+from f1_strategist.events.types import AgentAlert, EventPhase, EventPriority
+
+
+def _alert(**overrides: object) -> AgentAlert:
+    values: dict[str, object] = {
+        "alert_id": "alert-1",
+        "event_id": "event-1",
+        "phase": EventPhase.OPENED,
+        "priority": EventPriority.STRATEGIC,
+        "category": "strategy",
+        "message_key": "event.strategy_pit_recommended",
+        "facts": (("gain_s", 2.4), ("confidence", 0.7), ("laps_left", 2)),
+        "lap": 12,
+    }
+    values.update(overrides)
+    return AgentAlert(**values)  # type: ignore[arg-type]
+
+
+def _context(**overrides: object) -> ContextPayload:
+    values: dict[str, object] = {
+        "kind": ContextKind.ALERT,
+        "language": "es",
+        "alert": {
+            "message_key": "event.strategy_pit_recommended",
+            "priority": "strategic",
+            "lap": 12,
+            "facts": [["gain_s", 2.4], ["confidence", 0.7], ["laps_left", 2]],
+        },
+        "situation": {"lap": 12, "position": 3, "laps_remaining": 18},
+        "strategy": {"action": "pit", "lap": 13, "gain_s": 2.4, "confidence": 0.7},
+        "metrics": {"fuel_delta_kg": -0.4},
+        "uncertainties": (),
+        "recent_messages": (),
+    }
+    values.update(overrides)
+    return ContextPayload(**values)  # type: ignore[arg-type]
+
+
+def _reply(**overrides: object) -> str:
+    data: dict[str, object] = {
+        "should_speak": True,
+        "priority": "strategic",
+        "language": "es",
+        "message": "Box esta vuelta: ganamos 2,4 s, con confianza 0,7.",
+        "reason": "La degradación hace más rápida la parada.",
+        "used_facts": ["gain_s", "confidence"],
+    }
+    data.update(overrides)
+    return json.dumps(data, ensure_ascii=False)
+
+
+def _validate(
+    text: str, context: ContextPayload | None = None, **alert: object
+) -> ValidationResult:
+    return ResponseValidator(AppConfig()).validate(
+        text, context if context is not None else _context(), _alert(**alert)
+    )
+
+
+def test_valid_reply_passes() -> None:
+    result = _validate(_reply())
+    assert result.valid, result.errors
+    assert result.reply is not None
+    assert result.reply.used_facts == ("gain_s", "confidence")
+
+
+def test_dot_decimal_and_word_number_pass() -> None:
+    assert _validate(_reply(message="Ganamos 2.4 s.")).valid
+    assert _validate(_reply(message="Quedan dos vueltas.")).valid
+
+
+def test_invented_number_invalidates() -> None:
+    result = _validate(_reply(message="Ganamos 3,9 s."))
+    assert not result.valid
+    assert ValidationIssue.UNKNOWN_NUMBER in result.errors
+
+
+def test_invented_word_number_invalidates() -> None:
+    result = _validate(_reply(message="Quedan cuatro vueltas."))
+    assert not result.valid
+    assert ValidationIssue.UNKNOWN_NUMBER in result.errors
+
+
+def test_changed_unit_invalidates() -> None:
+    result = _validate(_reply(message="Ganamos 2,4 kg."))
+    assert not result.valid
+    assert ValidationIssue.UNIT_MISMATCH in result.errors
+
+
+def test_rounding_at_limit_is_half_up() -> None:
+    context = _context(
+        alert={"facts": [["gain_s", 2.45]]},
+        situation={},
+        strategy={"gain_s": 2.45},
+        metrics={},
+    )
+    assert _validate(_reply(message="Ganamos 2,5 s.", used_facts=[]), context).valid
+    rejected = _validate(_reply(message="Ganamos 2,4 s.", used_facts=[]), context)
+    assert ValidationIssue.UNKNOWN_NUMBER in rejected.errors
+
+
+def test_priority_cannot_change() -> None:
+    result = _validate(_reply(priority="critical"))
+    assert not result.valid
+    assert ValidationIssue.PRIORITY_MISMATCH in result.errors
+
+
+def test_unknown_used_fact_invalidates() -> None:
+    result = _validate(_reply(used_facts=["gain_s", "invented"]))
+    assert not result.valid
+    assert ValidationIssue.UNKNOWN_FACT in result.errors
+
+
+def test_wrong_language_invalidates() -> None:
+    result = _validate(_reply(language="en"))
+    assert not result.valid
+    assert ValidationIssue.LANGUAGE_MISMATCH in result.errors
+
+
+def test_too_long_in_words_and_chars() -> None:
+    many_words = _reply(message=" ".join(["vueltas"] * 31))
+    assert ValidationIssue.TOO_LONG in _validate(many_words).errors
+    long_text = _reply(message="vuelta " * 40)
+    assert ValidationIssue.TOO_LONG in _validate(long_text).errors
+
+
+def test_markdown_newlines_and_emoji_are_rejected() -> None:
+    assert ValidationIssue.FORMAT_INVALID in _validate(_reply(message="**Box** ahora.")).errors
+    assert ValidationIssue.FORMAT_INVALID in _validate(_reply(message="Box\nahora.")).errors
+    assert ValidationIssue.FORMAT_INVALID in _validate(_reply(message="Box ahora 🏎️.")).errors
+
+
+def test_empty_message_invalidates() -> None:
+    result = _validate(_reply(message="   "))
+    assert not result.valid
+    assert ValidationIssue.EMPTY_MESSAGE in result.errors
+
+
+def test_imperative_phrase_rejected_with_high_uncertainty() -> None:
+    context = _context(uncertainties=("stale:tyres",))
+    result = _validate(_reply(message="Entra a boxes ahora."), context)
+    assert not result.valid
+    assert ValidationIssue.IMPERATIVE_PHRASE in result.errors
+    assert _validate(_reply(message="Box esta vuelta."), _context()).valid
+
+
+def test_repeated_recent_message_rejected() -> None:
+    context = _context(recent_messages=("Box esta vuelta: ganamos 2,4 s, con confianza 0,7.",))
+    result = _validate(_reply(), context)
+    assert not result.valid
+    assert ValidationIssue.REPEATED_MESSAGE in result.errors
+
+
+def test_invalid_json_and_schema_errors() -> None:
+    assert ValidationIssue.INVALID_JSON in _validate("no es json").errors
+    assert ValidationIssue.SCHEMA_MISMATCH in _validate(json.dumps({"message": "hola"})).errors
+    extra = json.loads(_reply())
+    extra["invented"] = True
+    assert ValidationIssue.SCHEMA_MISMATCH in _validate(json.dumps(extra)).errors
+
+
+def test_declined_non_critical_reply_is_valid_without_text_checks() -> None:
+    result = _validate(_reply(should_speak=False, message=""))
+    assert result.valid
+    assert result.reply is not None and not result.reply.should_speak
+
+
+def test_declined_critical_reply_is_ignored() -> None:
+    result = _validate(_reply(should_speak=False, message=""), priority="critical")
+    assert not result.valid
+    assert ValidationIssue.EMPTY_MESSAGE in result.errors
+    spoken = _validate(_reply(should_speak=False, priority="critical"), priority="critical")
+    assert spoken.valid
+    assert spoken.reply is not None and spoken.reply.should_speak
+
+
+def test_accepts_agent_config_directly() -> None:
+    from f1_strategist.config import AgentConfig
+
+    result = ResponseValidator(AgentConfig()).validate(_reply(), _context(), _alert())
+    assert result.valid
+
+
+@given(st.text(max_size=200))
+def test_arbitrary_text_never_raises(text: str) -> None:
+    result = ResponseValidator().validate(text, _context(), _alert())
+    assert isinstance(result, ValidationResult)
+    assert isinstance(result.valid, bool)
+
+
+@pytest.mark.parametrize("message", ["", "2,4 s", "Sin cifras nuevas.", "Quedan 2 vueltas."])
+def test_stable_for_short_texts(message: str) -> None:
+    first = _validate(_reply(message=message))
+    second = _validate(_reply(message=message))
+    assert first == second
