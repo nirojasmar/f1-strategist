@@ -5,6 +5,7 @@ description = "Ingeniero de carrera con IA para F1 25: telemetría UDP, estrateg
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "httpx>=0.27",
     "pydantic>=2.7",
     "rich>=13.7",
 ]

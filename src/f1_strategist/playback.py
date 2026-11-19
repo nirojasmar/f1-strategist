@@ -14,6 +14,7 @@ import time
 from collections.abc import Mapping
 from pathlib import Path
 
+from .agent.types import AgentSnapshot
 from .capture import CaptureReader
 from .config import EventsConfig, GateConfig, MetricsConfig, StrategyConfig
 from .events.engine import EventEngine
@@ -234,6 +235,10 @@ class PlaybackSession:
     def events_snapshot(self) -> EventsSnapshot:
         """Último estado publicado por el motor de eventos."""
         return self._event_engine.snapshot()
+
+    def agent_snapshot(self) -> AgentSnapshot:
+        """Stub de L1; el comunicador real llega en L7."""
+        return AgentSnapshot()
 
     # ------------------------------------------------------------------
     # Hilo de reproducción
