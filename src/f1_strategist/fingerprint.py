@@ -24,6 +24,7 @@ from .weekend_profile import WeekendProfile
 
 FINGERPRINT_SCHEMA_VERSION = 1
 GATE_FINGERPRINT_SCHEMA_VERSION = 1
+AGENT_FINGERPRINT_SCHEMA_VERSION = 1
 
 _IGNORED_KEYS = frozenset({"capture_path"})
 
@@ -107,18 +108,26 @@ def compute_gate_fingerprint(records: Iterable[object]) -> str:
     return accumulator.fingerprint
 
 
-class GateFingerprintAccumulator:
-    """Bounded-memory, order-independent accumulator for persisted gate records."""
+def compute_agent_fingerprint(records: Iterable[object]) -> str:
+    """Huella del agente, independiente de plataforma y del orden de mensajes."""
+    accumulator = AgentFingerprintAccumulator()
+    accumulator.add(records)
+    return accumulator.fingerprint
+
+
+class _RecordFingerprintAccumulator:
+    """Bounded-memory, order-independent accumulator for persisted records."""
 
     __slots__ = ("_count", "_xor", "_sum")
+    _schema_version = 1
 
     def __init__(self) -> None:
         self._count = 0
         self._xor = 0
         self._sum = 0
 
-    def copy(self) -> GateFingerprintAccumulator:
-        result = GateFingerprintAccumulator()
+    def copy(self) -> _RecordFingerprintAccumulator:
+        result = type(self)()
         result._count = self._count
         result._xor = self._xor
         result._sum = self._sum
@@ -135,12 +144,22 @@ class GateFingerprintAccumulator:
     @property
     def fingerprint(self) -> str:
         payload = {
-            "schema_version": GATE_FINGERPRINT_SCHEMA_VERSION,
+            "schema_version": self._schema_version,
             "count": self._count,
             "xor": f"{self._xor:064x}",
             "sum": f"{self._sum:064x}",
         }
         return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()
+
+
+class GateFingerprintAccumulator(_RecordFingerprintAccumulator):
+    __slots__ = ()
+    _schema_version = GATE_FINGERPRINT_SCHEMA_VERSION
+
+
+class AgentFingerprintAccumulator(_RecordFingerprintAccumulator):
+    __slots__ = ()
+    _schema_version = AGENT_FINGERPRINT_SCHEMA_VERSION
 
 
 def _gate_value(value: object) -> Any:

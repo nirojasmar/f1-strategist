@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from urllib.parse import urlsplit
 
 from rich.console import Console, Group, RenderableType
 from rich.live import Live
@@ -11,11 +12,19 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
+from .agent.types import AgentSnapshot, CallOutcome
 from .config import AppConfig
 from .console_messages import (
+    AGENT_COUNTERS_LABEL,
+    AGENT_LATENCY_LABEL,
+    AGENT_PANEL_TITLE,
+    AGENT_STATUS_LABEL,
     EVENTS_PANEL_TITLE,
     METRICS_PANEL_TITLE,
     STRATEGY_PANEL_TITLE,
+    render_agent_priority,
+    render_agent_source,
+    render_agent_status,
     render_diagnostic,
     render_event_message,
     render_metrics_rows,
@@ -206,6 +215,36 @@ def _render_events_summary(snapshot: EventsSnapshot) -> Panel:
     return Panel(table, title=EVENTS_PANEL_TITLE, expand=False)
 
 
+def _render_agent_summary(snapshot: AgentSnapshot, cfg: AppConfig) -> Panel:
+    table = Table.grid(padding=(0, 2))
+    table.add_column(style="bold")
+    table.add_column(overflow="fold")
+    health = snapshot.llm_status
+    status = "disabled" if not cfg.llm.enabled else health.status.value
+    host = None
+    if status == "unavailable":
+        endpoint = urlsplit(cfg.llm.endpoint)
+        host = endpoint.netloc
+    table.add_row(AGENT_STATUS_LABEL, render_agent_status(status, host))
+
+    if cfg.llm.enabled:
+        if snapshot.last_latency_s is not None:
+            table.add_row(AGENT_LATENCY_LABEL, f"{snapshot.last_latency_s:.3f} s")
+        counters = snapshot.counters
+        used = counters.get(CallOutcome.USED.value, 0)
+        fallback = counters.get(CallOutcome.FALLBACK.value, 0)
+        discarded = counters.get(CallOutcome.DISCARDED_OBSOLETE.value, 0)
+        table.add_row(AGENT_COUNTERS_LABEL, f"{used} / {fallback} / {discarded}")
+        for item in reversed(snapshot.messages[-5:]):
+            table.add_row(
+                f"{render_agent_priority(item.priority.value)} · "
+                f"V{item.lap if item.lap else '—'} · "
+                f"{render_agent_source(item.source.value)}",
+                Text(item.text),
+            )
+    return Panel(table, title=AGENT_PANEL_TITLE, expand=False)
+
+
 def format_bytes(nbytes: int) -> str:
     size = float(nbytes)
     for unit in ("B", "KB", "MB", "GB"):
@@ -278,6 +317,7 @@ def render(
         _render_metrics_summary(session.metrics_snapshot(), race, race_now),
         _render_strategy_summary(session.strategy_snapshot(), cfg, race),
         _render_events_summary(session.events_snapshot()),
+        _render_agent_summary(session.agent_snapshot(), cfg),
     ]
     if snap.packets_by_id:
         table = Table(title="Paquetes por tipo · huecos estimados", expand=False)

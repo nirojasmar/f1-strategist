@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import csv
+import io
 import json
 import os
 import select
@@ -12,7 +14,7 @@ import sys
 import time
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import replace
+from dataclasses import fields, is_dataclass, replace
 from pathlib import Path
 from typing import Any, Protocol, cast
 
@@ -23,10 +25,38 @@ from rich.table import Table
 from rich.text import Text
 
 from . import __version__
+from .agent.bench import diagnostic_config, report_json, run_benchmark, run_check
+from .agent.llm_client import OpenAICompatibleClient
+from .agent.types import CallOutcome, MessageSource
 from .capture import CaptureError
-from .config import AppConfig, ConfigError, MetricsConfig, apply_overrides, load_config
+from .config import AppConfig, ConfigError, LLMConfig, MetricsConfig, apply_overrides, load_config
 from .console import format_bytes, render, run_console
-from .console_messages import render_event_message, render_strategy_rows
+from .console_messages import (
+    AGENT_EMPTY_MESSAGES,
+    AGENT_EXPORT_OVERWRITES_CAPTURE,
+    AGENT_EXPORT_OVERWRITES_DB,
+    AGENT_EXPORT_SCHEMA_VERSION,
+    AGENT_EXPORT_WRITTEN,
+    AGENT_MESSAGES_COLUMNS,
+    AGENT_MESSAGES_TITLE,
+    AGENT_READER_API_ERROR,
+    AGENT_SCHEMA_ERROR,
+    AGENT_SUMMARY_CAUSE_COLUMN,
+    AGENT_SUMMARY_CODE_COLUMN,
+    AGENT_SUMMARY_FALLBACKS_TITLE,
+    AGENT_SUMMARY_LATENCY_TITLE,
+    AGENT_SUMMARY_PERCENTILE_COLUMN,
+    AGENT_SUMMARY_SECONDS_COLUMN,
+    AGENT_SUMMARY_SOURCE_COLUMN,
+    AGENT_SUMMARY_SOURCES_TITLE,
+    AGENT_SUMMARY_TITLE,
+    AGENT_SUMMARY_VALIDATION_TITLE,
+    AGENT_UNKNOWN_VALUE,
+    render_agent_priority,
+    render_agent_source,
+    render_event_message,
+    render_strategy_rows,
+)
 from .datasets import DEFAULT_MANIFEST, Manifest, Scenario, load_manifest, verify_scenario
 from .events.engine import EventEngine, EventEvaluation
 from .events.types import (
@@ -57,7 +87,6 @@ from .store.queries import (
     session_events,
     session_laps,
 )
-from .store.schema import SCHEMA_VERSION
 from .strategy.engine import StrategyEngine, evaluate_once
 from .strategy.export import STRATEGY_EXPORT_FORMATS, render_strategy_export
 from .strategy.review import review_strategy_evaluations
@@ -109,6 +138,16 @@ def _positive_int(value: str) -> int:
         raise argparse.ArgumentTypeError("se esperaba un entero") from exc
     if number < 1:
         raise argparse.ArgumentTypeError("el valor debe ser mayor o igual que 1")
+    return number
+
+
+def _non_negative_int(value: str) -> int:
+    try:
+        number = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("se esperaba un entero") from exc
+    if number < 0:
+        raise argparse.ArgumentTypeError("el valor debe ser mayor o igual que 0")
     return number
 
 
@@ -450,9 +489,48 @@ def _build_parser() -> argparse.ArgumentParser:
     events_simulate.add_argument("--to-lap", type=_positive_int, metavar="B")
     events_simulate.add_argument("--config", type=Path, help="archivo TOML de configuración")
 
-    # Los subcomandos se añaden en L9 y L10; el grupo existe desde L1.
-    sub.add_parser("agent", help="panel y comandos del agente de radio")
-    sub.add_parser("llm", help="diagnóstico y medición del LLM")
+    agent = sub.add_parser("agent", help="panel y comandos del agente de radio")
+    agent_sub = agent.add_subparsers(dest="agent_command", required=True)
+    agent_show = agent_sub.add_parser("show", help="muestra mensajes de radio guardados")
+    agent_show.add_argument("--session", type=_positive_int, required=True, metavar="ID")
+    agent_show.add_argument(
+        "--source",
+        choices=tuple(source.value for source in MessageSource),
+        help="filtra por origen (llm o template)",
+    )
+    agent_show.add_argument(
+        "--outcome",
+        choices=tuple(outcome.value for outcome in CallOutcome),
+        help="filtra por resultado de la llamada",
+    )
+    agent_show.add_argument("--db", type=Path, help="base SQLite (por defecto, configuración)")
+
+    agent_summary = agent_sub.add_parser("summary", help="resume mensajes y llamadas guardados")
+    agent_summary.add_argument("--session", type=_positive_int, required=True, metavar="ID")
+    agent_summary.add_argument("--db", type=Path, help="base SQLite (por defecto, configuración)")
+
+    agent_export = agent_sub.add_parser("export", help="exporta mensajes y llamadas guardados")
+    agent_export.add_argument("--session", type=_positive_int, required=True, metavar="ID")
+    agent_export.add_argument(
+        "--format", choices=("json", "jsonl", "csv"), default="json", help="formato de salida"
+    )
+    agent_export.add_argument("--out", type=Path, help="archivo de salida (por defecto, stdout)")
+    agent_export.add_argument("--db", type=Path, help="base SQLite (por defecto, configuración)")
+
+    llm = sub.add_parser("llm", help="diagnóstico y medición del LLM")
+    llm_sub = llm.add_subparsers(dest="llm_command", required=True)
+    llm_check = llm_sub.add_parser("check", help="comprueba las capacidades del endpoint")
+    llm_check.add_argument("--config", type=Path, help="archivo TOML de configuración")
+    llm_check.add_argument("--endpoint", help="URL base compatible con OpenAI")
+    llm_check.add_argument("--model", help="identificador del modelo")
+    llm_bench = llm_sub.add_parser("bench", help="mide latencia y respuestas")
+    llm_bench.add_argument("--runs", type=_positive_int, default=10, metavar="N")
+    llm_bench.add_argument("--warmup", type=_non_negative_int, default=1, metavar="K")
+    llm_bench.add_argument("--json", type=Path, metavar="ARCHIVO")
+    llm_bench.add_argument("--note", help="etiqueta para las condiciones de la medición")
+    llm_bench.add_argument("--config", type=Path, help="archivo TOML de configuración")
+    llm_bench.add_argument("--endpoint", help="URL base compatible con OpenAI")
+    llm_bench.add_argument("--model", help="identificador del modelo")
     return parser
 
 
@@ -1683,10 +1761,10 @@ def _event_session_rows(
     reader = cast(_EventSessionReader, store)
     version_row = reader.connection.execute("PRAGMA user_version").fetchone()
     schema_version = 0 if version_row is None else int(version_row[0])
-    if schema_version < SCHEMA_VERSION:
+    if schema_version < _EVENTS_SCHEMA_VERSION:
         raise StoreError(
             "El historial de eventos requiere esquema "
-            f"v{SCHEMA_VERSION}; la base actual es v{schema_version}."
+            f"v{_EVENTS_SCHEMA_VERSION}; la base actual es v{schema_version}."
         )
     try:
         return (
@@ -1949,6 +2027,308 @@ def _cmd_pending_group(args: argparse.Namespace, console: Console, err: Console)
     return 2
 
 
+class _AgentSessionReader(Protocol):
+    connection: sqlite3.Connection
+
+    def iter_llm_calls(self, session_id: int) -> Iterable[object]: ...
+
+    def iter_agent_messages(self, session_id: int) -> Iterable[object]: ...
+
+
+_AGENT_SCHEMA_VERSION = 9
+_EVENTS_SCHEMA_VERSION = 8
+_MISSING = object()
+
+
+def _agent_session_rows(
+    store: SessionStore, session_id: int
+) -> tuple[tuple[object, ...], tuple[object, ...]]:
+    require_session(store, session_id)
+    reader = cast(_AgentSessionReader, store)
+    try:
+        version_row = reader.connection.execute("PRAGMA user_version").fetchone()
+        schema_version = 0 if version_row is None else int(version_row[0])
+        if schema_version < _AGENT_SCHEMA_VERSION:
+            raise StoreError(
+                AGENT_SCHEMA_ERROR.format(required=_AGENT_SCHEMA_VERSION, actual=schema_version)
+            )
+        return (
+            tuple(reader.iter_llm_calls(session_id)),
+            tuple(reader.iter_agent_messages(session_id)),
+        )
+    except AttributeError as exc:
+        raise StoreError(AGENT_READER_API_ERROR) from exc
+
+
+def _agent_field(row: object, *names: str, default: object = None) -> object:
+    for name in names:
+        if isinstance(row, Mapping):
+            if name in row:
+                return row[name]
+        else:
+            value = getattr(row, name, _MISSING)
+            if value is not _MISSING:
+                return value
+    return default
+
+
+def _agent_value_text(value: object, default: str = "—") -> str:
+    if value is None:
+        return default
+    enum_value = getattr(value, "value", _MISSING)
+    return str(value if enum_value is _MISSING else enum_value)
+
+
+def _agent_call_id(call: object) -> str | None:
+    value = _agent_field(call, "llm_call_id", "call_id", "id")
+    if value is not None:
+        return str(value)
+    alert_id = _agent_field(call, "alert_id")
+    if alert_id is not None:
+        return f"{alert_id}:llm"
+    seq = _agent_field(call, "seq")
+    return None if seq is None else str(seq)
+
+
+def _agent_show(
+    session_id: int,
+    calls: tuple[object, ...],
+    messages: tuple[object, ...],
+    source: str | None,
+    outcome: str | None,
+    console: Console,
+) -> int:
+    outcomes_by_call = {
+        call_id: _agent_value_text(_agent_field(call, "outcome", "result"))
+        for call in calls
+        if (call_id := _agent_call_id(call)) is not None
+    }
+    table = Table(title=f"{AGENT_MESSAGES_TITLE} · sesión {session_id}", expand=False)
+    for column in AGENT_MESSAGES_COLUMNS:
+        table.add_column(column, overflow="fold")
+    shown = 0
+    for message in messages:
+        message_source = _agent_value_text(_agent_field(message, "source", "origin"), "")
+        if source is not None and message_source != source:
+            continue
+        call_id = _agent_field(message, "llm_call_id")
+        if outcome is not None and (
+            call_id is None or outcomes_by_call.get(str(call_id)) != outcome
+        ):
+            continue
+        priority = _agent_value_text(_agent_field(message, "priority"), "")
+        lap = _agent_field(message, "lap")
+        emitted_at = _agent_field(message, "t_sim_s", "emitted_at")
+        text = _agent_field(message, "text", "message")
+        table.add_row(
+            _agent_value_text(emitted_at),
+            render_agent_priority(priority),
+            _agent_value_text(lap),
+            render_agent_source(message_source),
+            Text("" if text is None else str(text)),
+        )
+        shown += 1
+    if not shown:
+        console.print(AGENT_EMPTY_MESSAGES.format(session_id=session_id))
+    else:
+        console.print(table)
+    return 0
+
+
+def _agent_summary(
+    session_id: int, calls: tuple[object, ...], messages: tuple[object, ...], console: Console
+) -> int:
+    console.print(AGENT_SUMMARY_TITLE.format(session_id=session_id))
+    sources = Counter(
+        render_agent_source(
+            _agent_value_text(_agent_field(message, "source", "origin"), AGENT_UNKNOWN_VALUE)
+        )
+        for message in messages
+    )
+    _print_counter_table(console, AGENT_SUMMARY_SOURCES_TITLE, AGENT_SUMMARY_SOURCE_COLUMN, sources)
+    fallbacks = Counter(
+        _agent_value_text(_agent_field(call, "fallback_reason", "reason"), AGENT_UNKNOWN_VALUE)
+        for call in calls
+        if _agent_value_text(_agent_field(call, "outcome", "result")) == CallOutcome.FALLBACK.value
+        and _agent_field(call, "fallback_reason", "reason") is not None
+    )
+    _print_counter_table(
+        console, AGENT_SUMMARY_FALLBACKS_TITLE, AGENT_SUMMARY_CAUSE_COLUMN, fallbacks
+    )
+    validation_errors = Counter(code for call in calls for code in _agent_validation_codes(call))
+    _print_counter_table(
+        console, AGENT_SUMMARY_VALIDATION_TITLE, AGENT_SUMMARY_CODE_COLUMN, validation_errors
+    )
+
+    latencies = sorted(
+        value
+        for call in calls
+        if isinstance(value := _agent_field(call, "total_s", "latency_s"), (int, float))
+        and not isinstance(value, bool)
+    )
+    latency_table = Table(title=AGENT_SUMMARY_LATENCY_TITLE, expand=False)
+    latency_table.add_column(AGENT_SUMMARY_PERCENTILE_COLUMN)
+    latency_table.add_column(AGENT_SUMMARY_SECONDS_COLUMN, justify="right")
+    if latencies:
+        latency_table.add_row("p50", f"{_percentile(latencies, 0.50):.3f}")
+        latency_table.add_row("p95", f"{_percentile(latencies, 0.95):.3f}")
+    else:
+        latency_table.add_row("p50 / p95", "—")
+    console.print(latency_table)
+    return 0
+
+
+def _agent_validation_codes(call: object) -> tuple[str, ...]:
+    value = _agent_field(
+        call,
+        "validation_errors",
+        "validation_errors_json",
+        "validation_codes",
+        "validation_json",
+        "errors",
+    )
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            return (value,)
+    if isinstance(value, Mapping):
+        value = _agent_field(value, "errors", "codes", default=())
+    if isinstance(value, str):
+        return (value,)
+    if isinstance(value, Iterable):
+        return tuple(_agent_value_text(item, "") for item in value)
+    return ()
+
+
+def _percentile(values: Sequence[int | float], fraction: float) -> float:
+    position = (len(values) - 1) * fraction
+    lower = int(position)
+    upper = min(lower + 1, len(values) - 1)
+    return float(values[lower]) + (float(values[upper]) - float(values[lower])) * (position - lower)
+
+
+def _agent_row_dict(row: object) -> dict[str, object]:
+    if isinstance(row, Mapping):
+        return _redact_agent_row(cast(Mapping[str, object], row))
+    to_dict = getattr(row, "to_dict", None)
+    if callable(to_dict):
+        result = to_dict()
+        if isinstance(result, Mapping):
+            return _redact_agent_row(cast(Mapping[str, object], result))
+    if is_dataclass(row) and not isinstance(row, type):
+        values = {field.name: getattr(row, field.name) for field in fields(row)}
+        return _redact_agent_row(values)
+    raise ValueError(f"Tipo de fila de agente no exportable: {type(row).__name__}")
+
+
+def _redact_agent_row(values: Mapping[str, object]) -> dict[str, object]:
+    forbidden = {"api_key", "authorization", "headers"}
+    return {
+        key: _redact_agent_value(value)
+        for key, value in values.items()
+        if key.lower() not in forbidden
+    }
+
+
+def _redact_agent_value(value: object) -> object:
+    if isinstance(value, Mapping):
+        return _redact_agent_row(cast(Mapping[str, object], value))
+    if isinstance(value, (list, tuple)):
+        return [_redact_agent_value(item) for item in value]
+    if is_dataclass(value) and not isinstance(value, type):
+        return _agent_row_dict(value)
+    return value
+
+
+def _agent_json_default(value: object) -> object:
+    if isinstance(value, Mapping):
+        return dict(value)
+    if isinstance(value, (set, frozenset)):
+        return sorted(value)
+    enum_value = getattr(value, "value", _MISSING)
+    if enum_value is not _MISSING:
+        return enum_value
+    if is_dataclass(value) and not isinstance(value, type):
+        return _agent_row_dict(value)
+    return str(value)
+
+
+def _render_agent_export(
+    session_id: int, calls: tuple[object, ...], messages: tuple[object, ...], export_format: str
+) -> str:
+    records = [{"record_type": "llm_call", **_agent_row_dict(call)} for call in calls] + [
+        {"record_type": "agent_message", **_agent_row_dict(message)} for message in messages
+    ]
+    if export_format == "json":
+        payload = {
+            "schema_version": AGENT_EXPORT_SCHEMA_VERSION,
+            "session_id": session_id,
+            "llm_calls": [_agent_row_dict(call) for call in calls],
+            "agent_messages": [_agent_row_dict(message) for message in messages],
+        }
+        return (
+            json.dumps(
+                payload, ensure_ascii=False, indent=2, sort_keys=True, default=_agent_json_default
+            )
+            + "\n"
+        )
+    if export_format == "jsonl":
+        return "".join(
+            json.dumps(row, ensure_ascii=False, sort_keys=True, default=_agent_json_default) + "\n"
+            for row in records
+        )
+    fieldnames = [
+        "record_type",
+        *sorted({key for row in records for key in row if key != "record_type"}),
+    ]
+    output = io.StringIO(newline="")
+    writer = csv.DictWriter(output, fieldnames=fieldnames, lineterminator="\n")
+    writer.writeheader()
+    for row in records:
+        writer.writerow(
+            {
+                key: (
+                    json.dumps(value, ensure_ascii=False, default=_agent_json_default)
+                    if isinstance(value, (dict, list, tuple, set, frozenset))
+                    else ""
+                    if value is None
+                    else str(value)
+                )
+                for key, value in row.items()
+            }
+        )
+    return output.getvalue()
+
+
+def _cmd_agent(args: argparse.Namespace, console: Console) -> int:
+    db = _sessions_database(args)
+    with SessionStore.open(db, readonly=True) as store:
+        session = require_session(store, args.session)
+        calls, messages = _agent_session_rows(store, args.session)
+    if args.agent_command == "show":
+        return _agent_show(args.session, calls, messages, args.source, args.outcome, console)
+    if args.agent_command == "summary":
+        return _agent_summary(args.session, calls, messages, console)
+    if args.out is not None:
+        if _same_file(args.out, db):
+            raise ValueError(AGENT_EXPORT_OVERWRITES_DB)
+        capture_path = getattr(session, "capture_path", None)
+        if capture_path is not None and _same_file(args.out, Path(capture_path)):
+            raise ValueError(AGENT_EXPORT_OVERWRITES_CAPTURE)
+    output = _render_agent_export(args.session, calls, messages, args.format)
+    if args.out is None:
+        _write_stdout(output)
+    else:
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        with args.out.open("w", encoding="utf-8", newline="") as handle:
+            handle.write(output)
+        console.print(AGENT_EXPORT_WRITTEN.format(session_id=args.session, path=args.out))
+    return 0
+
+
 def _cmd_events(args: argparse.Namespace, console: Console, err: Console) -> int:
     if args.events_command is None:
         return 0
@@ -1957,6 +2337,33 @@ def _cmd_events(args: argparse.Namespace, console: Console, err: Console) -> int
     if args.events_command == "summary":
         return _cmd_events_summary(args, console)
     return _cmd_events_simulate(args, console, err)
+
+
+def _cmd_llm(args: argparse.Namespace, console: Console) -> int:
+    json_path: Path | None = getattr(args, "json", None)
+    if json_path is not None and args.config is not None and _same_file(json_path, args.config):
+        raise ValueError("El informe no puede sobrescribir la configuración.")
+    base_config: LLMConfig = load_config(args.config).llm
+    config = diagnostic_config(base_config, endpoint=args.endpoint, model=args.model)
+    client = OpenAICompatibleClient(config)
+    if args.llm_command == "check":
+        report = run_check(client, config)
+        console.print(report_json(report), markup=False, end="")
+        return 0 if report["ok"] else 1
+
+    report = run_benchmark(
+        client,
+        config,
+        runs=args.runs,
+        warmup=args.warmup,
+        note=args.note,
+    )
+    output = report_json(report)
+    if json_path is not None:
+        with json_path.open("w", encoding="utf-8", newline="") as handle:
+            handle.write(output)
+    console.print(output, markup=False, end="")
+    return 0
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -1978,8 +2385,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         "weekend": _cmd_weekend,
         "strategy": _cmd_strategy,
         "events": _cmd_events,
-        "agent": _cmd_pending_group,
-        "llm": _cmd_pending_group,
+        "agent": lambda args, console, _err: _cmd_agent(args, console),
+        "llm": lambda args, console, _err: _cmd_llm(args, console),
     }
     try:
         return handlers[args.command](args, console, err)

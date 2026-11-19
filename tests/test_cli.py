@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import csv
+import json
 import socket
 import sqlite3
 import struct
@@ -7,11 +9,14 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from pydantic import SecretStr
 
 import f1_strategist.cli as cli_module
+from f1_strategist.agent.llm_client import FakeLLMClient
+from f1_strategist.agent.types import LLMResponse
 from f1_strategist.capture import CapturedPacket, CaptureWriter
 from f1_strategist.cli import main
-from f1_strategist.config import AppConfig, EventsConfig
+from f1_strategist.config import AppConfig, EventsConfig, LLMConfig
 from f1_strategist.events.engine import EventEvaluation
 from f1_strategist.events.types import (
     ConditionPolicy,
@@ -49,6 +54,51 @@ def test_run_with_port_in_use_exits_with_error(capsys: pytest.CaptureFixture[str
         port = blocker.getsockname()[1]
         assert main(["run", "--port", str(port), "--no-capture"]) == 2
     assert "No se pudo abrir UDP" in capsys.readouterr().err
+
+
+def test_llm_bench_writes_only_the_requested_json_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    secret = "never-print-this-key"
+    config = AppConfig(llm=LLMConfig(model="test-model", api_key=SecretStr(secret)))
+    client = FakeLLMClient(
+        [
+            LLMResponse(
+                text=(
+                    '{"should_speak":true,"priority":"critical","language":"es",'
+                    '"message":"OK","reason":"","used_facts":[]}'
+                ),
+                ttft_s=0.1,
+                total_s=0.5,
+                completion_tokens=5,
+            ),
+            LLMResponse(
+                text=(
+                    '{"should_speak":true,"priority":"strategic","language":"es",'
+                    '"message":"OK","reason":"","used_facts":[]}'
+                ),
+                ttft_s=0.2,
+                total_s=0.6,
+                completion_tokens=6,
+            ),
+        ]
+    )
+    monkeypatch.setattr(cli_module, "load_config", lambda _path: config)
+    monkeypatch.setattr(cli_module, "OpenAICompatibleClient", lambda _config: client)
+    output_path = tmp_path / "bench.json"
+
+    assert main(["llm", "bench", "--runs", "1", "--warmup", "0", "--json", str(output_path)]) == 0
+
+    output = capsys.readouterr().out
+    assert output_path.read_text(encoding="utf-8") == output
+    assert json.loads(output)["metrics"]["valid_response_rate"] == 1.0
+    assert secret not in output
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["bench.json"]
+
+
+def test_llm_check_requires_a_configured_model(capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["llm", "check"]) == 2
+    assert "--model" in capsys.readouterr().err
 
 
 def test_inspect_prints_summary(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -95,7 +145,7 @@ def test_events_summary_reads_rows_and_reports_suppression(
     class Store:
         def __enter__(self) -> Store:
             self.connection = sqlite3.connect(":memory:")
-            self.connection.execute("PRAGMA user_version = 8")
+            self.connection.execute("PRAGMA user_version = 9")
             return self
 
         def __exit__(self, *_: object) -> None:
@@ -119,19 +169,24 @@ def test_events_summary_reads_rows_and_reports_suppression(
     assert "fuel_margin" in output
 
 
-def test_events_commands_reject_v7_without_event_history(
+def test_events_commands_accept_v8_and_reject_v7(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    path = tmp_path / "v7.db"
+    path = tmp_path / "v8.db"
     with SessionStore.open(path) as store:
         session_id = store.create_session(
             SessionInfo(session_uid=0xE17, source="live", started_at_utc="2026-11-05T10:00:00Z")
         )
     with sqlite3.connect(path) as connection:
-        connection.execute("DROP TABLE gate_decisions")
-        connection.execute("DROP TABLE detected_events")
-        connection.execute("PRAGMA user_version = 7")
+        connection.execute("DROP TABLE agent_messages")
+        connection.execute("DROP TABLE llm_calls")
+        connection.execute("PRAGMA user_version = 8")
 
+    assert main(["events", "show", "--session", str(session_id), "--db", str(path)]) == 0
+    capsys.readouterr()
+
+    with sqlite3.connect(path) as connection:
+        connection.execute("PRAGMA user_version = 7")
     assert main(["events", "show", "--session", str(session_id), "--db", str(path)]) == 2
     assert "requiere esquema v8" in capsys.readouterr().err
 
@@ -151,6 +206,173 @@ def test_events_commands_report_missing_session(
 
     monkeypatch.setattr(cli_module.SessionStore, "open", lambda *_args, **_kwargs: Store())
     assert main(["events", "show", "--session", "404", "--db", "unused.sqlite"]) == 2
+    assert "No existe la sesión 404" in capsys.readouterr().err
+
+
+def _install_agent_store(
+    monkeypatch: pytest.MonkeyPatch,
+    calls: tuple[object, ...],
+    messages: tuple[object, ...],
+    *,
+    session_exists: bool = True,
+) -> list[bool]:
+    opened_readonly: list[bool] = []
+
+    class Store:
+        def __enter__(self) -> Store:
+            self.connection = sqlite3.connect(":memory:")
+            self.connection.execute("PRAGMA user_version = 9")
+            return self
+
+        def __exit__(self, *_: object) -> None:
+            self.connection.close()
+            return None
+
+        def get_session(self, session_id: int) -> object | None:
+            return object() if session_exists else None
+
+        def iter_llm_calls(self, session_id: int) -> tuple[object, ...]:
+            return calls
+
+        def iter_agent_messages(self, session_id: int) -> tuple[object, ...]:
+            return messages
+
+    def open_store(*_args: object, **kwargs: object) -> Store:
+        opened_readonly.append(kwargs.get("readonly") is True)
+        return Store()
+
+    monkeypatch.setattr(cli_module.SessionStore, "open", open_store)
+    return opened_readonly
+
+
+def _agent_rows() -> tuple[tuple[object, ...], tuple[object, ...]]:
+    calls = (
+        {
+            "call_id": "call-1",
+            "outcome": "fallback",
+            "fallback_reason": "timeout",
+            "validation_errors": '["number_mismatch"]',
+            "total_s": 1.0,
+            "context_json": '{"facts":{"gain_s":2}}',
+            "api_key": "do-not-export-this",
+        },
+        {
+            "call_id": "call-2",
+            "outcome": "used",
+            "fallback_reason": None,
+            "validation_errors": "[]",
+            "total_s": 3.0,
+            "context_json": None,
+        },
+    )
+    messages = (
+        {
+            "llm_call_id": "call-1",
+            "source": "template",
+            "priority": "strategic",
+            "lap": 5,
+            "t_sim_s": 12.0,
+            "text": "Respaldo de prueba",
+        },
+        {
+            "llm_call_id": "call-2",
+            "source": "llm",
+            "priority": "informational",
+            "lap": 6,
+            "t_sim_s": 18.0,
+            "text": "Mensaje generado",
+        },
+    )
+    return calls, messages
+
+
+def test_agent_show_filters_source_and_outcome(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    calls, messages = _agent_rows()
+    opened_readonly = _install_agent_store(monkeypatch, calls, messages)
+
+    assert (
+        main(
+            [
+                "agent",
+                "show",
+                "--session",
+                "7",
+                "--source",
+                "template",
+                "--outcome",
+                "fallback",
+                "--db",
+                "unused.sqlite",
+            ]
+        )
+        == 0
+    )
+    output = capsys.readouterr().out
+    assert "Respaldo de prueba" in output
+    assert "Mensaje generado" not in output
+    assert opened_readonly == [True]
+
+
+def test_agent_summary_reports_counts_validation_errors_and_percentiles(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    calls, messages = _agent_rows()
+    _install_agent_store(monkeypatch, calls, messages)
+
+    assert main(["agent", "summary", "--session", "7", "--db", "unused.sqlite"]) == 0
+    output = capsys.readouterr().out
+    assert "timeout" in output
+    assert "number_mismatch" in output
+    assert "p50" in output and "2.000" in output
+    assert "p95" in output and "2.900" in output
+    assert "plantilla" in output and "LLM" in output
+
+
+@pytest.mark.parametrize("export_format", ("json", "jsonl", "csv"))
+def test_agent_export_formats_include_context_and_omit_secrets(
+    export_format: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls, messages = _agent_rows()
+    _install_agent_store(monkeypatch, calls, messages)
+    output_path = tmp_path / f"radio.{export_format}"
+
+    assert (
+        main(
+            [
+                "agent",
+                "export",
+                "--session",
+                "7",
+                "--format",
+                export_format,
+                "--out",
+                str(output_path),
+                "--db",
+                "unused.sqlite",
+            ]
+        )
+        == 0
+    )
+    content = output_path.read_text(encoding="utf-8")
+    assert "gain_s" in content
+    assert "Respaldo de prueba" in content
+    assert "do-not-export-this" not in content
+    if export_format == "json":
+        assert json.loads(content)["session_id"] == 7
+    elif export_format == "jsonl":
+        assert len(content.splitlines()) == 4
+    else:
+        assert len(list(csv.reader(content.splitlines()))) == 5
+
+
+def test_agent_commands_report_missing_session(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _install_agent_store(monkeypatch, (), (), session_exists=False)
+
+    assert main(["agent", "show", "--session", "404", "--db", "unused.sqlite"]) == 2
     assert "No existe la sesión 404" in capsys.readouterr().err
 
 
@@ -494,3 +716,13 @@ def test_events_simulate_includes_decisions_from_the_deferred_queue() -> None:
     assert deferred_row[2] == "data_stale"
     assert deferred_row[4] == collector.timeline[0][4]
     assert deferred_row[5:] == ("defer", "deferred")
+
+
+def test_agent_call_id_falls_back_to_alert_id() -> None:
+    from f1_strategist.cli import _agent_call_id
+    from f1_strategist.store import StoredLLMCall
+
+    call = StoredLLMCall(
+        seq=7, t_sim_s=1.0, kind="alert", model="model", outcome="used", alert_id="a1"
+    )
+    assert _agent_call_id(call) == "a1:llm"

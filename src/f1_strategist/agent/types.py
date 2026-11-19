@@ -215,6 +215,13 @@ class LLMReply(BaseModel):
         return cls.model_validate_json(text)
 
 
+def wire_reply_schema() -> dict[str, Any]:
+    """Esquema estricto de la respuesta: todos los campos son obligatorios."""
+    schema = LLMReply.model_json_schema()
+    schema["required"] = list(LLMReply.model_fields)
+    return schema
+
+
 @dataclass(frozen=True, slots=True)
 class LLMMessage:
     """Mensaje con formato OpenAI (rol y contenido)."""
@@ -341,6 +348,35 @@ class LLMResponse:
     @classmethod
     def from_json(cls, text: str) -> LLMResponse:
         return cls.from_dict(_loads(text))
+
+
+@dataclass(frozen=True, slots=True)
+class LLMCallRecord:
+    """Resultado de una llamada al LLM, tal como llega al grabador.
+
+    El grabador añade ``seq`` y el instante simulado; el resto son datos ya
+    interpretados. Nunca incluye la clave de API ni cabeceras HTTP.
+    """
+
+    kind: str
+    model: str
+    outcome: str
+    alert_id: str | None = None
+    endpoint_host: str | None = None
+    prompt_version: str | None = None
+    parameters_json: str | None = None
+    context_hash: str | None = None
+    context_json: str | None = None
+    response_text: str | None = None
+    reply_json: str | None = None
+    validation_valid: bool | None = None
+    validation_errors: tuple[str, ...] = ()
+    fallback_reason: str | None = None
+    error: str | None = None
+    ttft_s: float | None = None
+    total_s: float | None = None
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

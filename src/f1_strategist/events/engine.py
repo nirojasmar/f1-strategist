@@ -298,7 +298,9 @@ class EventEngine:
         self._last_lap = current_lap
         self._mark_state_events_seen(state.events)
         self._error = None
-        self._snapshot = EventsSnapshot(muted=self._gate_config.muted)
+        self._snapshot = EventsSnapshot(
+            muted=self._gate_config.muted, reset_seq=self._gate.reset_seq
+        )
 
     def _reset_rules(self) -> None:
         if self._provided_rules is not None:
@@ -322,7 +324,11 @@ class EventEngine:
 
     def _publish(self) -> None:
         if not self._gate_config.enabled:
-            self._snapshot = EventsSnapshot(muted=self._gate_config.muted, error=self._error)
+            self._snapshot = EventsSnapshot(
+                muted=self._gate_config.muted,
+                error=self._error,
+                reset_seq=self._gate.reset_seq,
+            )
             return
         current = self._gate.snapshot()
         self._snapshot = EventsSnapshot(
@@ -331,6 +337,7 @@ class EventEngine:
             counters=current.counters,
             muted=current.muted,
             error=self._error,
+            reset_seq=current.reset_seq,
         )
 
 

@@ -1,0 +1,9 @@
+## Tarea
+El piloto hace una pregunta por radio. Respóndela usando solo el contexto disponible.
+
+Reglas:
+- Contesta en una o dos frases, con las cifras del contexto y su mismo redondeo.
+- Si el contexto no basta para responder, dilo con claridad y no rellenes con estimaciones.
+- No des órdenes nuevas: si la pregunta pide una decisión, recuerda la recomendación que ya está en el contexto.
+- No repitas literalmente ninguno de los mensajes recientes.
+- Responde siempre con should_speak=true salvo que no haya ningún dato en el contexto.

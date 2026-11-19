@@ -383,6 +383,7 @@ class EventsSnapshot:
     counters: Mapping[str, int] = field(default_factory=dict)
     muted: bool = False
     error: str | None = None
+    reset_seq: int = 0
 
     def __post_init__(self) -> None:
         alerts = tuple(sorted(self.alerts, key=lambda alert: (alert.emitted_at, alert.alert_id)))
@@ -393,6 +394,8 @@ class EventsSnapshot:
             if type(value) is not int or value < 0:
                 raise ValueError("Los contadores deben ser enteros no negativos")
             counters[key] = value
+        if type(self.reset_seq) is not int or self.reset_seq < 0:
+            raise ValueError("reset_seq debe ser un entero no negativo")
         object.__setattr__(self, "alerts", alerts)
         object.__setattr__(self, "active_events", active)
         object.__setattr__(self, "counters", MappingProxyType(dict(sorted(counters.items()))))
