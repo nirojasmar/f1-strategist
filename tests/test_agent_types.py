@@ -22,7 +22,6 @@ from f1_strategist.agent.types import (
     ValidationResult,
 )
 from f1_strategist.capture import CaptureWriter
-from f1_strategist.cli import main
 from f1_strategist.config import AppConfig, CaptureConfig, TelemetryConfig
 from f1_strategist.events.types import EventPriority
 from f1_strategist.playback import PlaybackSession
@@ -184,8 +183,8 @@ def test_playback_session_agent_snapshot_stub_is_disabled(tmp_path: Path) -> Non
     assert snapshot.llm_status.status is LLMStatus.DISABLED
 
 
-def test_cli_registers_agent_commands_and_keeps_llm_group_pending() -> None:
+def test_cli_registers_agent_and_llm_commands() -> None:
     parser = cli_module._build_parser()
     assert parser.parse_args(["agent", "show", "--session", "7"]).agent_command == "show"
-    assert parser.parse_args(["llm"]).command == "llm"
-    assert main(["llm"]) == 2
+    assert parser.parse_args(["llm", "check"]).llm_command == "check"
+    assert parser.parse_args(["llm", "bench"]).llm_command == "bench"
