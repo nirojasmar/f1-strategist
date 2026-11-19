@@ -197,6 +197,7 @@ class _BlockingStore(_FakeStore):
         self.transaction_entered = threading.Event()
         self.release_transaction = threading.Event()
         self.detected_event_batch_written = threading.Event()
+        self.agent_messages_written = threading.Event()
 
     @contextmanager
     def transaction(self) -> Iterator[object]:
@@ -208,6 +209,10 @@ class _BlockingStore(_FakeStore):
     def add_detected_events(self, session_id: int, events: Iterable[StoredDetectedEvent]) -> None:
         super().add_detected_events(session_id, events)
         self.detected_event_batch_written.set()
+
+    def add_agent_messages(self, session_id: int, messages: Iterable[StoredAgentMessage]) -> None:
+        super().add_agent_messages(session_id, messages)
+        self.agent_messages_written.set()
 
 
 def _cars() -> tuple[ScenarioCar, ScenarioCar]:
@@ -648,7 +653,7 @@ def test_record_agent_drops_without_advancing_sequences_when_queue_is_full() -> 
         assert recorder.dropped_batches > 0
         assert recorder.incomplete
         store.release_transaction.set()
-        _wait_until(lambda: bool(store.agent_messages))
+        assert store.agent_messages_written.wait(timeout=3.0)
         recorder.record_agent((calls[2],), (_agent_message("m3"),), 3.0)
     finally:
         store.release_transaction.set()

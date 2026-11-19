@@ -18,7 +18,7 @@ from typing import Any, Literal, Protocol
 from urllib.parse import urlsplit
 
 from ..config import AgentConfig, LLMConfig
-from ..events.types import AgentAlert, EventPriority, EventsSnapshot, Fact
+from ..events.types import AgentAlert, EventPhase, EventPriority, EventsSnapshot, Fact
 from ..metrics.engine import MetricsSnapshot
 from ..race_state import RaceStateSnapshot
 from ..strategy.types import StrategySnapshot
@@ -41,6 +41,7 @@ from .types import (
     LLMStatus,
     MessageSource,
     ValidationResult,
+    wire_reply_schema,
 )
 from .validator import ResponseValidator as DefaultResponseValidator
 
@@ -130,6 +131,7 @@ class _Pending:
     sources: AlertSources
     context: ContextPayload
     cancel: threading.Event
+    epoch: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -185,6 +187,8 @@ class AgentCommunicator:
         self._superseded: set[str] = set()
         self._ever_active: set[str] = set()
         self._closed_events: set[str] = set()
+        self._epoch = 0
+        self._reset_seq: int | None = None
         self._health = self._initial_health()
         self._last_health_check: float | None = None
         self._thread: threading.Thread | None = None
@@ -209,8 +213,7 @@ class AgentCommunicator:
             self._thread = threading.Thread(
                 target=self._run, name="agent-communicator", daemon=True
             )
-            thread = self._thread
-        thread.start()
+            self._thread.start()
 
     def stop(self) -> None:
         """Detiene el hilo; las alertas pendientes se descartan."""
@@ -225,7 +228,8 @@ class AgentCommunicator:
         if thread is not None and thread is not threading.current_thread():
             thread.join()
         with self._condition:
-            self._thread = None
+            if self._thread is thread:
+                self._thread = None
 
     def wait_idle(self, timeout: float | None = None) -> bool:
         """Espera a que no queden alertas pendientes ni generación en vuelo."""
@@ -252,12 +256,16 @@ class AgentCommunicator:
     def observe(self, events: EventsSnapshot, sources: AlertSources) -> None:
         """Envía solo las alertas nuevas y cancela las que ya no proceden."""
         with self._condition:
-            current = {alert.alert_id for alert in events.alerts}
-            if not events.alerts:
-                # El motor de eventos limpia sus alertas al reiniciar sesión o flashback.
+            if events.reset_seq != self._reset_seq:
+                # El motor reinició la línea temporal: los IDs pueden reutilizarse.
+                self._reset_seq = events.reset_seq
+                self._epoch += 1
                 self._seen.clear()
-            else:
-                self._seen.intersection_update(current)
+                self._superseded.clear()
+                self._ever_active.clear()
+                self._closed_events.clear()
+            current = {alert.alert_id for alert in events.alerts}
+            self._seen.intersection_update(current)
         for alert in events.alerts:
             with self._condition:
                 if alert.alert_id in self._seen:
@@ -286,7 +294,8 @@ class AgentCommunicator:
             self._emit_template(alert, sources, reason=FallbackReason.UNAVAILABLE, latency_s=0.0)
             return
         assert sources is not None  # el contexto exige fuentes; sin ellas se degradó antes
-        pending = _Pending(alert, sources, context, threading.Event())
+        with self._condition:
+            pending = _Pending(alert, sources, context, threading.Event(), self._epoch)
         if self._mode == "recorded":
             # Reproducción determinista: se resuelve en el hilo llamador.
             self._process(pending)
@@ -295,8 +304,34 @@ class AgentCommunicator:
             if self._is_obsolete_locked(pending):
                 self._count_locked("discarded_obsolete")
                 return
+            if (
+                len(self._queue) >= self._capacity
+                and pending.alert.priority is not EventPriority.CRITICAL
+                and all(item.alert.priority is EventPriority.CRITICAL for item in self._queue)
+            ):
+                self._count_locked("queue_overflow")
+                return
             while len(self._queue) >= self._capacity:
-                self._queue.popleft()
+                victim = next(
+                    (
+                        item
+                        for item in self._queue
+                        if item.alert.priority is not EventPriority.CRITICAL
+                    ),
+                    None,
+                )
+                if victim is None:
+                    victim = self._queue.popleft()
+                    self._count_locked("queue_overflow")
+                    # Una alerta crítica no se pierde: se comunica con su plantilla.
+                    self._emit_template(
+                        victim.alert,
+                        victim.sources,
+                        reason=FallbackReason.UNAVAILABLE,
+                        latency_s=0.0,
+                    )
+                    continue
+                self._queue.remove(victim)
                 self._count_locked("queue_overflow")
             self._queue.append(pending)
             self._condition.notify_all()
@@ -331,6 +366,8 @@ class AgentCommunicator:
 
     def refresh_health(self) -> LLMHealth:
         """Consulta la salud del cliente (determinista para pruebas y consola)."""
+        with self._condition:
+            epoch = self._epoch
         if self._mode == "template" or self._client is None:
             health = self._initial_health()
         else:
@@ -344,8 +381,9 @@ class AgentCommunicator:
                     error=f"{type(exc).__name__}: {exc}",
                 )
         with self._condition:
-            self._health = health
-            self._last_health_check = self._clock()
+            if epoch == self._epoch:
+                self._health = health
+                self._last_health_check = self._clock()
         return health
 
     def reset(self) -> None:
@@ -363,6 +401,7 @@ class AgentCommunicator:
             self._superseded.clear()
             self._ever_active.clear()
             self._closed_events.clear()
+            self._epoch += 1
             self._now = None
             self._last_latency_s = None
             self._error = None
@@ -387,6 +426,8 @@ class AgentCommunicator:
                 if self._stopping:
                     return
                 pending = self._queue.popleft() if self._queue else None
+                if pending is not None:
+                    self._in_flight = pending
             if pending is None:
                 self.refresh_health()
                 continue
@@ -413,16 +454,23 @@ class AgentCommunicator:
 
     def _process(self, pending: _Pending) -> None:
         with self._condition:
+            if self._in_flight is not pending:
+                self._in_flight = pending
             if self._is_obsolete_locked(pending):
-                self._count_locked("discarded_obsolete")
+                if pending.epoch == self._epoch:
+                    self._count_locked("discarded_obsolete")
+                if self._in_flight is pending:
+                    self._in_flight = None
+                self._condition.notify_all()
                 return
-            self._in_flight = pending
         generation: _Generation | None = None
         try:
             generation = self._generate(pending)
-            if pending.cancel.is_set() or self._is_obsolete(pending):
-                with self._condition:
+            with self._condition:
+                stale = pending.cancel.is_set() or self._is_obsolete_locked(pending)
+                if stale and pending.epoch == self._epoch:
                     self._count_locked("discarded_obsolete")
+            if stale:
                 self._record_call(
                     pending,
                     generation,
@@ -463,29 +511,48 @@ class AgentCommunicator:
                 )
                 return
             result = self._validator.validate(generation.text, context, pending.alert)
-            if not result.valid or result.reply is None:
-                self._record_call(
-                    pending,
-                    generation,
-                    CallOutcome.FALLBACK,
-                    validation=result,
-                    fallback_reason=FallbackReason.VALIDATION_FAILED,
-                )
-                self._degrade(
-                    pending, FallbackReason.VALIDATION_FAILED, generation.latency_s, reachable=True
-                )
-                return
-            reply = result.reply
-            if not reply.should_speak and pending.alert.priority is not EventPriority.CRITICAL:
-                with self._condition:
-                    self._count_locked("declined")
-                self._record_call(pending, generation, CallOutcome.DECLINED, validation=result)
-                return
-            self._record_call(pending, generation, CallOutcome.USED, validation=result)
-            self._emit_reply(pending, reply, generation.latency_s)
+            with self._condition:
+                if pending.cancel.is_set() or self._is_obsolete_locked(pending):
+                    if pending.epoch == self._epoch:
+                        self._count_locked("discarded_obsolete")
+                    self._record_call_locked(
+                        pending,
+                        generation,
+                        CallOutcome.DISCARDED_OBSOLETE,
+                        validation=result,
+                        fallback_reason=FallbackReason.OBSOLETE,
+                    )
+                    return
+                if result.valid and result.reply is not None:
+                    reply = result.reply
+                    if (
+                        not reply.should_speak
+                        and pending.alert.priority is not EventPriority.CRITICAL
+                    ):
+                        self._count_locked("declined")
+                        self._record_call_locked(
+                            pending, generation, CallOutcome.DECLINED, validation=result
+                        )
+                        return
+                    self._record_call_locked(
+                        pending, generation, CallOutcome.USED, validation=result
+                    )
+                    self._emit_reply_locked(pending, reply, generation.latency_s)
+                    return
+            self._record_call(
+                pending,
+                generation,
+                CallOutcome.FALLBACK,
+                validation=result,
+                fallback_reason=FallbackReason.VALIDATION_FAILED,
+            )
+            self._degrade(
+                pending, FallbackReason.VALIDATION_FAILED, generation.latency_s, reachable=True
+            )
         except Exception as exc:
             with self._condition:
-                self._error = f"{type(exc).__name__}: {exc}"
+                if pending.epoch == self._epoch:
+                    self._error = f"{type(exc).__name__}: {exc}"
             if generation is not None:
                 self._record_call(
                     pending,
@@ -504,17 +571,19 @@ class AgentCommunicator:
     def _generate(self, pending: _Pending) -> _Generation:
         assert self._client is not None
         started = self._clock()
-        if self._registry is None:
-            return _Generation(error=FallbackReason.UNAVAILABLE)
         try:
-            prompt_set = self._registry.load(self.agent.language)
+            prompt_set = (
+                self._registry.load(self.agent.language)
+                if self._registry is not None
+                else DefaultPromptRegistry.load(self.agent.language)
+            )
             rendered = prompt_set.render(ContextKind.ALERT, pending.context)
             response_format = None
             if self.llm.structured_output != "none":
                 response_format = {
                     "json_schema": {
                         "name": "llm_reply",
-                        "schema": rendered.response_schema,
+                        "schema": wire_reply_schema(),
                         "strict": True,
                     }
                 }
@@ -566,7 +635,27 @@ class AgentCommunicator:
         fallback_reason: FallbackReason | None = None,
         error: str | None = None,
     ) -> None:
-        if not generation.called:
+        with self._condition:
+            self._record_call_locked(
+                pending,
+                generation,
+                outcome,
+                validation=validation,
+                fallback_reason=fallback_reason,
+                error=error,
+            )
+
+    def _record_call_locked(
+        self,
+        pending: _Pending,
+        generation: _Generation,
+        outcome: CallOutcome,
+        *,
+        validation: ValidationResult | None = None,
+        fallback_reason: FallbackReason | None = None,
+        error: str | None = None,
+    ) -> None:
+        if not generation.called or pending.epoch != self._epoch:
             return
         timeout_s = self.agent.timeout_for(pending.alert.priority.value)
         parameters = {
@@ -603,10 +692,9 @@ class AgentCommunicator:
             prompt_tokens=response.prompt_tokens if response is not None else None,
             completion_tokens=response.completion_tokens if response is not None else None,
         )
-        with self._condition:
-            self._call_records.append(record)
+        self._call_records.append(record)
 
-    def _emit_reply(self, pending: _Pending, reply: LLMReply, latency_s: float) -> None:
+    def _emit_reply_locked(self, pending: _Pending, reply: LLMReply, latency_s: float) -> None:
         alert = pending.alert
         message = AgentMessage(
             message_id=f"{alert.alert_id}:llm",
@@ -623,17 +711,16 @@ class AgentCommunicator:
             latency_s=latency_s,
             llm_call_id=f"{alert.alert_id}:llm",
         )
-        with self._condition:
-            self._messages.append(message)
-            self._message_records.append(message)
-            self._count_locked("used")
-            self._last_latency_s = latency_s
-            self._health = LLMHealth(
-                status=LLMStatus.AVAILABLE,
-                model=self.llm.model or None,
-                latency_s=latency_s,
-                checked_at=self._clock(),
-            )
+        self._messages.append(message)
+        self._message_records.append(message)
+        self._count_locked("used")
+        self._last_latency_s = latency_s
+        self._health = LLMHealth(
+            status=LLMStatus.AVAILABLE,
+            model=self.llm.model or None,
+            latency_s=latency_s,
+            checked_at=self._clock(),
+        )
 
     def _degrade(
         self,
@@ -644,6 +731,8 @@ class AgentCommunicator:
         reachable: bool = False,
     ) -> None:
         with self._condition:
+            if not self._is_current_locked(pending):
+                return
             self._health = LLMHealth(
                 status=LLMStatus.AVAILABLE if reachable else LLMStatus.UNAVAILABLE,
                 model=self.llm.model or None,
@@ -651,7 +740,13 @@ class AgentCommunicator:
                 checked_at=self._clock(),
                 error=reason.value,
             )
-        self._emit_template(pending.alert, pending.sources, reason=reason, latency_s=latency_s)
+        self._emit_template(
+            pending.alert,
+            pending.sources,
+            reason=reason,
+            latency_s=latency_s,
+            pending=pending,
+        )
 
     def _emit_template(
         self,
@@ -660,15 +755,19 @@ class AgentCommunicator:
         *,
         reason: FallbackReason | None,
         latency_s: float,
+        pending: _Pending | None = None,
     ) -> None:
         drop = (
             reason is not None
+            and reason is not FallbackReason.LLM_DISABLED
             and self.agent.fallback_on_failure == "drop"
             and alert.priority is not EventPriority.CRITICAL
         )
         if drop:
             assert reason is not None
             with self._condition:
+                if pending is not None and not self._is_current_locked(pending):
+                    return
                 self._count_locked("fallback")
                 self._count_locked(f"fallback:{reason.value}")
                 self._last_latency_s = latency_s
@@ -699,6 +798,8 @@ class AgentCommunicator:
             ),
         )
         with self._condition:
+            if pending is not None and not self._is_current_locked(pending):
+                return
             self._messages.append(message)
             self._message_records.append(message)
             if reason is not None:
@@ -714,17 +815,18 @@ class AgentCommunicator:
         with self._condition:
             return self._is_obsolete_locked(pending)
 
+    def _is_current_locked(self, pending: _Pending) -> bool:
+        return pending.epoch == self._epoch and not pending.cancel.is_set()
+
     def _is_obsolete_locked(self, pending: _Pending) -> bool:
+        if pending.epoch != self._epoch:
+            return True
         alert = pending.alert
         if alert.alert_id in self._superseded:
             return True
-        if alert.event_id in self._closed_events:
+        if alert.event_id in self._closed_events and alert.phase is not EventPhase.CLOSED:
             return True
-        return (
-            self._now is not None
-            and alert.emitted_at > 0.0
-            and self._now - alert.emitted_at > self.agent.max_alert_age_s
-        )
+        return self._now is not None and self._now - alert.emitted_at > self.agent.max_alert_age_s
 
     def _build_context(
         self, alert: AgentAlert, sources: AlertSources | None
@@ -757,10 +859,12 @@ class AgentCommunicator:
 
 
 def _resolve_mode(mode: AgentMode | None, llm: LLMConfig, client: LLMClient | None) -> AgentMode:
+    if mode == "recorded":
+        if client is None:
+            raise ValueError("El modo recorded requiere un cliente con respuestas grabadas.")
+        return mode
     if client is None:
         return "template"
-    if mode == "recorded":
-        return mode
     if mode == "template":
         return mode
     if not llm.enabled:
@@ -772,13 +876,17 @@ def build_communicator(
     agent: AgentConfig, llm: LLMConfig, *, mode: AgentMode | None = None
 ) -> AgentCommunicator:
     """Compone el comunicador real respetando ``llm.enabled`` y el modo offline."""
-    client = OpenAICompatibleClient(llm) if llm.enabled and mode != "recorded" else None
+    if mode == "recorded":
+        raise ValueError(
+            "El modo recorded no tiene respuestas grabadas: usa el modo template o "
+            "pasa un cliente RecordedLLMClient."
+        )
+    client = OpenAICompatibleClient(llm) if llm.enabled else None
     return AgentCommunicator(
         agent,
         llm,
         client=client,
         builder=DefaultContextBuilder(agent),
-        registry=DefaultPromptRegistry.load(agent.language),
         validator=DefaultResponseValidator(agent),
         mode=mode,
     )

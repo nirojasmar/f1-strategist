@@ -90,6 +90,7 @@ class EventGate:
         self._pilot_interaction_at: float | None = None
         self._counters: dict[str, int] = {}
         self._sequence = 0
+        self._reset_seq = 0
 
     def process(
         self,
@@ -148,6 +149,11 @@ class EventGate:
         _validate_time(now)
         self._pilot_interaction_at = now
 
+    @property
+    def reset_seq(self) -> int:
+        """Número de reinicios aplicados; distingue líneas temporales."""
+        return self._reset_seq
+
     def snapshot(self) -> EventsSnapshot:
         """Devuelve una vista inmutable del estado de la compuerta."""
         return EventsSnapshot(
@@ -156,6 +162,7 @@ class EventGate:
             counters=dict(self._counters),
             muted=self._muted,
             error=None,
+            reset_seq=self._reset_seq,
         )
 
     def reset(self) -> None:
@@ -171,6 +178,7 @@ class EventGate:
         self._pilot_interaction_at = None
         self._counters.clear()
         self._sequence = 0
+        self._reset_seq += 1
 
     def _process_signal(
         self,

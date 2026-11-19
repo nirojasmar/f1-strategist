@@ -12,7 +12,7 @@ import json
 import threading
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import replace
 from typing import Any, Protocol
 
@@ -55,9 +55,18 @@ class OpenAICompatibleClient:
     ``transport`` permite inyectar ``httpx.MockTransport`` en las pruebas.
     """
 
-    def __init__(self, config: LLMConfig, *, transport: httpx.BaseTransport | None = None) -> None:
+    def __init__(
+        self,
+        config: LLMConfig,
+        *,
+        transport: httpx.BaseTransport | None = None,
+        monotonic: Callable[[], float] = time.perf_counter,
+        wall_clock: Callable[[], float] = time.time,
+    ) -> None:
         self._config = config
         self._transport = transport
+        self._monotonic = monotonic
+        self._wall_clock = wall_clock
         # Nivel negociado: recuerda la degradación para no repetir el 400.
         self._level_index = 0
 
@@ -68,15 +77,22 @@ class OpenAICompatibleClient:
             return _error(FallbackReason.CANCELLED)
         if not self._config.enabled:
             return _error(FallbackReason.LLM_DISABLED)
+        # Un único plazo cubre la petición y todas las degradaciones de formato.
+        deadline = self._monotonic() + request.timeout_s
         if request.response_format is None:
-            response, _ = self._call(request, "none", False, cancel)
+            response, _ = self._call(request, "none", False, cancel, deadline)
             return response
+        levels = self._levels
+        index = self._level_index
         while True:
-            mode = _STRUCTURED_LEVELS[self._config.structured_output][self._level_index]
-            response, retry = self._call(request, mode, mode == "none", cancel)
-            if not retry or self._level_index + 1 >= len(self._levels):
+            mode = levels[index]
+            response, retry = self._call(request, mode, mode == "none", cancel, deadline)
+            if not retry or index + 1 >= len(levels):
+                # Solo se recuerda un nivel más débil si su respuesta fue válida.
+                if index > self._level_index and response.error is None:
+                    self._level_index = index
                 return response
-            self._level_index += 1
+            index += 1
 
     @property
     def _levels(self) -> tuple[str, ...]:
@@ -88,15 +104,20 @@ class OpenAICompatibleClient:
         mode: str,
         plain_text: bool,
         cancel: threading.Event | None,
+        deadline: float,
     ) -> tuple[LLMResponse, bool]:
         """Ejecuta una petición; ``retry`` indica que toca degradar el formato."""
         payload = self._payload(request, mode)
-        timeout = httpx.Timeout(request.timeout_s, connect=self._config.connect_timeout_s)
-        started = time.perf_counter()
+        remaining = deadline - self._monotonic()
+        if remaining <= 0:
+            return _error(FallbackReason.TIMEOUT), False
+        timeout = httpx.Timeout(remaining, connect=min(self._config.connect_timeout_s, remaining))
+        started = self._monotonic()
+        active: list[httpx.Response] = []
         try:
             with (
                 httpx.Client(transport=self._transport, follow_redirects=False) as client,
-                _cancel_watcher(cancel, client.close),
+                _cancel_watcher(cancel, client.close, active),
                 client.stream(
                     "POST",
                     f"{self._config.endpoint}/chat/completions",
@@ -105,13 +126,20 @@ class OpenAICompatibleClient:
                     timeout=timeout,
                 ) as response,
             ):
+                active.append(response)
                 if response.status_code in _DEGRADE_STATUSES and mode != "none":
                     return _error(FallbackReason.HTTP_ERROR), True
                 if not 200 <= response.status_code < 300:
                     return _error(FallbackReason.HTTP_ERROR), False
                 if request.stream:
-                    return self._read_stream(response, started, mode, plain_text, cancel), False
-                return self._read_message(response, started, mode, plain_text, cancel), False
+                    return (
+                        self._read_stream(response, started, mode, plain_text, cancel, deadline),
+                        False,
+                    )
+                return (
+                    self._read_message(response, started, mode, plain_text, cancel, deadline),
+                    False,
+                )
         except httpx.TimeoutException:
             return _error(FallbackReason.TIMEOUT), False
         except httpx.HTTPError:
@@ -140,7 +168,10 @@ class OpenAICompatibleClient:
                 )
             else:
                 payload["response_format"] = {"type": "json_object"}
-        payload.update(_plain(request.extra_body))
+        # Los campos tipados mandan: extra_body no puede saltarse el formato negociado.
+        extra = _plain(request.extra_body)
+        extra.pop("response_format", None)
+        payload.update(extra)
         return payload
 
     def _headers(self) -> dict[str, str]:
@@ -157,6 +188,7 @@ class OpenAICompatibleClient:
         mode: str,
         plain_text: bool,
         cancel: threading.Event | None,
+        deadline: float,
     ) -> LLMResponse:
         parts: list[str] = []
         ttft_s: float | None = None
@@ -169,6 +201,8 @@ class OpenAICompatibleClient:
             for line in response.iter_lines():
                 if _is_set(cancel):
                     return _error(FallbackReason.CANCELLED)
+                if self._monotonic() > deadline:
+                    return _error(FallbackReason.TIMEOUT)
                 if not line or not line.startswith("data:"):
                     continue
                 data = line[len("data:") :].strip()
@@ -199,14 +233,18 @@ class OpenAICompatibleClient:
                         content = delta.get("content")
                         if isinstance(content, str) and content:
                             if ttft_s is None:
-                                ttft_s = time.perf_counter() - started
+                                ttft_s = self._monotonic() - started
                             parts.append(content)
                     finish_reason = _opt_text(choice.get("finish_reason")) or finish_reason
+        except httpx.TimeoutException:
+            return _error(FallbackReason.CANCELLED if _is_set(cancel) else FallbackReason.TIMEOUT)
         except httpx.HTTPError:
             if _is_set(cancel):
                 return _error(FallbackReason.CANCELLED)
             return _error(FallbackReason.INVALID_JSON)
-        total_s = time.perf_counter() - started
+        if _is_set(cancel):
+            return _error(FallbackReason.CANCELLED)
+        total_s = self._monotonic() - started
         text = "".join(parts)
         if finish_reason is None and not done:
             # El servidor cerró la conexión antes de terminar la respuesta.
@@ -231,14 +269,22 @@ class OpenAICompatibleClient:
         mode: str,
         plain_text: bool,
         cancel: threading.Event | None,
+        deadline: float,
     ) -> LLMResponse:
         if _is_set(cancel):
             return _error(FallbackReason.CANCELLED)
         try:
             data = json.loads(response.read())
-        except (ValueError, httpx.HTTPError):
+        except httpx.TimeoutException:
+            return _error(FallbackReason.CANCELLED if _is_set(cancel) else FallbackReason.TIMEOUT)
+        except ValueError:
             return _error(FallbackReason.INVALID_JSON)
-        total_s = time.perf_counter() - started
+        except httpx.HTTPError:
+            code = FallbackReason.CANCELLED if _is_set(cancel) else FallbackReason.INVALID_JSON
+            return _error(code)
+        if _is_set(cancel):
+            return _error(FallbackReason.CANCELLED)
+        total_s = self._monotonic() - started
         if not isinstance(data, dict):
             return _error(FallbackReason.INVALID_JSON)
         choices = data.get("choices")
@@ -269,8 +315,8 @@ class OpenAICompatibleClient:
         model = config.model or None
         if not config.enabled:
             return LLMHealth(status=LLMStatus.DISABLED, model=model)
-        checked_at = time.time()
-        started = time.perf_counter()
+        checked_at = self._wall_clock()
+        started = self._monotonic()
         try:
             with httpx.Client(transport=self._transport, follow_redirects=False) as client:
                 response = client.get(
@@ -282,7 +328,7 @@ class OpenAICompatibleClient:
             return _health(LLMStatus.UNAVAILABLE, model, checked_at, None, "timeout")
         except httpx.HTTPError:
             return _health(LLMStatus.UNAVAILABLE, model, checked_at, None, "unavailable")
-        latency_s = time.perf_counter() - started
+        latency_s = self._monotonic() - started
         if response.status_code >= 400:
             return _health(LLMStatus.UNAVAILABLE, model, checked_at, latency_s, "http_error")
         try:
@@ -370,27 +416,43 @@ def request_fingerprint(request: LLMRequest) -> str:
 
 
 @contextmanager
-def _cancel_watcher(cancel: threading.Event | None, close: Callable[[], None]) -> Iterator[None]:
-    """Cierra la conexión en cuanto se señala la cancelación."""
+def _cancel_watcher(
+    cancel: threading.Event | None,
+    close: Callable[[], None],
+    active: list[httpx.Response],
+    *,
+    wait: Callable[[float], bool] | None = None,
+    run: Callable[[Callable[[], None]], None] | None = None,
+) -> Iterator[None]:
+    """Cierra la conexión y la respuesta en curso en cuanto se señala la cancelación."""
     if cancel is None:
         yield
         return
     stopped = threading.Event()
+    wait_fn = wait if wait is not None else stopped.wait
 
     def watch() -> None:
         # shortcut: sondeo de 50 ms; basta para una radio que se cancela en segundos.
-        while not stopped.wait(0.05):
+        while not wait_fn(0.05):
             if cancel.is_set():
+                for response in list(active):
+                    with suppress(Exception):
+                        response.close()
                 close()
                 return
 
-    thread = threading.Thread(target=watch, daemon=True, name="llm-cancel")
-    thread.start()
+    if run is None:
+        thread = threading.Thread(target=watch, daemon=True, name="llm-cancel")
+        thread.start()
+    else:
+        run(watch)
+        thread = None
     try:
         yield
     finally:
         stopped.set()
-        thread.join(timeout=1.0)
+        if thread is not None:
+            thread.join(timeout=1.0)
 
 
 def _final_text(text: str, mode: str, plain_text: bool) -> str:

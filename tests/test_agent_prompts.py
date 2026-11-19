@@ -7,7 +7,7 @@ from f1_strategist.agent.prompt_registry import (
     PromptRegistry,
     prompt_version,
 )
-from f1_strategist.agent.types import ContextKind, ContextPayload, LLMReply
+from f1_strategist.agent.types import ContextKind, ContextPayload
 
 
 def _context(kind: ContextKind = ContextKind.ALERT) -> ContextPayload:
@@ -60,10 +60,17 @@ def test_prompt_version_changes_with_content() -> None:
     assert "es/alert.v1+" in original
 
 
-def test_response_schema_matches_llm_reply() -> None:
+def test_response_schema_matches_strict_wire_contract() -> None:
     rendered = PromptRegistry.load("es").render(ContextKind.ALERT, _context())
 
-    assert rendered.response_schema == LLMReply.model_json_schema()
+    assert rendered.response_schema["required"] == [
+        "should_speak",
+        "priority",
+        "language",
+        "message",
+        "reason",
+        "used_facts",
+    ]
     properties = rendered.response_schema["properties"]
     assert set(properties) == {
         "should_speak",

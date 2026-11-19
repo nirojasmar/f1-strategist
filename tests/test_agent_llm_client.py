@@ -58,7 +58,26 @@ def _sse(*events: str) -> bytes:
     return ("\n\n".join(lines) + "\n\n").encode()
 
 
-def _client(handler: Any, **overrides: Any) -> tuple[OpenAICompatibleClient, list[httpx.Request]]:
+class _Clock:
+    """Reloj determinista: avanza un paso fijo en cada lectura."""
+
+    def __init__(self, start: float = 0.0, step: float = 0.5) -> None:
+        self.value = start
+        self.step = step
+
+    def __call__(self) -> float:
+        current = self.value
+        self.value += self.step
+        return current
+
+
+def _client(
+    handler: Any,
+    *,
+    clock: _Clock | None = None,
+    wall_clock: _Clock | None = None,
+    **overrides: Any,
+) -> tuple[OpenAICompatibleClient, list[httpx.Request]]:
     seen: list[httpx.Request] = []
 
     def transport_handler(request: httpx.Request) -> httpx.Response:
@@ -66,11 +85,16 @@ def _client(handler: Any, **overrides: Any) -> tuple[OpenAICompatibleClient, lis
         return handler(request)
 
     return OpenAICompatibleClient(
-        _config(**overrides), transport=httpx.MockTransport(transport_handler)
+        _config(**overrides),
+        transport=httpx.MockTransport(transport_handler),
+        monotonic=clock or _Clock(),
+        wall_clock=wall_clock or _Clock(start=1000.0),
     ), seen
 
 
-def test_non_streaming_request_and_response() -> None:
+def test_non_streaming_request_and_response(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("F1_LLM_API_KEY", raising=False)
+
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json=_completion())
 
@@ -80,7 +104,7 @@ def test_non_streaming_request_and_response() -> None:
     assert response.text == '{"message":"ok"}'
     assert response.structured_mode == "json_schema"
     assert (response.prompt_tokens, response.completion_tokens) == (11, 7)
-    assert response.total_s is not None
+    assert response.total_s == 1.5 - 1.0
     assert response.error is None
     body = json.loads(seen[0].content)
     assert seen[0].url.path == "/v1/chat/completions"
@@ -120,8 +144,8 @@ def test_streaming_measures_ttft_and_collects_text() -> None:
 
     assert response.text == '{"message":"ok"}'
     assert response.finish_reason == "stop"
-    assert response.ttft_s is not None and response.total_s is not None
-    assert response.ttft_s <= response.total_s
+    assert response.ttft_s == 1.0
+    assert response.total_s == 4.5
     assert (response.prompt_tokens, response.completion_tokens) == (3, 4)
 
 
@@ -239,10 +263,54 @@ def test_cancel_watcher_closes_connection() -> None:
     from f1_strategist.agent.llm_client import _cancel_watcher
 
     cancel = threading.Event()
+    cancel.set()
     closed = threading.Event()
-    with _cancel_watcher(cancel, closed.set):
-        cancel.set()
-        assert closed.wait(1.0)
+    with _cancel_watcher(
+        cancel,
+        closed.set,
+        [],
+        wait=lambda _timeout: False,
+        run=lambda work: work(),
+    ):
+        pass
+    assert closed.is_set()
+
+
+def test_cancellation_interrupts_a_stalled_body_read() -> None:
+    class _StallingStream(httpx.SyncByteStream):
+        def __init__(self) -> None:
+            self.started = threading.Event()
+            self.closed = threading.Event()
+
+        def __iter__(self) -> Any:
+            self.started.set()
+            self.closed.wait(timeout=5.0)
+            raise httpx.ReadError("closed")
+
+        def close(self) -> None:
+            self.closed.set()
+
+    stream = _StallingStream()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, stream=stream)
+
+    client, _ = _client(handler)
+    cancel = threading.Event()
+    result: list[LLMResponse] = []
+
+    def run() -> None:
+        result.append(client.generate(_request(), cancel=cancel))
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    assert stream.started.wait(timeout=2.0)
+    cancel.set()
+    worker.join(timeout=2.0)
+
+    assert not worker.is_alive()
+    assert stream.closed.is_set()
+    assert result[0].error == "cancelled"
 
 
 def test_health_available_and_model_missing() -> None:
@@ -254,7 +322,8 @@ def test_health_available_and_model_missing() -> None:
     health = client.health()
     assert health.status is LLMStatus.AVAILABLE
     assert health.model == "test-model"
-    assert health.latency_s is not None and health.checked_at is not None
+    assert health.latency_s == 0.5
+    assert health.checked_at == 1000.0
 
     def missing(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"data": [{"id": "otro"}]})

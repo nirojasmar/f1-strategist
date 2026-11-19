@@ -95,7 +95,7 @@ def test_car_index_is_validated_one_based_and_minutes_are_units() -> None:
             "message_key": "event.rival_pit_stop",
             "priority": "strategic",
             "facts": [
-                {"name": "car_index", "value": 0, "unit": ""},
+                {"name": "car_index", "value": 1, "unit": ""},
                 {"name": "horizon_min", "value": 5.0, "unit": "min"},
             ],
         }
@@ -106,6 +106,31 @@ def test_car_index_is_validated_one_based_and_minutes_are_units() -> None:
     )
     result = ResponseValidator(AppConfig()).validate(text, context, _alert(facts=()))
     assert result.valid, result.errors
+
+
+def test_same_name_observations_from_different_sources_are_all_kept() -> None:
+    assert _validate(_reply(message="Vuelta 12.", used_facts=[])).valid
+    assert _validate(_reply(message="Vuelta 13.", used_facts=[])).valid
+
+
+def test_compound_cardinal_is_checked_against_remaining_laps() -> None:
+    assert _validate(_reply(message="Quedan dos vueltas.", used_facts=[])).valid
+    rejected = _validate(_reply(message="Quedan veinticinco vueltas.", used_facts=[]))
+    assert ValidationIssue.UNKNOWN_NUMBER in rejected.errors
+
+
+def test_per_lap_percentage_is_not_an_absolute_percentage() -> None:
+    context = _context(
+        alert={"facts": []},
+        situation={},
+        strategy={"wear_rate_pct_per_lap": 0.85},
+        metrics={},
+    )
+    assert _validate(
+        _reply(message="Desgaste 0,85 %/vuelta.", used_facts=[]), context, facts=()
+    ).valid
+    rejected = _validate(_reply(message="Desgaste 0,85 %.", used_facts=[]), context, facts=())
+    assert ValidationIssue.UNIT_MISMATCH in rejected.errors
 
 
 def test_dot_decimal_and_word_number_pass() -> None:
@@ -131,15 +156,15 @@ def test_changed_unit_invalidates() -> None:
     assert ValidationIssue.UNIT_MISMATCH in result.errors
 
 
-def test_rounding_at_limit_is_half_up() -> None:
+def test_rounding_matches_format_fact() -> None:
     context = _context(
         alert={"facts": [["gain_s", 2.45]]},
         situation={},
         strategy={"gain_s": 2.45},
         metrics={},
     )
-    assert _validate(_reply(message="Ganamos 2,5 s.", used_facts=[]), context).valid
-    rejected = _validate(_reply(message="Ganamos 2,4 s.", used_facts=[]), context)
+    assert _validate(_reply(message="Ganamos 2,5 s.", used_facts=[]), context, facts=()).valid
+    rejected = _validate(_reply(message="Ganamos 2,4 s.", used_facts=[]), context, facts=())
     assert ValidationIssue.UNKNOWN_NUMBER in rejected.errors
 
 

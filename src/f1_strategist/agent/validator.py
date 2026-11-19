@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Mapping
-from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation
 from enum import StrEnum
 from typing import Any
 
@@ -56,6 +56,15 @@ _WORD_NUMBERS = {
     "catorce": 14,
     "quince": 15,
     "veinte": 20,
+    "veintiuno": 21,
+    "veintidós": 22,
+    "veintitrés": 23,
+    "veinticuatro": 24,
+    "veinticinco": 25,
+    "veintiséis": 26,
+    "veintisiete": 27,
+    "veintiocho": 28,
+    "veintinueve": 29,
     "treinta": 30,
 }
 _WORD_NUMBER_RE = re.compile(
@@ -67,10 +76,10 @@ _WORD_NUMBER_RE = re.compile(
 _UNIT_ALIASES: tuple[tuple[str, str], ...] = tuple(
     sorted(
         (
-            ("%/vuelta", "%"),
-            ("%/lap", "%"),
-            ("s/vuelta", "s"),
-            ("s/lap", "s"),
+            ("%/vuelta", "%/lap"),
+            ("%/lap", "%/lap"),
+            ("s/vuelta", "s/lap"),
+            ("s/lap", "s/lap"),
             ("segundos", "s"),
             ("segundo", "s"),
             ("seg", "s"),
@@ -179,8 +188,8 @@ class ResponseValidator:
             errors.append(code)
 
         if _has_high_uncertainty(context.uncertainties):
-            folded = message.casefold()
-            if any(phrase.casefold() in folded for phrase in self._config.imperative_phrases):
+            folded = _collapse(message)
+            if any(_collapse(phrase) in folded for phrase in self._config.imperative_phrases):
                 errors.append(ValidationIssue.IMPERATIVE_PHRASE)
 
         normalized = _normalize(message)
@@ -221,77 +230,118 @@ def _fact_names(context: ContextPayload, alert: AgentAlert | None) -> set[str]:
     names: set[str] = set()
     if alert is not None:
         names.update(name for name, _ in alert.facts)
-    if isinstance(context.alert, Mapping):
-        names.update(_mapping_fact_items(context.alert.get("facts")))
+    for block in (context.alert, context.situation, context.strategy, context.metrics):
+        if isinstance(block, Mapping):
+            _collect_names(block, names)
     return names
 
 
-def _mapping_fact_items(raw: object) -> list[str]:
-    if isinstance(raw, Mapping):
-        return [str(name) for name in raw]
-    if isinstance(raw, (list, tuple)):
-        names: list[str] = []
-        for item in raw:
-            if isinstance(item, Mapping):
-                name = item.get("name")
-                if name is not None:
-                    names.append(str(name))
-            elif isinstance(item, (list, tuple)) and len(item) == 2:
-                names.append(str(item[0]))
-        return names
-    return []
-
-
-def _numbers(context: ContextPayload, alert: AgentAlert | None) -> list[tuple[str, float]]:
-    """Parejas nombre/valor numéricas usadas para comprobar las cifras."""
-    values: dict[str, float] = {}
-    if alert is not None:
-        for name, value in alert.facts:
-            number = _as_number(value)
-            if number is not None:
-                _store_number(values, name, number)
-    for block in (context.alert, context.situation, context.strategy, context.metrics):
-        if isinstance(block, Mapping):
-            _collect_numbers(block, values)
-    return list(values.items())
-
-
-def _collect_numbers(block: Mapping[Any, Any], values: dict[str, float], depth: int = 0) -> None:
+def _collect_names(block: Mapping[Any, Any], names: set[str], depth: int = 0) -> None:
     if depth > 3:
         return
     for raw_name, raw_value in block.items():
         name = str(raw_name)
         if name == "facts":
             if isinstance(raw_value, Mapping):
-                _collect_numbers(raw_value, values, depth + 1)
+                names.update(str(item) for item in raw_value)
+            elif isinstance(raw_value, (list, tuple)):
+                for item in raw_value:
+                    if isinstance(item, Mapping) and item.get("name") is not None:
+                        names.add(str(item["name"]))
+                    elif isinstance(item, (list, tuple)) and len(item) == 2:
+                        names.add(str(item[0]))
+            continue
+        names.add(name)
+        if isinstance(raw_value, Mapping) and "value" not in raw_value:
+            _collect_names(raw_value, names, depth + 1)
+
+
+_Observation = tuple[str, float, str | None]
+
+
+def _numbers(context: ContextPayload, alert: AgentAlert | None) -> list[_Observation]:
+    """Observaciones numéricas usadas para comprobar las cifras.
+
+    Se conservan las de un mismo nombre con valores distintos; solo se deduplica
+    la observación idéntica para no repetir comprobaciones.
+    """
+    observations: list[_Observation] = []
+    seen: set[_Observation] = set()
+    if alert is not None:
+        for name, value in alert.facts:
+            number = _as_number(value)
+            if number is not None:
+                # Los hechos crudos son 0-based; el contexto y las plantillas ya muestran 1-based.
+                _store_number(
+                    observations,
+                    seen,
+                    name,
+                    number + 1 if name == "car_index" else number,
+                )
+    for block in (context.alert, context.situation, context.strategy, context.metrics):
+        if isinstance(block, Mapping):
+            _collect_numbers(block, observations, seen)
+    return observations
+
+
+def _collect_numbers(
+    block: Mapping[Any, Any],
+    observations: list[_Observation],
+    seen: set[_Observation],
+    depth: int = 0,
+) -> None:
+    if depth > 3:
+        return
+    for raw_name, raw_value in block.items():
+        name = str(raw_name)
+        if name == "facts":
+            if isinstance(raw_value, Mapping):
+                _collect_numbers(raw_value, observations, seen, depth + 1)
             elif isinstance(raw_value, (list, tuple)):
                 for item in raw_value:
                     if isinstance(item, Mapping):
                         number = _as_number(item.get("value"))
                         if number is not None and item.get("name") is not None:
-                            _store_number(values, str(item["name"]), number)
+                            unit = item.get("unit") if isinstance(item.get("unit"), str) else None
+                            _store_number(
+                                observations,
+                                seen,
+                                str(item["name"]),
+                                number,
+                                _canonical_unit(unit),
+                            )
                     elif isinstance(item, (list, tuple)) and len(item) == 2:
                         number = _as_number(item[1])
                         if number is not None:
-                            _store_number(values, str(item[0]), number)
+                            _store_number(observations, seen, str(item[0]), number)
             continue
         if isinstance(raw_value, Mapping):
             # Las métricas llegan como ``{clave: {"value", "unit", "quality"}}``.
             if "value" in raw_value:
                 number = _as_number(raw_value.get("value"))
                 if number is not None:
-                    _store_number(values, name, number)
+                    unit = raw_value.get("unit") if isinstance(raw_value.get("unit"), str) else None
+                    _store_number(observations, seen, name, number, _canonical_unit(unit))
             else:
-                _collect_numbers(raw_value, values, depth + 1)
+                _collect_numbers(raw_value, observations, seen, depth + 1)
             continue
         number = _as_number(raw_value)
         if number is not None:
-            _store_number(values, name, number)
+            _store_number(observations, seen, name, number)
 
 
-def _store_number(values: dict[str, float], name: str, number: float) -> None:
-    # ``format_fact`` muestra car_index 1-based; el contexto lo guarda 0-based.
-    values[name] = number + 1 if name == "car_index" else number
+def _store_number(
+    observations: list[_Observation],
+    seen: set[_Observation],
+    name: str,
+    number: float,
+    unit: str | None = None,
+) -> None:
+    # ``format_fact`` y el contexto muestran car_index 1-based.
+    item = (name, number, unit)
+    if item not in seen:
+        seen.add(item)
+        observations.append(item)
 
 
 def _as_number(value: object) -> float | None:
@@ -300,16 +350,22 @@ def _as_number(value: object) -> float | None:
     return float(value)
 
 
-def _number_errors(message: str, numbers: list[tuple[str, float]]) -> list[str]:
+def _number_errors(message: str, numbers: list[_Observation]) -> list[str]:
     """Cada cifra del texto debe corresponder a un hecho, con su unidad."""
     errors: list[str] = []
     for token, decimals, end in _numeric_tokens(message):
         unit = _unit_after(message, end)
-        matches = [name for name, value in numbers if _rounds_to(token, value, decimals)]
+        matches = [
+            (name, supplied)
+            for name, value, supplied in numbers
+            if _rounds_to(token, value, decimals)
+        ]
         if not matches:
             errors.append(ValidationIssue.UNKNOWN_NUMBER)
             continue
-        if unit is not None and not any(_fact_unit(name) == unit for name in matches):
+        if unit is not None and not any(
+            (supplied or _fact_unit(name)) == unit for name, supplied in matches
+        ):
             errors.append(ValidationIssue.UNIT_MISMATCH)
     return errors
 
@@ -335,14 +391,12 @@ def _decimals(raw: str) -> int:
 
 
 def _rounds_to(token: Decimal, value: float, decimals: int) -> bool:
-    """Compara con redondeo comercial (mitad hacia arriba) a los decimales del texto."""
+    """Mismo redondeo que ``format_fact``: formato fijo y ceros finales fuera."""
     try:
-        expected = Decimal(str(value)).quantize(
-            Decimal(1).scaleb(-decimals), rounding=ROUND_HALF_UP
-        )
+        text = f"{value:.{decimals}f}".rstrip("0").rstrip(".")
+        return token == Decimal(text)
     except InvalidOperation:
         return False
-    return token == expected
 
 
 def _unit_after(message: str, end: int) -> str | None:
@@ -350,6 +404,20 @@ def _unit_after(message: str, end: int) -> str | None:
     if match is None:
         return None
     return _UNITS_BY_ALIAS.get(match.group(1).casefold())
+
+
+def _canonical_unit(unit: str | None) -> str | None:
+    """Traduce las unidades del contexto a las que reconoce el texto."""
+    if unit is None:
+        return None
+    codes = {
+        "laps": "lap",
+        "pct": "%",
+        "pct/lap": "%/lap",
+        "celsius": "c",
+        "kg/lap": "kg",
+    }
+    return codes.get(unit.casefold(), unit.casefold())
 
 
 def _fact_unit(name: str) -> str | None:
@@ -360,9 +428,9 @@ def _fact_unit(name: str) -> str | None:
     if unit is not None:
         return unit
     if name.endswith("_pct_per_lap"):
-        return "%"
+        return "%/lap"
     if name.endswith("_s_per_lap"):
-        return "s"
+        return "s/lap"
     if name.endswith("_pct"):
         return "%"
     if name.endswith("_kg"):
@@ -384,6 +452,10 @@ def _has_high_uncertainty(uncertainties: tuple[str, ...]) -> bool:
         if tokens & {"stale", "insufficient"}:
             return True
     return False
+
+
+def _collapse(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip().casefold()
 
 
 def _normalize(text: str) -> str:

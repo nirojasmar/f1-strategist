@@ -1428,6 +1428,12 @@ class _IngestCollector:
                 self.engine.history,
                 header=self.last_header,
             )
+            if self.agent is not None:
+                calls, messages = self.agent.drain_records()
+                if calls or messages:
+                    self.recorder.record_agent(calls, messages, self.last_observed_at)
+                # La sesión anterior termina aquí: no debe publicar más allá.
+                self.agent.reset()
         self.last_state = snapshot
         self.last_observed_at = observed_at
         self.last_header_time = packet.header.session_time

@@ -379,6 +379,19 @@ class CaptureSession:
                                     header=self._last_header,
                                 )
                         if state_snapshot.session.uid != previous_state.session.uid:
+                            recorder = self._recorder
+                            if recorder is not None:
+                                calls, messages = self._agent.drain_records()
+                                if calls or messages:
+                                    recorder.record_agent(
+                                        calls,
+                                        messages,
+                                        self._last_observed_at
+                                        if self._last_observed_at is not None
+                                        else observed_at,
+                                    )
+                            # La sesión anterior termina aquí: no debe publicar más allá.
+                            self._agent.reset()
                             self._weekend_profile = None
                             self._metrics_engine.set_profile(None)
                             self._strategy_engine.set_profile(None)

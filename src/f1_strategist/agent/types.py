@@ -215,6 +215,13 @@ class LLMReply(BaseModel):
         return cls.model_validate_json(text)
 
 
+def wire_reply_schema() -> dict[str, Any]:
+    """Esquema estricto de la respuesta: todos los campos son obligatorios."""
+    schema = LLMReply.model_json_schema()
+    schema["required"] = list(LLMReply.model_fields)
+    return schema
+
+
 @dataclass(frozen=True, slots=True)
 class LLMMessage:
     """Mensaje con formato OpenAI (rol y contenido)."""

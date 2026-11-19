@@ -289,6 +289,20 @@ def test_budget_trims_metrics_and_recent_messages_but_never_facts() -> None:
     assert (len(context.to_json()) + 3) // 4 <= config.context_token_budget
 
 
+def test_budget_trims_oldest_recent_messages_and_keeps_alert_facts() -> None:
+    recent = [f"mensaje {index} " + "x" * 100 for index in range(5)]
+    generous = AgentConfig(context_token_budget=5000, recent_messages=5)
+    kept = ContextBuilder(generous).build_alert(_alert(), state=_state(), recent=recent)
+    assert kept.recent_messages == tuple(recent)
+
+    tight = AgentConfig(context_token_budget=200, recent_messages=5)
+    trimmed = ContextBuilder(tight).build_alert(_alert(), state=_state(), recent=recent)
+    assert len(trimmed.recent_messages) == 1
+    assert trimmed.recent_messages[0] == recent[-1]
+    assert trimmed.alert is not None
+    assert len(trimmed.alert["facts"]) == 2
+
+
 def test_recent_messages_keep_only_the_last_configured_ones() -> None:
     messages = tuple(
         AgentMessage(

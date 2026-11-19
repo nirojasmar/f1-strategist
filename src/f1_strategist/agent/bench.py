@@ -10,14 +10,16 @@ import re
 from statistics import median
 from urllib.parse import urlparse
 
+from pydantic import SecretStr
+
 from ..config import LLMConfig
 from .llm_client import LLMClient
-from .types import LLMMessage, LLMReply, LLMRequest, LLMResponse, LLMStatus
+from .types import LLMMessage, LLMReply, LLMRequest, LLMResponse, LLMStatus, wire_reply_schema
 
 _RESPONSE_FORMAT: dict[str, object] = {
     "json_schema": {
         "name": "llm_check",
-        "schema": LLMReply.model_json_schema(),
+        "schema": wire_reply_schema(),
         "strict": True,
     }
 }
@@ -48,9 +50,13 @@ def diagnostic_config(
     if not selected_model.strip():
         raise ValueError("Configura llm.model o indica --model para diagnosticar el endpoint.")
     values = config.model_dump()
+    target_endpoint = endpoint if endpoint is not None else config.endpoint
+    if _origin(target_endpoint) != _origin(config.endpoint):
+        # No reutilizar la clave de otro origen ni caer en la variable de entorno.
+        values["api_key"] = SecretStr("")
     values.update(
         enabled=True,
-        endpoint=endpoint if endpoint is not None else config.endpoint,
+        endpoint=target_endpoint,
         model=selected_model,
     )
     return LLMConfig.model_validate(values)
@@ -63,7 +69,10 @@ def run_check(client: LLMClient, config: LLMConfig) -> dict[str, object]:
     structured = client.generate(
         _request(
             config,
-            "Devuelve una respuesta JSON válida con priority=informational y language=es.",
+            (
+                'Responde solo con un objeto JSON con "should_speak", "priority", "language" '
+                'y "message", usando priority="informational" y language="es".'
+            ),
             stream=False,
             response_format=_RESPONSE_FORMAT,
         )
@@ -71,10 +80,7 @@ def run_check(client: LLMClient, config: LLMConfig) -> dict[str, object]:
     streaming = client.generate(_request(config, "Escribe exactamente: OK.", stream=True))
 
     simple_ok = _response_ok(simple)
-    structured_ok = _response_ok(structured) and structured.structured_mode in {
-        "json_schema",
-        "json_object",
-    }
+    structured_ok = _structured_ok(structured)
     streaming_ok = _response_ok(streaming) and streaming.ttft_s is not None
     warnings: list[str] = []
     if _small_model(config.model):
@@ -112,7 +118,12 @@ def run_benchmark(
     valid_count = 0
     for _, context, priority in _EXAMPLES:
         response_format = _RESPONSE_FORMAT if config.structured_output != "none" else None
-        request = _request(config, context, stream=True, response_format=response_format)
+        prompt = (
+            f"{context}\n\nResponde solo con un objeto JSON con estas claves: "
+            f'"should_speak" (booleano), "priority" ("{priority}"), "language" ("es"), '
+            '"message" (texto breve) y "reason" (texto).'
+        )
+        request = _request(config, prompt, stream=True, response_format=response_format)
         for _ in range(warmup):
             client.generate(request)
         for _ in range(runs):
@@ -191,6 +202,24 @@ def _request(
 
 def _response_ok(response: LLMResponse) -> bool:
     return response.error is None and bool(response.text.strip())
+
+
+def _structured_ok(response: LLMResponse) -> bool:
+    if not _response_ok(response):
+        return False
+    if response.structured_mode not in {"json_schema", "json_object"}:
+        return False
+    try:
+        reply = LLMReply.model_validate_json(response.text)
+    except ValueError:
+        return False
+    return reply.priority.value == "informational" and reply.language == "es"
+
+
+def _origin(endpoint: str) -> tuple[str, str, int]:
+    parsed = urlparse(endpoint)
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    return parsed.scheme, (parsed.hostname or "").casefold(), port
 
 
 def _valid_reply(response: LLMResponse, priority: str) -> int:

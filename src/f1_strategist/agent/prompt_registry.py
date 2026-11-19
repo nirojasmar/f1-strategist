@@ -16,7 +16,7 @@ from importlib.resources import files
 from importlib.resources.abc import Traversable
 from typing import Any
 
-from .types import ContextKind, ContextPayload, LLMMessage, LLMReply
+from .types import ContextKind, ContextPayload, LLMMessage, wire_reply_schema
 
 PROMPTS_PACKAGE = "f1_strategist.agent.prompts"
 
@@ -83,7 +83,7 @@ class PromptRegistry:
             prompt = self._prompts[ContextKind(kind)]
         except (KeyError, ValueError) as exc:
             raise PromptError(f"Tipo de prompt no soportado: {kind!r}") from exc
-        schema = LLMReply.model_json_schema()
+        schema = wire_reply_schema()
         system_text = f"{self._system.text}\n\n## Esquema JSON de la respuesta\n{_dumps(schema)}"
         user_text = f"{prompt.text}\n\n## Contexto\n{_dumps(context.to_dict())}"
         return RenderedPrompt(

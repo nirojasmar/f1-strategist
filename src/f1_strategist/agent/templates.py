@@ -122,8 +122,8 @@ _UNIT_CODES = {
     "vueltas": "lap",
     "°C": "c",
     "kg/vuelta": "kg",
-    "%/vuelta": "%",
-    "s/vuelta": "s",
+    "%/vuelta": "%/lap",
+    "s/vuelta": "s/lap",
 }
 
 

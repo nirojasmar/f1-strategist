@@ -169,7 +169,7 @@ def test_events_summary_reads_rows_and_reports_suppression(
     assert "fuel_margin" in output
 
 
-def test_events_commands_reject_v8_without_event_history(
+def test_events_commands_accept_v8_and_reject_v7(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     path = tmp_path / "v8.db"
@@ -182,8 +182,13 @@ def test_events_commands_reject_v8_without_event_history(
         connection.execute("DROP TABLE llm_calls")
         connection.execute("PRAGMA user_version = 8")
 
+    assert main(["events", "show", "--session", str(session_id), "--db", str(path)]) == 0
+    capsys.readouterr()
+
+    with sqlite3.connect(path) as connection:
+        connection.execute("PRAGMA user_version = 7")
     assert main(["events", "show", "--session", str(session_id), "--db", str(path)]) == 2
-    assert "requiere esquema v9" in capsys.readouterr().err
+    assert "requiere esquema v8" in capsys.readouterr().err
 
 
 def test_events_commands_report_missing_session(

@@ -33,6 +33,7 @@ from .config import AppConfig, ConfigError, LLMConfig, MetricsConfig, apply_over
 from .console import format_bytes, render, run_console
 from .console_messages import (
     AGENT_EMPTY_MESSAGES,
+    AGENT_EXPORT_OVERWRITES_CAPTURE,
     AGENT_EXPORT_OVERWRITES_DB,
     AGENT_EXPORT_SCHEMA_VERSION,
     AGENT_EXPORT_WRITTEN,
@@ -86,7 +87,6 @@ from .store.queries import (
     session_events,
     session_laps,
 )
-from .store.schema import SCHEMA_VERSION
 from .strategy.engine import StrategyEngine, evaluate_once
 from .strategy.export import STRATEGY_EXPORT_FORMATS, render_strategy_export
 from .strategy.review import review_strategy_evaluations
@@ -1761,10 +1761,10 @@ def _event_session_rows(
     reader = cast(_EventSessionReader, store)
     version_row = reader.connection.execute("PRAGMA user_version").fetchone()
     schema_version = 0 if version_row is None else int(version_row[0])
-    if schema_version < SCHEMA_VERSION:
+    if schema_version < _EVENTS_SCHEMA_VERSION:
         raise StoreError(
             "El historial de eventos requiere esquema "
-            f"v{SCHEMA_VERSION}; la base actual es v{schema_version}."
+            f"v{_EVENTS_SCHEMA_VERSION}; la base actual es v{schema_version}."
         )
     try:
         return (
@@ -2036,6 +2036,7 @@ class _AgentSessionReader(Protocol):
 
 
 _AGENT_SCHEMA_VERSION = 9
+_EVENTS_SCHEMA_VERSION = 8
 _MISSING = object()
 
 
@@ -2305,13 +2306,18 @@ def _render_agent_export(
 def _cmd_agent(args: argparse.Namespace, console: Console) -> int:
     db = _sessions_database(args)
     with SessionStore.open(db, readonly=True) as store:
+        session = require_session(store, args.session)
         calls, messages = _agent_session_rows(store, args.session)
     if args.agent_command == "show":
         return _agent_show(args.session, calls, messages, args.source, args.outcome, console)
     if args.agent_command == "summary":
         return _agent_summary(args.session, calls, messages, console)
-    if args.out is not None and _same_file(args.out, db):
-        raise ValueError(AGENT_EXPORT_OVERWRITES_DB)
+    if args.out is not None:
+        if _same_file(args.out, db):
+            raise ValueError(AGENT_EXPORT_OVERWRITES_DB)
+        capture_path = getattr(session, "capture_path", None)
+        if capture_path is not None and _same_file(args.out, Path(capture_path)):
+            raise ValueError(AGENT_EXPORT_OVERWRITES_CAPTURE)
     output = _render_agent_export(args.session, calls, messages, args.format)
     if args.out is None:
         _write_stdout(output)
@@ -2334,6 +2340,9 @@ def _cmd_events(args: argparse.Namespace, console: Console, err: Console) -> int
 
 
 def _cmd_llm(args: argparse.Namespace, console: Console) -> int:
+    json_path: Path | None = getattr(args, "json", None)
+    if json_path is not None and args.config is not None and _same_file(json_path, args.config):
+        raise ValueError("El informe no puede sobrescribir la configuración.")
     base_config: LLMConfig = load_config(args.config).llm
     config = diagnostic_config(base_config, endpoint=args.endpoint, model=args.model)
     client = OpenAICompatibleClient(config)
@@ -2350,8 +2359,8 @@ def _cmd_llm(args: argparse.Namespace, console: Console) -> int:
         note=args.note,
     )
     output = report_json(report)
-    if args.json is not None:
-        with args.json.open("w", encoding="utf-8", newline="") as handle:
+    if json_path is not None:
+        with json_path.open("w", encoding="utf-8", newline="") as handle:
             handle.write(output)
     console.print(output, markup=False, end="")
     return 0

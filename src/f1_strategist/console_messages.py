@@ -43,6 +43,7 @@ AGENT_SCHEMA_ERROR = (
 )
 AGENT_READER_API_ERROR = "La base de datos no ofrece todavía la API de lectura del agente L9."
 AGENT_EXPORT_OVERWRITES_DB = "La salida no puede sobrescribir la base de datos."
+AGENT_EXPORT_OVERWRITES_CAPTURE = "La salida no puede sobrescribir la captura asociada."
 AGENT_EXPORT_WRITTEN = "Exportación del agente de la sesión {session_id} escrita en {path}"
 AGENT_UNKNOWN_VALUE = "desconocido"
 AGENT_EXPORT_SCHEMA_VERSION = 1

@@ -221,9 +221,19 @@ def test_generation_sends_schema_and_records_call() -> None:
     communicator.submit(_alert(), _sources())
 
     calls, messages = communicator.drain_records()
-    assert client.calls[0].response_format == {
-        "json_schema": {"name": "llm_reply", "schema": {}, "strict": True}
-    }
+    response_format = client.calls[0].response_format
+    assert response_format is not None
+    assert response_format["json_schema"]["name"] == "llm_reply"
+    assert response_format["json_schema"]["strict"] is True
+    schema = response_format["json_schema"]["schema"]
+    assert tuple(schema["required"]) == (
+        "should_speak",
+        "priority",
+        "language",
+        "message",
+        "reason",
+        "used_facts",
+    )
     assert calls[0].outcome == "used"
     assert calls[0].alert_id == "alert1"
     assert messages[0].llm_call_id == "alert1:llm"
@@ -396,18 +406,36 @@ def test_model_down_keeps_emitting_templates() -> None:
     assert all(message.source is MessageSource.TEMPLATE for message in snapshot.messages)
 
 
-def test_observe_sends_only_new_alerts_and_survives_engine_reset() -> None:
+def test_observe_survives_engine_reset_markers_and_reuses_alert_ids() -> None:
     client = FakeClient()
     communicator = _communicator(client, mode="template")
     alert = _alert()
-    events = EventsSnapshot(alerts=(alert,))
+    events = EventsSnapshot(alerts=(alert,), reset_seq=0)
     communicator.observe(events, _sources())
     communicator.observe(events, _sources())
     assert len(communicator.snapshot().messages) == 1
-    communicator.observe(EventsSnapshot(), _sources(11.0))
-    communicator.observe(events, _sources(12.0))
+    # Cambio de sesión: la compuerta reinicia y el ID puede reutilizarse.
+    communicator.observe(EventsSnapshot(alerts=(alert,), reset_seq=1), _sources(11.0))
     assert len(communicator.snapshot().messages) == 2
+    # Flashback: otro reinicio, sin depender de una instantánea vacía.
+    communicator.observe(EventsSnapshot(alerts=(alert,), reset_seq=2), _sources(12.0))
+    assert len(communicator.snapshot().messages) == 3
     assert client.calls == []
+
+
+def test_critical_alert_uses_llm_even_when_model_declines() -> None:
+    validator = FakeValidator(should_speak=False)
+    communicator = _communicator(FakeClient(), validator=validator, critical_uses_llm=True)
+    communicator.start()
+    communicator.submit(_alert("alert1", priority=EventPriority.CRITICAL), _sources())
+    assert communicator.wait_idle(timeout=5.0)
+    communicator.stop()
+
+    snapshot = communicator.snapshot()
+    assert [message.alert_id for message in snapshot.messages] == ["alert1"]
+    assert snapshot.messages[0].source is MessageSource.LLM
+    assert validator.calls == 1
+    assert "declined" not in snapshot.counters
 
 
 def test_no_speak_is_respected_for_non_critical_only() -> None:
@@ -521,11 +549,25 @@ def test_playback_template_messages_are_invariant_to_speed(
     monkeypatch.setattr("f1_strategist.playback.parse_packet", fake_parse)
     monkeypatch.setattr("f1_strategist.playback.EventEngine", _OneAlertEngine)
 
+    class _FastClock:
+        def __init__(self) -> None:
+            self.now = 0.0
+
+        def __call__(self) -> float:
+            return self.now
+
+        def wait(self, timeout: float | None) -> bool:
+            self.now += timeout if timeout is not None else 0.0
+            return True
+
     results = []
     for speed in (0.0, 1.0, 4.0):
-        session = PlaybackSession(path, speed=speed)
+        clock = _FastClock()
+        session = PlaybackSession(path, speed=speed, clock=clock, wait_timeout=clock.wait)
         session.play()
         assert session.wait(timeout=30.0)
+        assert session.error is None
+        assert session.runs_completed == 1
         snapshot = session.agent_snapshot()
         results.append(snapshot.messages)
 

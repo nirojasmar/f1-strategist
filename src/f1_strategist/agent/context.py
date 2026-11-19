@@ -91,6 +91,13 @@ def _sanitize_value(value: Any) -> Any:
     return value
 
 
+def _fact_value(name: str, value: Any) -> Any:
+    """Publica car_index en la convención 1-based que se muestra al piloto."""
+    if name == "car_index" and isinstance(value, int) and not isinstance(value, bool):
+        return value + 1
+    return _sanitize_value(value)
+
+
 def _estimate_tokens(payload: ContextPayload) -> int:
     """Estimación determinista y barata: un token cada cuatro caracteres."""
     return max(1, (len(payload.to_json()) + 3) // 4)
@@ -236,7 +243,7 @@ class ContextBuilder:
             "category": alert.category,
             "lap": lap,
             "facts": [
-                {"name": name, "value": _sanitize_value(value), "unit": _FACT_UNITS.get(name, "")}
+                {"name": name, "value": _fact_value(name, value), "unit": _FACT_UNITS.get(name, "")}
                 for name, value in alert.facts
             ],
         }

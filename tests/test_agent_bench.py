@@ -45,6 +45,21 @@ def test_check_uses_fake_client_and_reports_capabilities() -> None:
     assert [request.stream for request in client.requests] == [False, False, True]
 
 
+def test_check_rejects_non_json_structured_reply() -> None:
+    client = FakeLLMClient(
+        [
+            "OK",
+            LLMResponse(text="OK", structured_mode="json_schema"),
+            LLMResponse(text="OK", ttft_s=0.1, total_s=0.2),
+        ],
+        health=LLMHealth(status=LLMStatus.AVAILABLE, model="test-model"),
+    )
+
+    report = run_check(client, LLMConfig(enabled=True, model="test-model"))
+
+    assert report["structured_output"] is False
+
+
 def test_check_reports_endpoint_failure_without_throwing() -> None:
     def unavailable(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(503)

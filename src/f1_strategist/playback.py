@@ -11,7 +11,7 @@ from __future__ import annotations
 import math
 import threading
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 
 from .agent.communicator import AgentCommunicator, AlertSources, build_communicator
@@ -61,6 +61,8 @@ class PlaybackSession:
         agent_config: AgentConfig | None = None,
         llm_config: LLMConfig | None = None,
         agent_communicator: AgentCommunicator | None = None,
+        clock: Callable[[], float] = time.monotonic,
+        wait_timeout: Callable[[float | None], bool] | None = None,
     ) -> None:
         if start_lap is not None and start_lap < 1:
             raise ValueError("start_lap debe ser positivo")
@@ -81,6 +83,8 @@ class PlaybackSession:
         self._profiles_by_uid = dict(profiles_by_uid or {})
         self._pending_seek: int | None = None
         self._condition = threading.Condition()
+        self._clock = clock
+        self._wait_timeout = wait_timeout
         self._paused = False
         self._stop = False
         self._finished = False
@@ -418,7 +422,7 @@ class PlaybackSession:
 
     def _wait_gap(self, gap_s: float, deadline: float | None) -> tuple[str | None, float]:
         with self._condition:
-            now = time.monotonic()
+            now = self._clock()
             if deadline is None:
                 deadline = now
             speed = self._speed
@@ -431,12 +435,12 @@ class PlaybackSession:
                 if self._pending_seek is not None:
                     return _RESTART, deadline
                 if self._paused:
-                    paused_at = time.monotonic()
+                    paused_at = self._clock()
                     while self._paused and not self._stop and self._pending_seek is None:
                         self._condition.wait()
-                    deadline += time.monotonic() - paused_at
+                    deadline += self._clock() - paused_at
                     continue
-                now = time.monotonic()
+                now = self._clock()
                 speed = self._speed
                 if speed == 0:
                     return None, now
@@ -448,7 +452,11 @@ class PlaybackSession:
                 remaining = deadline - now
                 if remaining <= 0:
                     return None, deadline
-                self._condition.wait(timeout=min(remaining, _POLL_INTERVAL_S))
+                timeout = min(remaining, _POLL_INTERVAL_S)
+                if self._wait_timeout is not None:
+                    self._wait_timeout(timeout)
+                else:
+                    self._condition.wait(timeout=timeout)
 
 
 def _validate_speed(speed: float) -> float:
