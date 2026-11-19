@@ -2079,8 +2079,14 @@ def _agent_value_text(value: object, default: str = "—") -> str:
 
 
 def _agent_call_id(call: object) -> str | None:
-    value = _agent_field(call, "llm_call_id", "call_id", "id", "seq")
-    return None if value is None else str(value)
+    value = _agent_field(call, "llm_call_id", "call_id", "id")
+    if value is not None:
+        return str(value)
+    alert_id = _agent_field(call, "alert_id")
+    if alert_id is not None:
+        return f"{alert_id}:llm"
+    seq = _agent_field(call, "seq")
+    return None if seq is None else str(seq)
 
 
 def _agent_show(

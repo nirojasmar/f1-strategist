@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from . import __version__
-from .agent.communicator import AgentCommunicator, AlertSources
+from .agent.communicator import AgentCommunicator, AlertSources, build_communicator
 from .agent.types import AgentSnapshot
 from .capture import CapturedPacket, CaptureWriter
 from .config import AppConfig
@@ -51,7 +51,7 @@ class CaptureSession:
         self._metrics_engine = metrics_engine or MetricsEngine(config.metrics)
         self._strategy_engine = strategy_engine or StrategyEngine(config.strategy, config.metrics)
         self._event_engine = EventEngine(config)
-        self._agent = agent_communicator or AgentCommunicator(config.agent, config.llm)
+        self._agent = agent_communicator or build_communicator(config.agent, config.llm)
         self._queue: queue.Queue[CapturedPacket] = queue.Queue(maxsize=queue_size)
         self._receiver = UdpReceiver(config.telemetry, self._queue, self.stats)
         self._writer: CaptureWriter | None = None
@@ -121,6 +121,11 @@ class CaptureSession:
         if self._consumer is not None:
             self._consumer.join()
         self._agent.stop()
+        recorder = self._recorder
+        if recorder is not None:
+            calls, messages = self._agent.drain_records()
+            if calls or messages:
+                recorder.record_agent(calls, messages, self._last_observed_at or 0.0)
         capture_sha256: str | None = None
         writer = self._writer
         if writer is not None:
@@ -476,6 +481,10 @@ class CaptureSession:
                                     observed_at=observed_at,
                                 ),
                             )
+                            calls, messages = self._agent.drain_records()
+                            recorder = self._recorder
+                            if recorder is not None and (calls or messages):
+                                recorder.record_agent(calls, messages, observed_at)
                         except Exception as exc:
                             _LOGGER.exception("Unexpected error while dispatching agent alerts")
                             self._record_error(message("agent_communicator_error", error=str(exc)))

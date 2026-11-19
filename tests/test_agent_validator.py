@@ -75,6 +75,39 @@ def test_valid_reply_passes() -> None:
     assert result.reply.used_facts == ("gain_s", "confidence")
 
 
+def test_real_context_fact_and_metric_shapes_validate() -> None:
+    context = _context(
+        alert={
+            "message_key": "event.strategy_pit_recommended",
+            "priority": "strategic",
+            "facts": [{"name": "gain_s", "value": 2.4, "unit": "s"}],
+        },
+        metrics={"wear_mean_pct": {"value": 42.0, "unit": "pct", "quality": "ok"}},
+    )
+    text = _reply(message="Ganamos 2,4 s; desgaste 42 %.", used_facts=["gain_s"])
+    result = ResponseValidator(AppConfig()).validate(text, context, _alert(facts=()))
+    assert result.valid, result.errors
+
+
+def test_car_index_is_validated_one_based_and_minutes_are_units() -> None:
+    context = _context(
+        alert={
+            "message_key": "event.rival_pit_stop",
+            "priority": "strategic",
+            "facts": [
+                {"name": "car_index", "value": 0, "unit": ""},
+                {"name": "horizon_min", "value": 5.0, "unit": "min"},
+            ],
+        }
+    )
+    text = _reply(
+        message="El coche 1 para en 5 min.",
+        used_facts=["car_index", "horizon_min"],
+    )
+    result = ResponseValidator(AppConfig()).validate(text, context, _alert(facts=()))
+    assert result.valid, result.errors
+
+
 def test_dot_decimal_and_word_number_pass() -> None:
     assert _validate(_reply(message="Ganamos 2.4 s.")).valid
     assert _validate(_reply(message="Quedan dos vueltas.")).valid

@@ -18,6 +18,7 @@ from pydantic import ValidationError
 
 from ..config import AgentConfig, AppConfig
 from ..events.types import AgentAlert, EventPriority
+from .templates import fact_unit
 from .types import ContextPayload, LLMReply, ValidationResult
 
 
@@ -38,7 +39,7 @@ class ValidationIssue(StrEnum):
     REPEATED_MESSAGE = "repeated_message"
 
 
-_NUMBER_RE = re.compile(r"(?<![\w.,])[-+−]?\d+(?:[.,]\d+)?")
+_NUMBER_RE = re.compile(r"(?<![.,])[-+−]?\d+(?:[.,]\d+)?")
 _WORD_NUMBERS = {
     "dos": 2,
     "tres": 3,
@@ -85,6 +86,9 @@ _UNIT_ALIASES: tuple[tuple[str, str], ...] = tuple(
             ("grados", "c"),
             ("°c", "c"),
             ("ºc", "c"),
+            ("minutos", "min"),
+            ("minuto", "min"),
+            ("min", "min"),
             ("por ciento", "%"),
             ("porciento", "%"),
             ("s", "s"),
@@ -228,7 +232,11 @@ def _mapping_fact_items(raw: object) -> list[str]:
     if isinstance(raw, (list, tuple)):
         names: list[str] = []
         for item in raw:
-            if isinstance(item, (list, tuple)) and len(item) == 2:
+            if isinstance(item, Mapping):
+                name = item.get("name")
+                if name is not None:
+                    names.append(str(name))
+            elif isinstance(item, (list, tuple)) and len(item) == 2:
                 names.append(str(item[0]))
         return names
     return []
@@ -241,7 +249,7 @@ def _numbers(context: ContextPayload, alert: AgentAlert | None) -> list[tuple[st
         for name, value in alert.facts:
             number = _as_number(value)
             if number is not None:
-                values[name] = number
+                _store_number(values, name, number)
     for block in (context.alert, context.situation, context.strategy, context.metrics):
         if isinstance(block, Mapping):
             _collect_numbers(block, values)
@@ -258,17 +266,32 @@ def _collect_numbers(block: Mapping[Any, Any], values: dict[str, float], depth: 
                 _collect_numbers(raw_value, values, depth + 1)
             elif isinstance(raw_value, (list, tuple)):
                 for item in raw_value:
-                    if isinstance(item, (list, tuple)) and len(item) == 2:
+                    if isinstance(item, Mapping):
+                        number = _as_number(item.get("value"))
+                        if number is not None and item.get("name") is not None:
+                            _store_number(values, str(item["name"]), number)
+                    elif isinstance(item, (list, tuple)) and len(item) == 2:
                         number = _as_number(item[1])
                         if number is not None:
-                            values[str(item[0])] = number
+                            _store_number(values, str(item[0]), number)
             continue
         if isinstance(raw_value, Mapping):
-            _collect_numbers(raw_value, values, depth + 1)
+            # Las métricas llegan como ``{clave: {"value", "unit", "quality"}}``.
+            if "value" in raw_value:
+                number = _as_number(raw_value.get("value"))
+                if number is not None:
+                    _store_number(values, name, number)
+            else:
+                _collect_numbers(raw_value, values, depth + 1)
             continue
         number = _as_number(raw_value)
         if number is not None:
-            values[name] = number
+            _store_number(values, name, number)
+
+
+def _store_number(values: dict[str, float], name: str, number: float) -> None:
+    # ``format_fact`` muestra car_index 1-based; el contexto lo guarda 0-based.
+    values[name] = number + 1 if name == "car_index" else number
 
 
 def _as_number(value: object) -> float | None:
@@ -330,13 +353,12 @@ def _unit_after(message: str, end: int) -> str | None:
 
 
 def _fact_unit(name: str) -> str | None:
-    """Unidad esperada según el sufijo del nombre del hecho.
-
-    shortcut: la unidad se deduce del sufijo del nombre (``_s``, ``_pct``...)
-    hasta que ``format_fact`` (L6) sea la fuente única de formato.
-    """
+    """Unidad esperada: primero la tabla de ``format_fact`` y luego el sufijo."""
     if name in _LAP_FACTS:
         return "lap"
+    unit = fact_unit(name)
+    if unit is not None:
+        return unit
     if name.endswith("_pct_per_lap"):
         return "%"
     if name.endswith("_s_per_lap"):

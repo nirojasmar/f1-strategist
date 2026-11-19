@@ -111,7 +111,8 @@ def run_benchmark(
     samples: list[LLMResponse] = []
     valid_count = 0
     for _, context, priority in _EXAMPLES:
-        request = _request(config, context, stream=True)
+        response_format = _RESPONSE_FORMAT if config.structured_output != "none" else None
+        request = _request(config, context, stream=True, response_format=response_format)
         for _ in range(warmup):
             client.generate(request)
         for _ in range(runs):

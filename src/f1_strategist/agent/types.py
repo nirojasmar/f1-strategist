@@ -344,6 +344,35 @@ class LLMResponse:
 
 
 @dataclass(frozen=True, slots=True)
+class LLMCallRecord:
+    """Resultado de una llamada al LLM, tal como llega al grabador.
+
+    El grabador añade ``seq`` y el instante simulado; el resto son datos ya
+    interpretados. Nunca incluye la clave de API ni cabeceras HTTP.
+    """
+
+    kind: str
+    model: str
+    outcome: str
+    alert_id: str | None = None
+    endpoint_host: str | None = None
+    prompt_version: str | None = None
+    parameters_json: str | None = None
+    context_hash: str | None = None
+    context_json: str | None = None
+    response_text: str | None = None
+    reply_json: str | None = None
+    validation_valid: bool | None = None
+    validation_errors: tuple[str, ...] = ()
+    fallback_reason: str | None = None
+    error: str | None = None
+    ttft_s: float | None = None
+    total_s: float | None = None
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class ValidationResult:
     """Salida del validador; ``errors`` son códigos estables, no texto libre."""
 

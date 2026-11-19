@@ -10,7 +10,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Protocol
 
-from .agent.communicator import AgentCommunicator, AlertSources
+from .agent.communicator import AgentCommunicator, AlertSources, build_communicator
 from .agent.types import AgentSnapshot
 from .capture import CaptureReader
 from .config import AppConfig
@@ -60,7 +60,7 @@ class OfflineEventPipeline:
         self._metrics_engine = MetricsEngine(config.metrics)
         self._strategy_engine = StrategyEngine(config.strategy, config.metrics)
         self._event_engine = EventEngine(config)
-        self._agent = agent_communicator or AgentCommunicator(
+        self._agent = agent_communicator or build_communicator(
             config.agent,
             config.llm,
             mode=config.agent.offline_mode,
@@ -104,6 +104,13 @@ class OfflineEventPipeline:
                 observed_at=observed_at,
             ),
         )
+        self._agent.drain_records()
+
+    def stop(self) -> None:
+        """Detiene el hilo del comunicador si llegó a arrancarse."""
+        self._agent.stop()
+
+    close = stop
 
     def race_snapshot(self) -> RaceStateSnapshot:
         return self._race_state.snapshot()

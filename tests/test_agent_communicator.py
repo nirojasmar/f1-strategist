@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import struct
 import threading
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 import pytest
 
@@ -14,6 +14,7 @@ from f1_strategist.agent.communicator import (
     AlertSources,
     PromptSet,
     RenderedPrompt,
+    build_communicator,
 )
 from f1_strategist.agent.types import (
     ContextKind,
@@ -93,6 +94,8 @@ class FakeBuilder:
 
 class _Rendered:
     messages: Sequence[LLMMessage] = (LLMMessage(role="user", content="hola"),)
+    prompt_version = "test/1"
+    response_schema: Mapping[str, Any] = {}
 
 
 class _PromptSet:
@@ -210,6 +213,28 @@ def test_valid_response_emits_llm_message() -> None:
     assert snapshot.messages[0].text == "LLM alert1"
     assert snapshot.counters["used"] == 1
     assert len(client.calls) == 1
+
+
+def test_generation_sends_schema_and_records_call() -> None:
+    client = FakeClient()
+    communicator = _communicator(client, mode="recorded")
+    communicator.submit(_alert(), _sources())
+
+    calls, messages = communicator.drain_records()
+    assert client.calls[0].response_format == {
+        "json_schema": {"name": "llm_reply", "schema": {}, "strict": True}
+    }
+    assert calls[0].outcome == "used"
+    assert calls[0].alert_id == "alert1"
+    assert messages[0].llm_call_id == "alert1:llm"
+
+
+def test_build_communicator_respects_llm_enabled() -> None:
+    live = build_communicator(AgentConfig(), LLMConfig(enabled=True, model="fake-model"))
+    assert live.mode == "live"
+    live.stop()
+    disabled = build_communicator(AgentConfig(), LLMConfig())
+    assert disabled.mode == "template"
 
 
 def test_invalid_response_falls_back_to_template() -> None:
@@ -346,6 +371,7 @@ def test_template_mode_never_calls_the_model() -> None:
     snapshot = communicator.snapshot()
     assert snapshot.messages[0].source is MessageSource.TEMPLATE
     assert snapshot.counters["fallback:llm_disabled"] == 1
+    assert "used" not in snapshot.counters
     assert client.calls == []
 
 
@@ -424,6 +450,11 @@ def test_capture_session_exposes_the_injected_communicator() -> None:
     communicator.submit(_alert(), _sources())
     session = CaptureSession(AppConfig(), agent_communicator=communicator)
     assert session.agent_snapshot().messages == communicator.snapshot().messages
+
+
+def test_capture_session_builds_live_agent_when_llm_is_enabled() -> None:
+    session = CaptureSession(AppConfig(llm=LLMConfig(enabled=True, model="fake-model")))
+    assert session._agent.mode == "live"
 
 
 def _write_capture(path: Path, packets: Sequence[tuple[ParsedPacket, float]]) -> None:

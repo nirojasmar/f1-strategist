@@ -127,3 +127,4 @@ def test_benchmark_reports_percentiles_validity_and_stable_json() -> None:
     assert json.loads(report_json(report)) == report
     assert report_json(report) == report_json(report)
     assert len(client.requests) == 2
+    assert all(request.response_format is not None for request in client.requests)

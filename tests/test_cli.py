@@ -711,3 +711,13 @@ def test_events_simulate_includes_decisions_from_the_deferred_queue() -> None:
     assert deferred_row[2] == "data_stale"
     assert deferred_row[4] == collector.timeline[0][4]
     assert deferred_row[5:] == ("defer", "deferred")
+
+
+def test_agent_call_id_falls_back_to_alert_id() -> None:
+    from f1_strategist.cli import _agent_call_id
+    from f1_strategist.store import StoredLLMCall
+
+    call = StoredLLMCall(
+        seq=7, t_sim_s=1.0, kind="alert", model="model", outcome="used", alert_id="a1"
+    )
+    assert _agent_call_id(call) == "a1:llm"

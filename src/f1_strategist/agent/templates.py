@@ -118,6 +118,23 @@ def format_fact(name: str, value: float | int | str | None, language: str = "es"
     return f"{_fact_value_text(name, value, decimals, language)} {unit}".strip()
 
 
+_UNIT_CODES = {
+    "vueltas": "lap",
+    "°C": "c",
+    "kg/vuelta": "kg",
+    "%/vuelta": "%",
+    "s/vuelta": "s",
+}
+
+
+def fact_unit(name: str) -> str | None:
+    """Unidad canónica del validador para un hecho, o ``None`` si no es numérico."""
+    spec = _FACT_SPECS.get(name)
+    if spec is None:
+        return None
+    return _UNIT_CODES.get(spec[1], spec[1])
+
+
 def _fact_value_text(
     name: str,
     value: float | int | str | None,

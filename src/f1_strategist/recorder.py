@@ -14,7 +14,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
-from .agent.types import AgentMessage
+from .agent.communicator import AgentCommunicator, AlertSources, build_communicator
+from .agent.types import AgentMessage, LLMCallRecord
 from .config import AppConfig, MetricsConfig, RecordingConfig, StrategyConfig
 from .events.engine import EventEngine
 from .events.types import EventSignal, GateDecision
@@ -175,35 +176,6 @@ class _Barrier:
     """Marca de cola que se confirma después de todos los lotes anteriores."""
 
     completed: threading.Event
-
-
-@dataclass(frozen=True, slots=True)
-class LLMCallRecord:
-    """Resultado de una llamada al LLM, tal como llega al grabador.
-
-    El grabador añade ``seq`` y el instante simulado; el resto son datos ya
-    interpretados. Nunca incluye la clave de API ni cabeceras HTTP.
-    """
-
-    kind: str
-    model: str
-    outcome: str
-    alert_id: str | None = None
-    endpoint_host: str | None = None
-    prompt_version: str | None = None
-    parameters_json: str | None = None
-    context_hash: str | None = None
-    context_json: str | None = None
-    response_text: str | None = None
-    reply_json: str | None = None
-    validation_valid: bool | None = None
-    validation_errors: tuple[str, ...] = ()
-    fallback_reason: str | None = None
-    error: str | None = None
-    ttft_s: float | None = None
-    total_s: float | None = None
-    prompt_tokens: int | None = None
-    completion_tokens: int | None = None
 
 
 def serialize_config(config: AppConfig) -> str:
@@ -1420,11 +1392,13 @@ class _IngestCollector:
         event_engine: EventEngine,
         *,
         profiles_by_uid: Mapping[int, WeekendProfile],
+        agent: AgentCommunicator | None = None,
     ) -> None:
         self.engine = engine
         self.strategy_engine = strategy_engine
         self.recorder = recorder
         self.event_engine = event_engine
+        self.agent = agent
         self.profiles_by_uid = dict(profiles_by_uid)
         self.events: list[RaceEvent] = []
         self.state = RaceState(self.events.append)
@@ -1498,6 +1472,21 @@ class _IngestCollector:
         if evaluation is not None:
             self.recorder.record_events(evaluation.signals, evaluation.decisions, observed_at)
         self.recorder.record_strategy(self.strategy_engine.snapshot())
+        if self.agent is not None:
+            events_snapshot = self.event_engine.snapshot()
+            self.agent.observe(
+                events_snapshot,
+                AlertSources(
+                    state=snapshot,
+                    metrics=self.engine.snapshot(),
+                    strategy=self.strategy_engine.snapshot(),
+                    events=events_snapshot,
+                    observed_at=observed_at,
+                ),
+            )
+            calls, messages = self.agent.drain_records()
+            if calls or messages:
+                self.recorder.record_agent(calls, messages, observed_at)
 
 
 def ingest_capture(
@@ -1534,12 +1523,15 @@ def ingest_capture(
         metrics_config=app_config.metrics,
         strategy_config=app_config.strategy,
     )
+    agent = build_communicator(app_config.agent, app_config.llm, mode=app_config.agent.offline_mode)
+    agent.start()
     collector = _IngestCollector(
         engine,
         strategy_engine,
         recorder,
         event_engine,
         profiles_by_uid=registered_profiles,
+        agent=agent,
     )
     offline: OfflineResult | None = None
     metrics: MetricsSnapshot | None = None
@@ -1566,6 +1558,10 @@ def ingest_capture(
             run_info=run_info,
         )
     finally:
+        agent.stop()
+        calls, messages = agent.drain_records()
+        if calls or messages:
+            recorder.record_agent(calls, messages, collector.last_observed_at or 0.0)
         recorder.stop(
             fingerprint=fingerprint,
             incomplete=(offline is None or offline.truncated or collector.event_evaluation_failed),

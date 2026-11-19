@@ -14,7 +14,7 @@ import time
 from collections.abc import Mapping
 from pathlib import Path
 
-from .agent.communicator import AgentCommunicator, AlertSources
+from .agent.communicator import AgentCommunicator, AlertSources, build_communicator
 from .agent.types import AgentSnapshot
 from .capture import CaptureReader
 from .config import (
@@ -70,7 +70,7 @@ class PlaybackSession:
         self._events_config = events_config or EventsConfig()
         self._gate_config = gate_config or GateConfig()
         agent_config = agent_config or AgentConfig()
-        self._agent = agent_communicator or AgentCommunicator(
+        self._agent = agent_communicator or build_communicator(
             agent_config,
             llm_config or LLMConfig(),
             mode=agent_config.offline_mode,
@@ -381,6 +381,7 @@ class PlaybackSession:
                     observed_at=observed_at,
                 ),
             )
+            self._agent.drain_records()
             last_state = state
             last_observed_at = observed_at
             if seeking and state.current_lap is not None and state.current_lap >= (seek_lap or 1):

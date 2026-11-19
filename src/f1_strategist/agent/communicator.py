@@ -8,24 +8,31 @@ plantilla con un motivo registrado.
 
 from __future__ import annotations
 
+import json
 import threading
 import time
 from collections import deque
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Literal, Protocol
+from typing import Any, Literal, Protocol
+from urllib.parse import urlsplit
 
 from ..config import AgentConfig, LLMConfig
 from ..events.types import AgentAlert, EventPriority, EventsSnapshot, Fact
 from ..metrics.engine import MetricsSnapshot
 from ..race_state import RaceStateSnapshot
 from ..strategy.types import StrategySnapshot
+from .context import ContextBuilder as DefaultContextBuilder
+from .llm_client import OpenAICompatibleClient
+from .prompt_registry import PromptRegistry as DefaultPromptRegistry
 from .types import (
     AgentMessage,
     AgentSnapshot,
+    CallOutcome,
     ContextKind,
     ContextPayload,
     FallbackReason,
+    LLMCallRecord,
     LLMHealth,
     LLMMessage,
     LLMReply,
@@ -35,6 +42,7 @@ from .types import (
     MessageSource,
     ValidationResult,
 )
+from .validator import ResponseValidator as DefaultResponseValidator
 
 AgentMode = Literal["template", "recorded", "live"]
 
@@ -67,7 +75,14 @@ class ContextBuilder(Protocol):
 class RenderedPrompt(Protocol):
     """Contrato mínimo de L4: mensajes listos para enviar al cliente."""
 
-    messages: Sequence[LLMMessage]
+    @property
+    def messages(self) -> Sequence[LLMMessage]: ...
+
+    @property
+    def prompt_version(self) -> str: ...
+
+    @property
+    def response_schema(self) -> Mapping[str, Any]: ...
 
 
 class PromptSet(Protocol):
@@ -117,6 +132,17 @@ class _Pending:
     cancel: threading.Event
 
 
+@dataclass(frozen=True, slots=True)
+class _Generation:
+    text: str = ""
+    error: FallbackReason | None = None
+    latency_s: float = 0.0
+    prompt_version: str | None = None
+    response: LLMResponse | None = None
+    called: bool = False
+    error_text: str | None = None
+
+
 class AgentCommunicator:
     """Orquesta el mensaje del piloto sin bloquear al consumidor."""
 
@@ -149,6 +175,8 @@ class AgentCommunicator:
         self._queue: deque[_Pending] = deque()
         self._in_flight: _Pending | None = None
         self._messages: deque[AgentMessage] = deque(maxlen=max(1, agent.recent_messages))
+        self._call_records: list[LLMCallRecord] = []
+        self._message_records: list[AgentMessage] = []
         self._counters: dict[str, int] = {}
         self._last_latency_s: float | None = None
         self._error: str | None = None
@@ -207,6 +235,15 @@ class AgentCommunicator:
 
         with self._condition:
             return self._condition.wait_for(idle, timeout=timeout)
+
+    def drain_records(self) -> tuple[tuple[LLMCallRecord, ...], tuple[AgentMessage, ...]]:
+        """Entrega las llamadas y mensajes nuevos al grabador y vacía el búfer."""
+        with self._condition:
+            calls = tuple(self._call_records)
+            messages = tuple(self._message_records)
+            self._call_records.clear()
+            self._message_records.clear()
+        return calls, messages
 
     # ------------------------------------------------------------------
     # Entrada
@@ -319,6 +356,8 @@ class AgentCommunicator:
             if in_flight is not None:
                 in_flight.cancel.set()
             self._messages.clear()
+            self._call_records.clear()
+            self._message_records.clear()
             self._counters.clear()
             self._seen.clear()
             self._superseded.clear()
@@ -378,30 +417,83 @@ class AgentCommunicator:
                 self._count_locked("discarded_obsolete")
                 return
             self._in_flight = pending
+        generation: _Generation | None = None
         try:
-            text, error, latency_s = self._generate(pending)
+            generation = self._generate(pending)
             if pending.cancel.is_set() or self._is_obsolete(pending):
                 with self._condition:
                     self._count_locked("discarded_obsolete")
+                self._record_call(
+                    pending,
+                    generation,
+                    CallOutcome.DISCARDED_OBSOLETE,
+                    fallback_reason=FallbackReason.OBSOLETE,
+                )
                 return
-            if error is not None:
-                self._degrade(pending, error, latency_s)
+            if generation.error is not None:
+                self._record_call(
+                    pending,
+                    generation,
+                    CallOutcome.FALLBACK,
+                    fallback_reason=generation.error,
+                )
+                self._degrade(pending, generation.error, generation.latency_s)
                 return
-            if not text.strip():
-                self._degrade(pending, FallbackReason.VALIDATION_FAILED, latency_s, reachable=True)
+            if not generation.text.strip():
+                self._record_call(
+                    pending,
+                    generation,
+                    CallOutcome.FALLBACK,
+                    fallback_reason=FallbackReason.VALIDATION_FAILED,
+                )
+                self._degrade(
+                    pending, FallbackReason.VALIDATION_FAILED, generation.latency_s, reachable=True
+                )
                 return
             context = pending.context
             if self._validator is None:
-                self._degrade(pending, FallbackReason.VALIDATION_FAILED, latency_s, reachable=True)
+                self._record_call(
+                    pending,
+                    generation,
+                    CallOutcome.FALLBACK,
+                    fallback_reason=FallbackReason.VALIDATION_FAILED,
+                )
+                self._degrade(
+                    pending, FallbackReason.VALIDATION_FAILED, generation.latency_s, reachable=True
+                )
                 return
-            result = self._validator.validate(text, context, pending.alert)
+            result = self._validator.validate(generation.text, context, pending.alert)
             if not result.valid or result.reply is None:
-                self._degrade(pending, FallbackReason.VALIDATION_FAILED, latency_s, reachable=True)
+                self._record_call(
+                    pending,
+                    generation,
+                    CallOutcome.FALLBACK,
+                    validation=result,
+                    fallback_reason=FallbackReason.VALIDATION_FAILED,
+                )
+                self._degrade(
+                    pending, FallbackReason.VALIDATION_FAILED, generation.latency_s, reachable=True
+                )
                 return
-            self._emit_reply(pending, result.reply, latency_s)
+            reply = result.reply
+            if not reply.should_speak and pending.alert.priority is not EventPriority.CRITICAL:
+                with self._condition:
+                    self._count_locked("declined")
+                self._record_call(pending, generation, CallOutcome.DECLINED, validation=result)
+                return
+            self._record_call(pending, generation, CallOutcome.USED, validation=result)
+            self._emit_reply(pending, reply, generation.latency_s)
         except Exception as exc:
             with self._condition:
                 self._error = f"{type(exc).__name__}: {exc}"
+            if generation is not None:
+                self._record_call(
+                    pending,
+                    generation,
+                    CallOutcome.FALLBACK,
+                    fallback_reason=FallbackReason.UNAVAILABLE,
+                    error=f"{type(exc).__name__}: {exc}",
+                )
             self._degrade(pending, FallbackReason.UNAVAILABLE, 0.0)
         finally:
             with self._condition:
@@ -409,14 +501,23 @@ class AgentCommunicator:
                     self._in_flight = None
                 self._condition.notify_all()
 
-    def _generate(self, pending: _Pending) -> tuple[str, FallbackReason | None, float]:
+    def _generate(self, pending: _Pending) -> _Generation:
         assert self._client is not None
         started = self._clock()
         if self._registry is None:
-            return "", FallbackReason.UNAVAILABLE, 0.0
+            return _Generation(error=FallbackReason.UNAVAILABLE)
         try:
             prompt_set = self._registry.load(self.agent.language)
             rendered = prompt_set.render(ContextKind.ALERT, pending.context)
+            response_format = None
+            if self.llm.structured_output != "none":
+                response_format = {
+                    "json_schema": {
+                        "name": "llm_reply",
+                        "schema": rendered.response_schema,
+                        "strict": True,
+                    }
+                }
             request = LLMRequest(
                 model=self.llm.model,
                 messages=tuple(rendered.messages),
@@ -425,23 +526,88 @@ class AgentCommunicator:
                 max_tokens=self.llm.max_tokens,
                 seed=self.llm.seed,
                 stream=self.llm.stream,
+                response_format=response_format,
                 extra_body=dict(self.llm.extra_body),
                 timeout_s=self.agent.timeout_for(pending.alert.priority.value),
             )
             response = self._client.generate(request, cancel=pending.cancel)
         except Exception as exc:
-            return "", _reason_for_error(str(exc)), self._clock() - started
+            return _Generation(
+                error=_reason_for_error(str(exc)),
+                latency_s=self._clock() - started,
+                called=True,
+                error_text=f"{type(exc).__name__}: {exc}",
+            )
         latency_s = self._clock() - started
         if response.error is not None:
-            return "", _reason_for_error(response.error), latency_s
-        return response.text, None, latency_s
+            return _Generation(
+                error=_reason_for_error(response.error),
+                latency_s=latency_s,
+                prompt_version=rendered.prompt_version,
+                response=response,
+                called=True,
+                error_text=response.error,
+            )
+        return _Generation(
+            text=response.text,
+            latency_s=latency_s,
+            prompt_version=rendered.prompt_version,
+            response=response,
+            called=True,
+        )
+
+    def _record_call(
+        self,
+        pending: _Pending,
+        generation: _Generation,
+        outcome: CallOutcome,
+        *,
+        validation: ValidationResult | None = None,
+        fallback_reason: FallbackReason | None = None,
+        error: str | None = None,
+    ) -> None:
+        if not generation.called:
+            return
+        timeout_s = self.agent.timeout_for(pending.alert.priority.value)
+        parameters = {
+            "temperature": self.llm.temperature,
+            "top_p": self.llm.top_p,
+            "max_tokens": self.llm.max_tokens,
+            "seed": self.llm.seed,
+            "stream": self.llm.stream,
+            "timeout_s": timeout_s,
+        }
+        host = urlsplit(self.llm.endpoint).hostname or None
+        response = generation.response
+        reply = validation.reply if validation is not None else None
+        record = LLMCallRecord(
+            kind="alert",
+            model=self.llm.model,
+            outcome=outcome.value,
+            alert_id=pending.alert.alert_id,
+            endpoint_host=host,
+            prompt_version=generation.prompt_version,
+            parameters_json=json.dumps(
+                parameters, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+            ),
+            context_hash=pending.context.context_hash,
+            context_json=pending.context.to_json() if self.agent.record_context else None,
+            response_text=generation.text or None,
+            reply_json=reply.to_json() if reply is not None else None,
+            validation_valid=validation.valid if validation is not None else None,
+            validation_errors=validation.errors if validation is not None else (),
+            fallback_reason=fallback_reason.value if fallback_reason is not None else None,
+            error=error if error is not None else generation.error_text,
+            ttft_s=response.ttft_s if response is not None else None,
+            total_s=response.total_s if response is not None else generation.latency_s,
+            prompt_tokens=response.prompt_tokens if response is not None else None,
+            completion_tokens=response.completion_tokens if response is not None else None,
+        )
+        with self._condition:
+            self._call_records.append(record)
 
     def _emit_reply(self, pending: _Pending, reply: LLMReply, latency_s: float) -> None:
         alert = pending.alert
-        if not reply.should_speak and alert.priority is not EventPriority.CRITICAL:
-            with self._condition:
-                self._count_locked("declined")
-            return
         message = AgentMessage(
             message_id=f"{alert.alert_id}:llm",
             alert_id=alert.alert_id,
@@ -459,6 +625,7 @@ class AgentCommunicator:
         )
         with self._condition:
             self._messages.append(message)
+            self._message_records.append(message)
             self._count_locked("used")
             self._last_latency_s = latency_s
             self._health = LLMHealth(
@@ -525,10 +692,15 @@ class AgentCommunicator:
             emitted_at=sources.observed_at if sources is not None else alert.emitted_at,
             interrupt=alert.interrupt,
             latency_s=latency_s,
+            llm_call_id=(
+                f"{alert.alert_id}:llm"
+                if reason is not None and reason is not FallbackReason.LLM_DISABLED
+                else None
+            ),
         )
         with self._condition:
             self._messages.append(message)
-            self._count_locked("used")
+            self._message_records.append(message)
             if reason is not None:
                 self._count_locked("fallback")
                 self._count_locked(f"fallback:{reason.value}")
@@ -594,6 +766,22 @@ def _resolve_mode(mode: AgentMode | None, llm: LLMConfig, client: LLMClient | No
     if not llm.enabled:
         return "template"
     return "live"
+
+
+def build_communicator(
+    agent: AgentConfig, llm: LLMConfig, *, mode: AgentMode | None = None
+) -> AgentCommunicator:
+    """Compone el comunicador real respetando ``llm.enabled`` y el modo offline."""
+    client = OpenAICompatibleClient(llm) if llm.enabled and mode != "recorded" else None
+    return AgentCommunicator(
+        agent,
+        llm,
+        client=client,
+        builder=DefaultContextBuilder(agent),
+        registry=DefaultPromptRegistry.load(agent.language),
+        validator=DefaultResponseValidator(agent),
+        mode=mode,
+    )
 
 
 def _reason_for_error(error: str) -> FallbackReason:
