@@ -215,6 +215,7 @@ class OpenAICompatibleClient:
         expired: threading.Event,
     ) -> LLMResponse:
         parts: list[str] = []
+        reasoning_parts: list[str] = []
         ttft_s: float | None = None
         finish_reason: str | None = None
         prompt_tokens: int | None = None
@@ -259,6 +260,9 @@ class OpenAICompatibleClient:
                             if ttft_s is None:
                                 ttft_s = self._monotonic() - started
                             parts.append(content)
+                        reasoning_content = delta.get("reasoning_content")
+                        if isinstance(reasoning_content, str) and reasoning_content:
+                            reasoning_parts.append(reasoning_content)
                     finish_reason = _opt_text(choice.get("finish_reason")) or finish_reason
         except httpx.TimeoutException:
             return _error(FallbackReason.CANCELLED if _is_set(cancel) else FallbackReason.TIMEOUT)
@@ -277,11 +281,16 @@ class OpenAICompatibleClient:
         if finish_reason is None and not done:
             # El servidor cerró la conexión antes de terminar la respuesta.
             return LLMResponse(
-                text=text, ttft_s=ttft_s, total_s=total_s, error=FallbackReason.INVALID_JSON.value
+                text=text,
+                reasoning_content="".join(reasoning_parts) or None,
+                ttft_s=ttft_s,
+                total_s=total_s,
+                error=FallbackReason.INVALID_JSON.value,
             )
         return LLMResponse(
             text=_final_text(text, mode, plain_text),
             finish_reason=finish_reason,
+            reasoning_content="".join(reasoning_parts) or None,
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             ttft_s=ttft_s,
@@ -333,10 +342,14 @@ class OpenAICompatibleClient:
         if not isinstance(message, Mapping):
             return _error(FallbackReason.INVALID_JSON)
         content = message.get("content")
+        reasoning_content = message.get("reasoning_content")
         usage = data.get("usage")
         return LLMResponse(
             text=_final_text(content if isinstance(content, str) else "", mode, plain_text),
             finish_reason=_opt_text(choice.get("finish_reason")),
+            reasoning_content=reasoning_content
+            if isinstance(reasoning_content, str) and reasoning_content
+            else None,
             prompt_tokens=_opt_int(usage.get("prompt_tokens"))
             if isinstance(usage, Mapping)
             else None,

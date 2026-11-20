@@ -26,6 +26,7 @@ from rich.text import Text
 
 from . import __version__
 from .agent.bench import diagnostic_config, report_json, run_benchmark, run_check
+from .agent.evaluation import cases_from_calls, load_cases, replay_client, run_evaluation
 from .agent.llm_client import OpenAICompatibleClient
 from .agent.types import CallOutcome, MessageSource
 from .capture import CaptureError
@@ -52,6 +53,11 @@ from .console_messages import (
     AGENT_SUMMARY_TITLE,
     AGENT_SUMMARY_VALIDATION_TITLE,
     AGENT_UNKNOWN_VALUE,
+    LLM_EVAL_OVERWRITES_CAPTURE,
+    LLM_EVAL_OVERWRITES_CONFIG,
+    LLM_EVAL_OVERWRITES_DATASET,
+    LLM_EVAL_OVERWRITES_DB,
+    LLM_EVAL_SKIPPED_CALLS,
     render_agent_priority,
     render_agent_source,
     render_event_message,
@@ -531,6 +537,15 @@ def _build_parser() -> argparse.ArgumentParser:
     llm_bench.add_argument("--config", type=Path, help="archivo TOML de configuración")
     llm_bench.add_argument("--endpoint", help="URL base compatible con OpenAI")
     llm_bench.add_argument("--model", help="identificador del modelo")
+    llm_eval = llm_sub.add_parser("eval", help="evalúa respuestas sobre casos grabados")
+    llm_eval_source = llm_eval.add_mutually_exclusive_group(required=True)
+    llm_eval_source.add_argument("--dataset", type=Path, metavar="DIR")
+    llm_eval_source.add_argument("--from-session", type=_positive_int, metavar="ID")
+    llm_eval.add_argument("--model", help="modelo real (por defecto, respuestas grabadas)")
+    llm_eval.add_argument("--out", type=Path, metavar="ARCHIVO")
+    llm_eval.add_argument("--db", type=Path, help="base SQLite (por defecto, configuración)")
+    llm_eval.add_argument("--config", type=Path, help="archivo TOML de configuración")
+    llm_eval.add_argument("--endpoint", help="URL base compatible con OpenAI")
     return parser
 
 
@@ -2340,6 +2355,8 @@ def _cmd_events(args: argparse.Namespace, console: Console, err: Console) -> int
 
 
 def _cmd_llm(args: argparse.Namespace, console: Console) -> int:
+    if args.llm_command == "eval":
+        return _cmd_llm_eval(args, console)
     json_path: Path | None = getattr(args, "json", None)
     if json_path is not None and args.config is not None and _same_file(json_path, args.config):
         raise ValueError("El informe no puede sobrescribir la configuración.")
@@ -2363,6 +2380,52 @@ def _cmd_llm(args: argparse.Namespace, console: Console) -> int:
         with json_path.open("w", encoding="utf-8", newline="") as handle:
             handle.write(output)
     console.print(output, markup=False, end="")
+    return 0
+
+
+def _cmd_llm_eval(args: argparse.Namespace, console: Console) -> int:
+    out_path: Path | None = args.out
+    app_config = load_config(args.config)
+    database = args.db if args.db is not None else app_config.recording.database
+    if out_path is not None:
+        if _same_file(out_path, database):
+            raise ValueError(LLM_EVAL_OVERWRITES_DB)
+        if args.config is not None and _same_file(out_path, args.config):
+            raise ValueError(LLM_EVAL_OVERWRITES_CONFIG)
+        if args.dataset is not None and out_path.resolve().is_relative_to(args.dataset.resolve()):
+            raise ValueError(LLM_EVAL_OVERWRITES_DATASET)
+    skipped: tuple[str, ...] = ()
+    if args.dataset is not None:
+        cases = load_cases(args.dataset)
+    else:
+        with SessionStore.open(database, readonly=True) as store:
+            session = require_session(store, args.from_session)
+            calls, _messages = _agent_session_rows(store, args.from_session)
+            if out_path is not None:
+                capture_path = getattr(session, "capture_path", None)
+                if capture_path is not None and _same_file(out_path, Path(capture_path)):
+                    raise ValueError(LLM_EVAL_OVERWRITES_CAPTURE)
+        recovered = cases_from_calls(calls)
+        cases = recovered.cases
+        skipped = recovered.skipped
+    if skipped:
+        print(LLM_EVAL_SKIPPED_CALLS.format(calls=", ".join(skipped)), file=sys.stderr)
+    if not cases:
+        raise ValueError("El conjunto no contiene casos evaluables.")
+
+    config: LLMConfig = app_config.llm
+    if args.model is not None:
+        config = diagnostic_config(config, endpoint=args.endpoint, model=args.model)
+        client = OpenAICompatibleClient(config)
+    else:
+        client = replay_client(cases)
+        if client is None:
+            raise ValueError("El conjunto no contiene respuestas grabadas; indica --model.")
+    output = report_json(run_evaluation(client, cases, config, agent=app_config.agent))
+    if out_path is not None:
+        with out_path.open("w", encoding="utf-8", newline="") as handle:
+            handle.write(output)
+    _write_stdout(output)
     return 0
 
 

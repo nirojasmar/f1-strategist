@@ -109,7 +109,7 @@ def test_request_and_response_round_trip() -> None:
     request = LLMRequest(
         model="local-model",
         messages=(LLMMessage("system", "Responde en español."), LLMMessage("user", "{}")),
-        max_tokens=120,
+        max_tokens=200,
         stream=True,
         extra_body={"chat_template_kwargs": {"enable_thinking": False}},
     )
@@ -118,6 +118,7 @@ def test_request_and_response_round_trip() -> None:
     response = LLMResponse(
         text="Mantén el ritmo.",
         finish_reason="stop",
+        reasoning_content="Razonamiento breve.",
         prompt_tokens=80,
         completion_tokens=12,
         ttft_s=0.2,

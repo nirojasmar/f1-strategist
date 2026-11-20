@@ -362,7 +362,7 @@ class LLMConfig(BaseModel):
     temperature: float = Field(default=0.3, ge=0, le=2, allow_inf_nan=False)
     top_p: float | None = Field(default=None, gt=0, le=1, allow_inf_nan=False)
     seed: int | None = None
-    max_tokens: int = Field(default=120, gt=0)
+    max_tokens: int = Field(default=200, gt=0)
     stream: bool = True
     structured_output: Literal["auto", "json_schema", "json_object", "none"] = "auto"
     extra_body: dict[str, Any] = Field(default_factory=dict)
@@ -410,8 +410,8 @@ class AgentConfig(BaseModel):
     max_chars: int = Field(default=220, gt=0)
     critical_uses_llm: bool = False
     timeout_critical_s: float = Field(default=1.5, gt=0, allow_inf_nan=False)
-    timeout_strategic_s: float = Field(default=6.0, gt=0, allow_inf_nan=False)
-    timeout_informational_s: float = Field(default=6.0, gt=0, allow_inf_nan=False)
+    timeout_strategic_s: float = Field(default=10.0, gt=0, allow_inf_nan=False)
+    timeout_informational_s: float = Field(default=10.0, gt=0, allow_inf_nan=False)
     fallback_on_failure: Literal["template", "drop"] = "template"
     max_alert_age_s: float = Field(default=15.0, gt=0, allow_inf_nan=False)
     recent_messages: int = Field(default=3, ge=0)

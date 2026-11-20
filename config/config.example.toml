@@ -185,7 +185,7 @@ model = ""
 temperature = 0.3
 # top_p = 0.9
 # seed = 0
-max_tokens = 120
+max_tokens = 200
 # Streaming para medir el primer token y poder cancelar.
 stream = true
 # "auto", "json_schema", "json_object" o "none".
@@ -202,8 +202,8 @@ max_words = 30
 max_chars = 220
 critical_uses_llm = false
 timeout_critical_s = 1.5
-timeout_strategic_s = 6.0
-timeout_informational_s = 6.0
+timeout_strategic_s = 10.0
+timeout_informational_s = 10.0
 # "template" o "drop" (solo informativos).
 fallback_on_failure = "template"
 max_alert_age_s = 15.0

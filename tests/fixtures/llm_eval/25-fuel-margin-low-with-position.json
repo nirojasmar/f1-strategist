@@ -1,0 +1,65 @@
+{
+  "context": {
+    "alert": {
+      "category": "fuel",
+      "facts": [
+        {
+          "name": "margin_laps",
+          "unit": "laps",
+          "value": 1.1
+        },
+        {
+          "name": "position",
+          "unit": "position",
+          "value": 6
+        }
+      ],
+      "lap": 24,
+      "message_key": "event.fuel_margin_low",
+      "priority": "strategic"
+    },
+    "constraints": {
+      "max_chars": 220,
+      "max_words": 30,
+      "tone": "radio"
+    },
+    "context_hash": "c6335fbd46b11e259ab63b463672cd805d2681cf1f1498cf7637e50eeae59f4b",
+    "glossary": {
+      "box": "parada en boxes"
+    },
+    "kind": "alert",
+    "language": "es",
+    "metrics": {
+      "fuel.margin_laps": {
+        "quality": "good",
+        "unit": "laps",
+        "value": 1.4
+      },
+      "tyre.wear_mean_pct": {
+        "quality": "good",
+        "unit": "pct",
+        "value": 62.0
+      }
+    },
+    "recent_messages": [],
+    "schema_version": 1,
+    "situation": {
+      "compound": "medium",
+      "lap": 24,
+      "laps_remaining": 20,
+      "position": 5,
+      "tyre_age_laps": 12
+    },
+    "strategy": null,
+    "uncertainties": []
+  },
+  "forbidden_numbers": [],
+  "id": "fuel-margin-low-with-position",
+  "language": "es",
+  "max_chars": null,
+  "max_words": null,
+  "recorded_response": "{\"should_speak\": true, \"priority\": \"strategic\", \"language\": \"es\", \"message\": \"La gasolina justa para terminar. Levanta el pie en las rectas.\", \"reason\": \"\", \"used_facts\": [\"position\"]}",
+  "required_facts": [
+    "position"
+  ]
+}

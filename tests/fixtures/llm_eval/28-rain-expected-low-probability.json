@@ -1,0 +1,65 @@
+{
+  "context": {
+    "alert": {
+      "category": "weather",
+      "facts": [
+        {
+          "name": "horizon_min",
+          "unit": "min",
+          "value": 14
+        },
+        {
+          "name": "probability_pct",
+          "unit": "pct",
+          "value": 35.0
+        }
+      ],
+      "lap": 24,
+      "message_key": "event.rain_expected",
+      "priority": "informational"
+    },
+    "constraints": {
+      "max_chars": 220,
+      "max_words": 30,
+      "tone": "radio"
+    },
+    "context_hash": "5faa785f2894cbdb90d40e68d40998ac2c689baa02a1d13353dcb3ce7bcf34bf",
+    "glossary": {
+      "box": "parada en boxes"
+    },
+    "kind": "alert",
+    "language": "es",
+    "metrics": {
+      "fuel.margin_laps": {
+        "quality": "good",
+        "unit": "laps",
+        "value": 1.4
+      },
+      "tyre.wear_mean_pct": {
+        "quality": "good",
+        "unit": "pct",
+        "value": 62.0
+      }
+    },
+    "recent_messages": [],
+    "schema_version": 1,
+    "situation": {
+      "compound": "medium",
+      "lap": 24,
+      "laps_remaining": 20,
+      "position": 5,
+      "tyre_age_laps": 12
+    },
+    "strategy": null,
+    "uncertainties": [
+      "low:probability_pct"
+    ]
+  },
+  "forbidden_numbers": [],
+  "id": "rain-expected-low-probability",
+  "language": "es",
+  "max_chars": null,
+  "max_words": null,
+  "recorded_response": "{\"should_speak\": true, \"priority\": \"informational\", \"language\": \"es\", \"message\": \"Hay posibilidad de lluvia más adelante. No cambiamos nada por ahora.\", \"reason\": \"\", \"used_facts\": []}",
+  "required_facts": []
+}

@@ -1,0 +1,58 @@
+{
+  "context": {
+    "alert": {
+      "category": "rivals",
+      "facts": [
+        {
+          "name": "position",
+          "unit": "position",
+          "value": 4
+        }
+      ],
+      "lap": 24,
+      "message_key": "event.rival_pit_stop",
+      "priority": "informational"
+    },
+    "constraints": {
+      "max_chars": 220,
+      "max_words": 30,
+      "tone": "radio"
+    },
+    "context_hash": "8fb5e39cffc99f1cbb44fdaa86e9ca8c949c96e4f17fc4ff7ee334816f404467",
+    "glossary": {
+      "box": "parada en boxes"
+    },
+    "kind": "alert",
+    "language": "es",
+    "metrics": {
+      "fuel.margin_laps": {
+        "quality": "good",
+        "unit": "laps",
+        "value": 1.4
+      },
+      "tyre.wear_mean_pct": {
+        "quality": "good",
+        "unit": "pct",
+        "value": 62.0
+      }
+    },
+    "recent_messages": [],
+    "schema_version": 1,
+    "situation": {
+      "compound": "medium",
+      "lap": 24,
+      "laps_remaining": 20,
+      "position": 5,
+      "tyre_age_laps": 12
+    },
+    "strategy": null,
+    "uncertainties": []
+  },
+  "forbidden_numbers": [],
+  "id": "rival-pit-stop",
+  "language": "es",
+  "max_chars": null,
+  "max_words": null,
+  "recorded_response": "{\"should_speak\": true, \"priority\": \"informational\", \"language\": \"es\", \"message\": \"Un rival ha parado. La posición en pista cambia.\", \"reason\": \"\", \"used_facts\": []}",
+  "required_facts": []
+}

@@ -1,0 +1,63 @@
+{
+  "context": {
+    "alert": {
+      "category": "tyres",
+      "facts": [
+        {
+          "name": "wear_rate_pct_per_lap",
+          "unit": "pct/lap",
+          "value": 2.6
+        },
+        {
+          "name": "pace_trend_s_per_lap",
+          "unit": "s/lap",
+          "value": 0.4
+        }
+      ],
+      "lap": 24,
+      "message_key": "event.tyre_degradation_abnormal",
+      "priority": "strategic"
+    },
+    "constraints": {
+      "max_chars": 220,
+      "max_words": 30,
+      "tone": "radio"
+    },
+    "context_hash": "bd9ffebc0aabb718306bc87cf6c676e74c6d3a1fee5de9f358d94df50268f063",
+    "glossary": {
+      "box": "parada en boxes"
+    },
+    "kind": "alert",
+    "language": "es",
+    "metrics": {
+      "fuel.margin_laps": {
+        "quality": "good",
+        "unit": "laps",
+        "value": 1.4
+      },
+      "tyre.wear_mean_pct": {
+        "quality": "good",
+        "unit": "pct",
+        "value": 62.0
+      }
+    },
+    "recent_messages": [],
+    "schema_version": 1,
+    "situation": {
+      "compound": "medium",
+      "lap": 24,
+      "laps_remaining": 20,
+      "position": 5,
+      "tyre_age_laps": 12
+    },
+    "strategy": null,
+    "uncertainties": []
+  },
+  "forbidden_numbers": [],
+  "id": "tyre-degradation-abnormal",
+  "language": "es",
+  "max_chars": null,
+  "max_words": null,
+  "recorded_response": "{\"should_speak\": true, \"priority\": \"strategic\", \"language\": \"es\", \"message\": \"Degradación anormal en el neumático trasero. Revisa el equilibrio del coche.\", \"reason\": \"\", \"used_facts\": [\"pace_trend_s_per_lap\"]}",
+  "required_facts": []
+}

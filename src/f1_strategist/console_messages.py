@@ -45,6 +45,11 @@ AGENT_READER_API_ERROR = "La base de datos no ofrece todavía la API de lectura 
 AGENT_EXPORT_OVERWRITES_DB = "La salida no puede sobrescribir la base de datos."
 AGENT_EXPORT_OVERWRITES_CAPTURE = "La salida no puede sobrescribir la captura asociada."
 AGENT_EXPORT_WRITTEN = "Exportación del agente de la sesión {session_id} escrita en {path}"
+LLM_EVAL_OVERWRITES_DB = "El informe no puede sobrescribir la base de datos de sesiones."
+LLM_EVAL_OVERWRITES_CAPTURE = "El informe no puede sobrescribir la captura de la sesión."
+LLM_EVAL_OVERWRITES_CONFIG = "El informe no puede sobrescribir la configuración."
+LLM_EVAL_OVERWRITES_DATASET = "El informe no puede escribirse dentro del conjunto de casos."
+LLM_EVAL_SKIPPED_CALLS = "Llamadas omitidas por contexto no recuperable: {calls}"
 AGENT_UNKNOWN_VALUE = "desconocido"
 AGENT_EXPORT_SCHEMA_VERSION = 1
 

@@ -196,7 +196,7 @@ def _request(
         stream=stream,
         response_format=response_format,
         extra_body=config.extra_body,
-        timeout_s=max(config.connect_timeout_s, 6.0),
+        timeout_s=max(config.connect_timeout_s, 10.0),
     )
 
 

@@ -1,0 +1,60 @@
+{
+  "context": {
+    "alert": {
+      "category": "fuel",
+      "facts": [
+        {
+          "name": "margin_laps",
+          "unit": "laps",
+          "value": 0.2
+        }
+      ],
+      "lap": 24,
+      "message_key": "event.fuel_margin_critical",
+      "priority": "critical"
+    },
+    "constraints": {
+      "max_chars": 220,
+      "max_words": 30,
+      "tone": "radio"
+    },
+    "context_hash": "9f20db9dab0b6a8ebf3c51a99baffbfb0b733a8d7c70f406a1798c5bc32bd504",
+    "glossary": {
+      "box": "parada en boxes"
+    },
+    "kind": "alert",
+    "language": "es",
+    "metrics": {
+      "fuel.margin_laps": {
+        "quality": "good",
+        "unit": "laps",
+        "value": 1.4
+      },
+      "tyre.wear_mean_pct": {
+        "quality": "good",
+        "unit": "pct",
+        "value": 62.0
+      }
+    },
+    "recent_messages": [],
+    "schema_version": 1,
+    "situation": {
+      "compound": "medium",
+      "lap": 24,
+      "laps_remaining": 20,
+      "position": 5,
+      "tyre_age_laps": 12
+    },
+    "strategy": null,
+    "uncertainties": [
+      "stale:telemetry"
+    ]
+  },
+  "forbidden_numbers": [],
+  "id": "fuel-margin-critical-stale",
+  "language": "es",
+  "max_chars": null,
+  "max_words": null,
+  "recorded_response": "{\"should_speak\": true, \"priority\": \"critical\", \"language\": \"es\", \"message\": \"Combustible crítico según el último dato. Levanta el pie y confirma por radio.\", \"reason\": \"\", \"used_facts\": []}",
+  "required_facts": []
+}
