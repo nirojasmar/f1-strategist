@@ -1,0 +1,81 @@
+{
+  "context": {
+    "alert": {
+      "category": "track",
+      "facts": [
+        {
+          "name": "gap_s",
+          "unit": "s",
+          "value": 1.5
+        },
+        {
+          "name": "pit_lap",
+          "unit": "lap",
+          "value": 25
+        }
+      ],
+      "lap": 24,
+      "message_key": "event.virtual_safety_car_deployed",
+      "priority": "critical"
+    },
+    "constraints": {
+      "max_chars": 220,
+      "max_words": 30,
+      "tone": "radio"
+    },
+    "context_hash": "593c88bb0b2d02e804083721b2ab110055cbc8f090838cb23635b296bd1020fa",
+    "glossary": {
+      "box": "parada en boxes"
+    },
+    "kind": "alert",
+    "language": "es",
+    "metrics": {
+      "fuel.margin_laps": {
+        "quality": "good",
+        "unit": "laps",
+        "value": 1.4
+      },
+      "tyre.wear_mean_pct": {
+        "quality": "good",
+        "unit": "pct",
+        "value": 62.0
+      }
+    },
+    "recent_messages": [],
+    "schema_version": 1,
+    "situation": {
+      "compound": "medium",
+      "lap": 24,
+      "laps_remaining": 20,
+      "position": 5,
+      "tyre_age_laps": 12
+    },
+    "strategy": {
+      "action": "pit",
+      "assumptions": [
+        "degradación estable"
+      ],
+      "compound": "hard",
+      "confidence": "medium",
+      "data_quality": "good",
+      "gain_high_s": 3.6,
+      "gain_low_s": 1.2,
+      "gain_vs_baseline_s": 2.4,
+      "key": "strategy.pit_now",
+      "lap": 24,
+      "laps_remaining": 20,
+      "pit_lap": 25,
+      "risks": [
+        "tráfico al salir"
+      ]
+    },
+    "uncertainties": []
+  },
+  "forbidden_numbers": [],
+  "id": "virtual-safety-car-strategic",
+  "language": "es",
+  "max_chars": null,
+  "max_words": null,
+  "recorded_response": "{\"should_speak\": true, \"priority\": \"critical\", \"language\": \"es\", \"message\": \"Virtual safety car. Es buen momento para la parada.\", \"reason\": \"\", \"used_facts\": [\"pit_lap\"]}",
+  "required_facts": []
+}

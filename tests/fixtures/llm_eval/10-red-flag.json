@@ -1,0 +1,60 @@
+{
+  "context": {
+    "alert": {
+      "category": "track",
+      "facts": [
+        {
+          "name": "lap",
+          "unit": "lap",
+          "value": 24
+        }
+      ],
+      "lap": 24,
+      "message_key": "event.red_flag",
+      "priority": "critical"
+    },
+    "constraints": {
+      "max_chars": 220,
+      "max_words": 30,
+      "tone": "radio"
+    },
+    "context_hash": "cadaf136ae139796d6fb73226c7d9b241847fb734bc75c356f7822e6a236d5c7",
+    "glossary": {
+      "box": "parada en boxes"
+    },
+    "kind": "alert",
+    "language": "es",
+    "metrics": {
+      "fuel.margin_laps": {
+        "quality": "good",
+        "unit": "laps",
+        "value": 1.4
+      },
+      "tyre.wear_mean_pct": {
+        "quality": "good",
+        "unit": "pct",
+        "value": 62.0
+      }
+    },
+    "recent_messages": [
+      "Coche de seguridad en pista."
+    ],
+    "schema_version": 1,
+    "situation": {
+      "compound": "medium",
+      "lap": 24,
+      "laps_remaining": 20,
+      "position": 5,
+      "tyre_age_laps": 12
+    },
+    "strategy": null,
+    "uncertainties": []
+  },
+  "forbidden_numbers": [],
+  "id": "red-flag",
+  "language": "es",
+  "max_chars": null,
+  "max_words": null,
+  "recorded_response": "{\"should_speak\": true, \"priority\": \"critical\", \"language\": \"es\", \"message\": \"Bandera roja. Detén el coche en el pit lane.\", \"reason\": \"\", \"used_facts\": []}",
+  "required_facts": []
+}

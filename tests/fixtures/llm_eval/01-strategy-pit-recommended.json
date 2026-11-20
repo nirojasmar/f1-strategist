@@ -1,0 +1,91 @@
+{
+  "context": {
+    "alert": {
+      "category": "strategy",
+      "facts": [
+        {
+          "name": "gain_s",
+          "unit": "s",
+          "value": 2.4
+        },
+        {
+          "name": "pit_lap",
+          "unit": "lap",
+          "value": 25
+        },
+        {
+          "name": "confidence",
+          "unit": "ratio",
+          "value": 0.6
+        }
+      ],
+      "lap": 24,
+      "message_key": "event.strategy_pit_recommended",
+      "priority": "strategic"
+    },
+    "constraints": {
+      "max_chars": 220,
+      "max_words": 30,
+      "tone": "radio"
+    },
+    "context_hash": "48dc97edaa4e64e96002437c2b62e6a673a50dc2022eb2a0874c3c95d67a189d",
+    "glossary": {
+      "box": "parada en boxes"
+    },
+    "kind": "alert",
+    "language": "es",
+    "metrics": {
+      "fuel.margin_laps": {
+        "quality": "good",
+        "unit": "laps",
+        "value": 1.4
+      },
+      "tyre.wear_mean_pct": {
+        "quality": "good",
+        "unit": "pct",
+        "value": 62.0
+      }
+    },
+    "recent_messages": [
+      "Mantén el ritmo actual."
+    ],
+    "schema_version": 1,
+    "situation": {
+      "compound": "medium",
+      "lap": 24,
+      "laps_remaining": 20,
+      "position": 5,
+      "tyre_age_laps": 12
+    },
+    "strategy": {
+      "action": "pit",
+      "assumptions": [
+        "degradación estable"
+      ],
+      "compound": "hard",
+      "confidence": "medium",
+      "data_quality": "good",
+      "gain_high_s": 3.6,
+      "gain_low_s": 1.2,
+      "gain_vs_baseline_s": 2.4,
+      "key": "strategy.pit_now",
+      "lap": 24,
+      "laps_remaining": 20,
+      "pit_lap": 25,
+      "risks": [
+        "tráfico al salir"
+      ]
+    },
+    "uncertainties": []
+  },
+  "forbidden_numbers": [],
+  "id": "strategy-pit-recommended",
+  "language": "es",
+  "max_chars": null,
+  "max_words": null,
+  "recorded_response": "{\"should_speak\": true, \"priority\": \"strategic\", \"language\": \"es\", \"message\": \"Box esta vuelta. Ganamos tiempo con el neumático nuevo.\", \"reason\": \"\", \"used_facts\": [\"gain_s\", \"pit_lap\"]}",
+  "required_facts": [
+    "gain_s",
+    "pit_lap"
+  ]
+}

@@ -1,0 +1,58 @@
+{
+  "context": {
+    "alert": {
+      "category": "track",
+      "facts": [
+        {
+          "name": "laps_remaining",
+          "unit": "laps",
+          "value": 15
+        }
+      ],
+      "lap": 24,
+      "message_key": "event.safety_car_cleared",
+      "priority": "informational"
+    },
+    "constraints": {
+      "max_chars": 220,
+      "max_words": 30,
+      "tone": "radio"
+    },
+    "context_hash": "4816e98c7391c403409f196f1e9c473b52f3e77ab2d46312b4ad858eeda1906f",
+    "glossary": {
+      "box": "parada en boxes"
+    },
+    "kind": "alert",
+    "language": "es",
+    "metrics": {
+      "fuel.margin_laps": {
+        "quality": "good",
+        "unit": "laps",
+        "value": 1.4
+      },
+      "tyre.wear_mean_pct": {
+        "quality": "good",
+        "unit": "pct",
+        "value": 62.0
+      }
+    },
+    "recent_messages": [],
+    "schema_version": 1,
+    "situation": {
+      "compound": "medium",
+      "lap": 24,
+      "laps_remaining": 20,
+      "position": 5,
+      "tyre_age_laps": 12
+    },
+    "strategy": null,
+    "uncertainties": []
+  },
+  "forbidden_numbers": [],
+  "id": "tight-limits",
+  "language": "es",
+  "max_chars": 40,
+  "max_words": 6,
+  "recorded_response": "{\"should_speak\": true, \"priority\": \"informational\", \"language\": \"es\", \"message\": \"Pista libre. Ataca.\", \"reason\": \"\", \"used_facts\": []}",
+  "required_facts": []
+}

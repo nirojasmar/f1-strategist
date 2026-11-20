@@ -1,0 +1,91 @@
+{
+  "context": {
+    "alert": {
+      "category": "strategy",
+      "facts": [
+        {
+          "name": "gain_low_s",
+          "unit": "s",
+          "value": 0.2
+        },
+        {
+          "name": "gain_high_s",
+          "unit": "s",
+          "value": 2.1
+        },
+        {
+          "name": "confidence",
+          "unit": "ratio",
+          "value": 0.3
+        }
+      ],
+      "lap": 24,
+      "message_key": "event.strategy_pit_recommended",
+      "priority": "strategic"
+    },
+    "constraints": {
+      "max_chars": 220,
+      "max_words": 30,
+      "tone": "radio"
+    },
+    "context_hash": "fbef22971791f7452a4310ac649138dd9514a24b818de1620814148c3b9f1279",
+    "glossary": {
+      "box": "parada en boxes"
+    },
+    "kind": "alert",
+    "language": "es",
+    "metrics": {
+      "fuel.margin_laps": {
+        "quality": "good",
+        "unit": "laps",
+        "value": 1.4
+      },
+      "tyre.wear_mean_pct": {
+        "quality": "good",
+        "unit": "pct",
+        "value": 62.0
+      }
+    },
+    "recent_messages": [],
+    "schema_version": 1,
+    "situation": {
+      "compound": "medium",
+      "lap": 24,
+      "laps_remaining": 20,
+      "position": 5,
+      "tyre_age_laps": 12
+    },
+    "strategy": {
+      "action": "pit",
+      "assumptions": [
+        "degradación estable"
+      ],
+      "compound": "hard",
+      "confidence": "low",
+      "data_quality": "degraded",
+      "gain_high_s": 3.6,
+      "gain_low_s": 1.2,
+      "gain_vs_baseline_s": 2.4,
+      "key": "strategy.pit_now",
+      "lap": 24,
+      "laps_remaining": 20,
+      "pit_lap": 25,
+      "risks": [
+        "tráfico al salir"
+      ]
+    },
+    "uncertainties": [
+      "low:strategy"
+    ]
+  },
+  "forbidden_numbers": [],
+  "id": "strategy-low-confidence",
+  "language": "es",
+  "max_chars": null,
+  "max_words": null,
+  "recorded_response": "{\"should_speak\": true, \"priority\": \"strategic\", \"language\": \"es\", \"message\": \"La parada es una opción, pero la estimación es frágil. Podemos esperar.\", \"reason\": \"\", \"used_facts\": [\"gain_low_s\", \"gain_high_s\"]}",
+  "required_facts": [
+    "gain_low_s",
+    "gain_high_s"
+  ]
+}

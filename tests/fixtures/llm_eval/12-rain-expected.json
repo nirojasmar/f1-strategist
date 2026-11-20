@@ -1,0 +1,65 @@
+{
+  "context": {
+    "alert": {
+      "category": "weather",
+      "facts": [
+        {
+          "name": "horizon_min",
+          "unit": "min",
+          "value": 8
+        },
+        {
+          "name": "probability_pct",
+          "unit": "pct",
+          "value": 70.0
+        }
+      ],
+      "lap": 24,
+      "message_key": "event.rain_expected",
+      "priority": "strategic"
+    },
+    "constraints": {
+      "max_chars": 220,
+      "max_words": 30,
+      "tone": "radio"
+    },
+    "context_hash": "a93df23fe35f6596239c0b002f67655743649bb87bfdd94aacf2a529e85a1cc3",
+    "glossary": {
+      "box": "parada en boxes"
+    },
+    "kind": "alert",
+    "language": "es",
+    "metrics": {
+      "fuel.margin_laps": {
+        "quality": "good",
+        "unit": "laps",
+        "value": 1.4
+      },
+      "tyre.wear_mean_pct": {
+        "quality": "good",
+        "unit": "pct",
+        "value": 62.0
+      }
+    },
+    "recent_messages": [],
+    "schema_version": 1,
+    "situation": {
+      "compound": "medium",
+      "lap": 24,
+      "laps_remaining": 20,
+      "position": 5,
+      "tyre_age_laps": 12
+    },
+    "strategy": null,
+    "uncertainties": []
+  },
+  "forbidden_numbers": [],
+  "id": "rain-expected",
+  "language": "es",
+  "max_chars": null,
+  "max_words": null,
+  "recorded_response": "{\"should_speak\": true, \"priority\": \"strategic\", \"language\": \"es\", \"message\": \"Lluvia prevista en las próximas vueltas. Prepara neumáticos de mojado.\", \"reason\": \"\", \"used_facts\": [\"horizon_min\"]}",
+  "required_facts": [
+    "horizon_min"
+  ]
+}

@@ -1,0 +1,76 @@
+{
+  "context": {
+    "alert": {
+      "category": "weather",
+      "facts": [
+        {
+          "name": "track_temperature_c",
+          "unit": "celsius",
+          "value": 27.0
+        }
+      ],
+      "lap": 24,
+      "message_key": "event.weather_changed",
+      "priority": "strategic"
+    },
+    "constraints": {
+      "max_chars": 220,
+      "max_words": 30,
+      "tone": "radio"
+    },
+    "context_hash": "ca164e9e2a1fdfb481a9a23c5bae59c8e62d6b4fcae036f5967378fb6074ad13",
+    "glossary": {
+      "box": "parada en boxes"
+    },
+    "kind": "alert",
+    "language": "es",
+    "metrics": {
+      "fuel.margin_laps": {
+        "quality": "good",
+        "unit": "laps",
+        "value": 1.4
+      },
+      "tyre.wear_mean_pct": {
+        "quality": "good",
+        "unit": "pct",
+        "value": 62.0
+      }
+    },
+    "recent_messages": [],
+    "schema_version": 1,
+    "situation": {
+      "compound": "medium",
+      "lap": 24,
+      "laps_remaining": 20,
+      "position": 5,
+      "tyre_age_laps": 12
+    },
+    "strategy": {
+      "action": "pit",
+      "assumptions": [
+        "degradación estable"
+      ],
+      "compound": "hard",
+      "confidence": "medium",
+      "data_quality": "good",
+      "gain_high_s": 3.6,
+      "gain_low_s": 1.2,
+      "gain_vs_baseline_s": 2.4,
+      "key": "strategy.pit_now",
+      "lap": 24,
+      "laps_remaining": 20,
+      "pit_lap": 25,
+      "risks": [
+        "tráfico al salir"
+      ]
+    },
+    "uncertainties": []
+  },
+  "forbidden_numbers": [],
+  "id": "weather-changed-strategy",
+  "language": "es",
+  "max_chars": null,
+  "max_words": null,
+  "recorded_response": "{\"should_speak\": true, \"priority\": \"strategic\", \"language\": \"es\", \"message\": \"La pista cambia rápido. La estrategia de seco sigue siendo válida.\", \"reason\": \"\", \"used_facts\": [\"gain_vs_baseline_s\"]}",
+  "required_facts": []
+}

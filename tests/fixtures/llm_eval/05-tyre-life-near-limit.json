@@ -1,0 +1,65 @@
+{
+  "context": {
+    "alert": {
+      "category": "tyres",
+      "facts": [
+        {
+          "name": "laps_left",
+          "unit": "laps",
+          "value": 2
+        },
+        {
+          "name": "wear_mean_pct",
+          "unit": "pct",
+          "value": 88.0
+        }
+      ],
+      "lap": 24,
+      "message_key": "event.tyre_life_near_limit",
+      "priority": "strategic"
+    },
+    "constraints": {
+      "max_chars": 220,
+      "max_words": 30,
+      "tone": "radio"
+    },
+    "context_hash": "44e59bf7fc477a975e1cb82406210c6ad5a322da91cb3d6e932c280161d7e77b",
+    "glossary": {
+      "box": "parada en boxes"
+    },
+    "kind": "alert",
+    "language": "es",
+    "metrics": {
+      "fuel.margin_laps": {
+        "quality": "good",
+        "unit": "laps",
+        "value": 1.4
+      },
+      "tyre.wear_mean_pct": {
+        "quality": "good",
+        "unit": "pct",
+        "value": 62.0
+      }
+    },
+    "recent_messages": [],
+    "schema_version": 1,
+    "situation": {
+      "compound": "medium",
+      "lap": 24,
+      "laps_remaining": 20,
+      "position": 5,
+      "tyre_age_laps": 12
+    },
+    "strategy": null,
+    "uncertainties": []
+  },
+  "forbidden_numbers": [],
+  "id": "tyre-life-near-limit",
+  "language": "es",
+  "max_chars": null,
+  "max_words": null,
+  "recorded_response": "{\"should_speak\": true, \"priority\": \"strategic\", \"language\": \"es\", \"message\": \"Los neumáticos llegan al límite. Prepara la parada.\", \"reason\": \"\", \"used_facts\": [\"laps_left\"]}",
+  "required_facts": [
+    "laps_left"
+  ]
+}

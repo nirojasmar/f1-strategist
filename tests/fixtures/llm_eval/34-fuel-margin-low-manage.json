@@ -1,0 +1,58 @@
+{
+  "context": {
+    "alert": {
+      "category": "fuel",
+      "facts": [
+        {
+          "name": "margin_laps",
+          "unit": "laps",
+          "value": 1.6
+        }
+      ],
+      "lap": 24,
+      "message_key": "event.fuel_margin_low",
+      "priority": "strategic"
+    },
+    "constraints": {
+      "max_chars": 220,
+      "max_words": 30,
+      "tone": "radio"
+    },
+    "context_hash": "76dca7a3a0f53f3a04a8ef9debff18e00a8ba5dfe13a7d5b2d4f68d8d2dac867",
+    "glossary": {
+      "box": "parada en boxes"
+    },
+    "kind": "alert",
+    "language": "es",
+    "metrics": {
+      "fuel.margin_laps": {
+        "quality": "good",
+        "unit": "laps",
+        "value": 1.4
+      },
+      "tyre.wear_mean_pct": {
+        "quality": "good",
+        "unit": "pct",
+        "value": 62.0
+      }
+    },
+    "recent_messages": [],
+    "schema_version": 1,
+    "situation": {
+      "compound": "medium",
+      "lap": 24,
+      "laps_remaining": 20,
+      "position": 5,
+      "tyre_age_laps": 12
+    },
+    "strategy": null,
+    "uncertainties": []
+  },
+  "forbidden_numbers": [],
+  "id": "fuel-margin-low-manage",
+  "language": "es",
+  "max_chars": null,
+  "max_words": null,
+  "recorded_response": "{\"should_speak\": true, \"priority\": \"strategic\", \"language\": \"es\", \"message\": \"La gasolina justa para terminar. Gestiona el consumo.\", \"reason\": \"\", \"used_facts\": []}",
+  "required_facts": []
+}
