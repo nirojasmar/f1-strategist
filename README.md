@@ -3,15 +3,13 @@
 Ingeniero de carrera con IA para **F1 25 (2026 Season Pack)**: recibe la telemetría UDP del juego,
 calcula estrategia y se comunica con el piloto.
 
-**Estado:** Fases 0 a 3 implementadas y validadas localmente en Windows. La aplicación
-recibe y graba telemetría UDP, decodifica los nueve tipos de paquete F1 25, mantiene snapshots
-inmutables de la sesión y los coches, calcula métricas derivadas y permite reproducir sesiones
-de forma determinista. La grabación SQLite está desactivada por defecto y se activa con
-`recording.enabled = true` en el TOML. Incluye captura `.f1cap`, replay interno y por UDP,
-ingesta offline, exportación de métricas y consultas de sesiones. El motor de estrategia está
-en desarrollo; `f1-strategist strategy at` consulta su evaluación actual sobre una captura.
-La integración con LLM para comunicarse con el piloto sigue pendiente. Queda repetir CI en
-Linux y macOS después de la Ola 2.
+**Estado:** Fases 0 a 6 implementadas en la rama de trabajo y validadas localmente en Windows.
+La aplicación recibe y graba telemetría UDP, decodifica los nueve tipos de paquete F1 25, mantiene
+snapshots inmutables de la sesión y los coches, calcula métricas derivadas y permite reproducir
+sesiones de forma determinista. Incluye el motor de estrategia, detector de eventos y compuerta,
+comunicación asíncrona con LLM local, validación de respuestas y plantillas de respaldo.
+La grabación SQLite está activada por defecto y se desactiva con `recording.enabled = false` en el TOML.
+Queda cerrar la revisión de Ola 2 y repetir CI en Linux y macOS.
 
 La documentación de diseño está en [`docs/`](docs/): requerimientos, outline técnico y roadmap.
 
@@ -62,6 +60,11 @@ uv run f1-strategist verify captures/session-YYYYMMDD-HHMMSS.f1cap
 uv run f1-strategist ingest captures/session-YYYYMMDD-HHMMSS.f1cap --db captures/sessions.db
 uv run f1-strategist sessions list --db captures/sessions.db
 uv run f1-strategist sessions export ID --format json --db captures/sessions.db
+
+# Comprobar, medir y evaluar el LLM local
+uv run f1-strategist llm check --model gemma-4-e2b-it@q4_k_s
+uv run f1-strategist llm bench --model gemma-4-e2b-it@q4_k_s --runs 10 --note "CPU"
+uv run f1-strategist llm eval --dataset tests/fixtures/llm_eval --model gemma-4-e2b-it@q4_k_s --out eval.json
 
 # Agrupar sesiones del mismo circuito en un fin de semana y consultarlo
 uv run f1-strategist weekends list --db captures/sessions.db
@@ -120,6 +123,49 @@ recepción y los nombres públicos de IA solo si se solicita explícitamente.
 Las opciones también pueden ir en un archivo TOML (ver
 [`config/config.example.toml`](config/config.example.toml)):
 `uv run f1-strategist run --config config.toml`.
+
+### LLM local
+
+La integración usa un endpoint compatible con OpenAI, por ejemplo LM Studio en
+`http://127.0.0.1:1234/v1`. El LLM está desactivado por defecto; para activarlo se debe crear
+una configuración TOML que habilite `llm` y especifique el modelo exacto cargado en el servidor:
+
+```toml
+[llm]
+enabled = true
+endpoint = "http://127.0.0.1:1234/v1"
+model = "gemma-4-e2b-it@q4_k_s"
+max_tokens = 200
+stream = true
+structured_output = "auto"
+extra_body = { chat_template_kwargs = { enable_thinking = false } }
+
+[agent]
+language = "es"
+critical_uses_llm = false
+timeout_strategic_s = 10.0
+timeout_informational_s = 10.0
+```
+
+Arranca LM Studio con el modelo antes de ejecutar la aplicación. Comprueba primero la
+conectividad y las capacidades del endpoint:
+
+```bash
+uv run f1-strategist llm check --config config.toml
+uv run f1-strategist llm bench --config config.toml --runs 10 --note "CPU"
+uv run f1-strategist llm eval --dataset tests/fixtures/llm_eval --config config.toml --out eval.json
+```
+
+Para usar el LLM en la aplicación en vivo:
+
+```bash
+uv run f1-strategist run --config config.toml
+```
+
+`run` construye el comunicador con `llm.enabled` y lo inicia junto con el consumidor de telemetría.
+Sin `llm.enabled = true`, la aplicación usa plantillas deterministas. Las alertas críticas siempre
+usan plantilla por defecto y no esperan al modelo. `llm check` necesita configuración o
+`--endpoint`/`--model`; `llm bench` acepta `--json ARCHIVO` para guardar el informe.
 
 ## Configurar el juego
 
