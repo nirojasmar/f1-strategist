@@ -32,8 +32,8 @@ def test_llm_and_agent_defaults_keep_the_feature_off() -> None:
     assert cfg.agent.fallback_on_failure == "template"
     assert cfg.agent.offline_mode == "template"
     assert cfg.agent.timeout_for("critical") == 1.5
-    assert cfg.agent.timeout_for("strategic") == 6.0
-    assert cfg.agent.timeout_for("informational") == 6.0
+    assert cfg.agent.timeout_for("strategic") == 10.0
+    assert cfg.agent.timeout_for("informational") == 10.0
 
 
 def test_llm_rejects_non_http_endpoints() -> None:

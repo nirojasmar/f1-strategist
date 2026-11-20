@@ -36,7 +36,7 @@ def _request(**overrides: Any) -> LLMRequest:
         "model": "test-model",
         "messages": (LLMMessage(role="system", content="eres un ingeniero"),),
         "temperature": 0.3,
-        "max_tokens": 120,
+        "max_tokens": 200,
         "timeout_s": 5.0,
         "response_format": SCHEMA,
     }

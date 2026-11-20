@@ -250,7 +250,7 @@ class LLMRequest:
     stream: bool = False
     response_format: Mapping[str, Any] | None = None
     extra_body: Mapping[str, Any] = field(default_factory=dict)
-    timeout_s: float = 6.0
+    timeout_s: float = 10.0
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "messages", tuple(self.messages))
@@ -293,7 +293,7 @@ class LLMRequest:
                 else _json_mapping(response_format, "response_format")
             ),
             extra_body=_json_mapping(data.get("extra_body", {}), "extra_body"),
-            timeout_s=_float(data, "timeout_s", 6.0),
+            timeout_s=_float(data, "timeout_s", 10.0),
         )
 
     @classmethod
@@ -307,6 +307,7 @@ class LLMResponse:
 
     text: str = ""
     finish_reason: str | None = None
+    reasoning_content: str | None = None
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
     ttft_s: float | None = None
@@ -319,6 +320,7 @@ class LLMResponse:
         return {
             "text": self.text,
             "finish_reason": self.finish_reason,
+            "reasoning_content": self.reasoning_content,
             "prompt_tokens": self.prompt_tokens,
             "completion_tokens": self.completion_tokens,
             "ttft_s": self.ttft_s,
@@ -336,6 +338,7 @@ class LLMResponse:
         return cls(
             text=_str(data, "text"),
             finish_reason=_opt_str(data, "finish_reason"),
+            reasoning_content=_opt_str(data, "reasoning_content"),
             prompt_tokens=_opt_int(data, "prompt_tokens"),
             completion_tokens=_opt_int(data, "completion_tokens"),
             ttft_s=_opt_float(data, "ttft_s"),

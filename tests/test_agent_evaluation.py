@@ -159,6 +159,27 @@ def test_latency_is_reported_when_available() -> None:
     assert report["cases"][0]["latency_s"] == 0.25
 
 
+def test_priority_breakdown_and_response_metadata_are_reported() -> None:
+    response = LLMResponse(
+        text=_reply("Box esta vuelta."),
+        finish_reason="length",
+        reasoning_content="He pensado brevemente.",
+        total_s=0.25,
+    )
+
+    report = run_evaluation(
+        FakeLLMClient([response]),
+        [_base_case()],
+        LLMConfig(model="fake"),
+    )
+    priority = report["cases"][0]["priority"]
+
+    assert report["schema_version"] == 2
+    assert report["cases"][0]["finish_reason"] == "length"
+    assert report["cases"][0]["reasoning_content"] == "He pensado brevemente."
+    assert report["metrics"]["by_priority"][priority]["case_count"] == 1
+
+
 def test_load_cases_rejects_missing_or_malformed_files(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="No hay casos"):
         load_cases(tmp_path)

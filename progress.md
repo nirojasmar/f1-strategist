@@ -68,7 +68,8 @@ Documentos de diseño:
 | 3.5. Perfil del fin de semana | Implementada; validación local Windows | P1--P8 implementadas. Esquema SQLite v5, enlace de sesiones, resúmenes de tandas, inventario, perfil versionado y métricas `profile.*`; la prueba integrada cubre práctica, clasificación, carrera y reingesta con huella estable. Validación Linux por CI pendiente. |
 | 4. Motor de estrategia | Implementada; validación local Windows | Ola 0 cerrada; S5--S8 cubren evaluación, decisión, motor integrado y registro SQLite; S9 añade panel y comandos; S12 corrige los hallazgos de Sakhir (vida del neumático, carril parcial y estados del HUD); S13 incorpora prior por circuito y rango de reincorporación; S10 añade pruebas analíticas, de captura real y de rendimiento; S11 documenta el modelo. Quedan las incidencias S10-R1 (rendimiento) y S10-H1 (huella entre velocidades) y repetir CI en Linux. |
 | 5. Event Detector y Event Gate | Implementada; validación local Windows | E1--E12 implementadas: 15 reglas, ciclo de vida con persistencia e histéresis, compuerta ordenada con motivos, avisos `AgentAlert`, registro SQLite v8 (`detected_events`, `gate_decisions`, `gate_fingerprint`) y comandos `events show/summary/simulate`. Documentación en `docs/eventos_y_gate.md`. Queda repetir CI en Linux y la validación con capturas reales (E12-R1). |
-| 6--10 | No iniciadas | |
+| 6. Integración del LLM | En implementación y validación | Ola 1 y L11 implementadas en la rama de trabajo: tipos, cliente, contexto, prompts, validador, plantillas, comunicador, SQLite v9, consola, `llm check/bench` y evaluación. Quedan revisión de ola, extremo a extremo y documentación final. |
+| 7--10 | No iniciadas | |
 
 ## 5. Qué está verificado y qué no
 
@@ -285,6 +286,32 @@ Documentos de diseño:
 -   Queda volver a ejecutar CI de GitHub Actions después de la Ola 5.
 
 ## 6. Bitácora
+
+### 2026-11-20
+
+**Fase 6 --- integración del LLM local y primera evaluación de Gemma E2B.**
+
+-   L1--L11 están implementados en la rama de trabajo: tipos y configuración, cliente OpenAI-compatible,
+    clientes simulado y grabado, contexto, prompts, validador, plantillas, comunicador, registro SQLite v9,
+    panel «Radio», comandos `llm check/bench/eval` y suite de evaluación.
+-   Validación local completa antes de esta medición: Ruff, formato, Pyright y 1373 pruebas aprobadas.
+-   Se elevaron los timeouts estratégico e informativo de 6 s a 10 s y `max_tokens` de 120 a 200.
+-   El informe de evaluación pasó a esquema v2 y ahora registra `finish_reason`, `reasoning_content` y
+    métricas separadas por prioridad.
+-   Gemma 4 E2B IT cuantizada como Q4_K_S pasó a ser la candidata preferida. El razonamiento debe quedar
+    desactivado por configuración; las pruebas mostraron que consume el presupuesto y devuelve JSON truncado.
+-   Con razonamiento desactivado, 24 de 34 casos fueron válidos (70,59 %), con 29,41 % de fallback y 70,59 %
+    de esquema válido. Cifras, prioridad, idioma y longitud tuvieron 100 % de validez; `used_facts` tuvo
+    97,06 %.
+-   Por prioridad: críticos 0/9 válidos con 100 % de fallback por timeout de 1.5 s; informativos 12/12
+    válidos con p50/p95 de 6.8909/8.3478 s; estratégicos 11/13 válidos con p50/p95 de 7.4027/9.3482 s.
+-   Latencia global p50/p95: 7.0657/9.2671 s. Los logs de LM Studio confirmaron respuestas terminadas con
+    `finish_reason: "stop"`, `reasoning_tokens: 0` y generación a unas 20–21 tokens/s en CPU.
+-   Los críticos siguen dependiendo de plantilla inmediata; no se considera que sus timeouts sean un fallo
+    del modelo. La única estrategia fallida aparte de timeout omite el hecho obligatorio `position`.
+-   El aumento de `max_tokens` no fue decisivo; desactivar el razonamiento produjo la mejora principal.
+    No se considera necesario fine-tuning en esta fase: el modelo base ya alcanza una tasa útil y el validador
+    sigue siendo obligatorio para cifras, esquema y hechos.
 
 ### 2026-10-31
 
@@ -1037,9 +1064,9 @@ La Fase 5 está implementada y documentada; su criterio de salida se verificó l
 mantiene abierta la semántica del indicador de combustible del MFD y la Fase 4 las incidencias S10-R1 y S10-H1.
 El siguiente trabajo es:
 
-1.  **Fase 6:** integrar el LLM local con una interfaz desacoplada, adaptador compatible con OpenAI, salida
-    estructurada validada, medición de latencia y configuración de modelo y timeout. El LLM solo explica los
-    avisos y el contexto ya calculados.
+1.  **Fase 6:** cerrar la Ola 2 y revisar el extremo a extremo. La integración ya dispone de cliente,
+    contexto, prompts, validador, plantillas, comunicador, registro y evaluación; falta confirmar UL-4 y
+    UL-5 sobre tono y estilo de radio.
 2.  **CI y capturas reales:** repetir GitHub Actions tras la Ola 2 y validar el detector con las capturas de
     Sakhir, Baku y Monza que no terminaron localmente (E12-R1). Siguen abiertas S10-R1 y S10-H1.
 3.  **Calibración diferida:** ajustar los parámetros que hoy no tienen valor universal y ampliar la validación
@@ -1055,7 +1082,8 @@ El siguiente trabajo es:
 -   Completar UE2 con una carrera donde mantener sea claramente mejor que parar.
 -   Probar la topología de red local con dos PC; decidir envío dirigido o broadcast y política de
     filtrado por IP de origen.
--   Modelo local concreto del LLM; voz; framework del front-end de la GUI; empaquetado de escritorio;
+-   Modelo local concreto del LLM: Gemma E2B Q4_K_S queda como candidato preferido pendiente de UL-4/UL-5;
+    voz; framework del front-end de la GUI; empaquetado de escritorio;
     fórmulas de degradación y simulación de paradas; umbrales iniciales; idioma por defecto y cambio en
     caliente.
 -   Ejecutar CI de GitHub Actions después de la Fase 5; la calibración de parámetros abiertos y las

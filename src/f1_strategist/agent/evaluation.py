@@ -23,7 +23,7 @@ from .prompt_registry import PromptRegistry
 from .types import ContextKind, ContextPayload, LLMRequest, LLMResponse, wire_reply_schema
 from .validator import ResponseValidator, ValidationIssue
 
-EVAL_SCHEMA_VERSION = 1
+EVAL_SCHEMA_VERSION = 2
 
 # Reglas del informe: agrupan los códigos del validador y los propios de la suite.
 _RULE_GROUPS: dict[str, str] = {
@@ -186,6 +186,25 @@ def run_evaluation(
     metrics["latency_s"] = _percentiles(
         [result["latency_s"] for result in results if result["latency_s"] is not None]
     )
+    metrics["by_priority"] = {}
+    for priority in ("critical", "strategic", "informational"):
+        priority_results = [result for result in results if result["priority"] == priority]
+        metrics["by_priority"][priority] = {
+            "case_count": len(priority_results),
+            "valid_rate": _rate(
+                sum(1 for result in priority_results if result["valid"]), len(priority_results)
+            ),
+            "fallback_rate": _rate(
+                sum(1 for result in priority_results if result["fallback"]), len(priority_results)
+            ),
+            "latency_s": _percentiles(
+                [
+                    result["latency_s"]
+                    for result in priority_results
+                    if result["latency_s"] is not None
+                ]
+            ),
+        }
     return {
         "schema_version": EVAL_SCHEMA_VERSION,
         "model": llm.model,
@@ -245,6 +264,8 @@ def _evaluate_case(
         "message_key": _message_key(case.context),
         "priority": priority.value,
         "text": text,
+        "finish_reason": response.finish_reason,
+        "reasoning_content": response.reasoning_content,
         "fallback": response.error is not None or not result.valid,
         "valid": not failures,
         "failed_rules": failed_rules,
