@@ -172,3 +172,44 @@ muted = false
 # Cooldown por prioridad, en segundos.
 strategic = 45.0
 informational = 120.0
+
+[llm]
+# Integración del LLM (Fase 6). Desactivado, todo usa plantillas.
+enabled = false
+# Endpoint compatible con OpenAI; puede ser otro PC de la red local.
+endpoint = "http://127.0.0.1:1234/v1"
+# Obligatorio si enabled = true.
+model = ""
+# Mejor definir F1_LLM_API_KEY en el entorno; aquí nunca se muestra ni se registra.
+# api_key = "…"
+temperature = 0.3
+# top_p = 0.9
+# seed = 0
+max_tokens = 200
+# Streaming para medir el primer token y poder cancelar.
+stream = true
+# "auto", "json_schema", "json_object" o "none".
+structured_output = "auto"
+connect_timeout_s = 2.0
+max_in_flight = 1
+health_interval_s = 30.0
+extra_body = {}
+
+[agent]
+# Comunicación con el piloto. Todos los valores son provisionales.
+language = "es"
+max_words = 30
+max_chars = 220
+critical_uses_llm = false
+timeout_critical_s = 1.5
+timeout_strategic_s = 10.0
+timeout_informational_s = 10.0
+# "template" o "drop" (solo informativos).
+fallback_on_failure = "template"
+max_alert_age_s = 15.0
+recent_messages = 3
+context_token_budget = 900
+# "template", "recorded" o "live".
+offline_mode = "template"
+record_context = true
+imperative_phrases = ["entra a boxes", "boxea ahora", "ataca ahora", "empuja ahora"]

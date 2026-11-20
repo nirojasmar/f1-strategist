@@ -1,0 +1,58 @@
+{
+  "context": {
+    "alert": {
+      "category": "weather",
+      "facts": [
+        {
+          "name": "track_temperature_c",
+          "unit": "celsius",
+          "value": 29.0
+        }
+      ],
+      "lap": 24,
+      "message_key": "event.weather_changed",
+      "priority": "informational"
+    },
+    "constraints": {
+      "max_chars": 220,
+      "max_words": 30,
+      "tone": "radio"
+    },
+    "context_hash": "a2038f4ff75248958c426ebb4898d94cfc71487b49992da5d9cf5ad3c568f2db",
+    "glossary": {
+      "box": "parada en boxes"
+    },
+    "kind": "alert",
+    "language": "es",
+    "metrics": {
+      "fuel.margin_laps": {
+        "quality": "good",
+        "unit": "laps",
+        "value": 1.4
+      },
+      "tyre.wear_mean_pct": {
+        "quality": "good",
+        "unit": "pct",
+        "value": 62.0
+      }
+    },
+    "recent_messages": [],
+    "schema_version": 1,
+    "situation": {
+      "compound": "medium",
+      "lap": 24,
+      "laps_remaining": 20,
+      "position": 5,
+      "tyre_age_laps": 12
+    },
+    "strategy": null,
+    "uncertainties": []
+  },
+  "forbidden_numbers": [],
+  "id": "declined-informational",
+  "language": "es",
+  "max_chars": null,
+  "max_words": null,
+  "recorded_response": "{\"should_speak\": false, \"priority\": \"informational\", \"language\": \"es\", \"message\": \"\", \"reason\": \"\", \"used_facts\": []}",
+  "required_facts": []
+}

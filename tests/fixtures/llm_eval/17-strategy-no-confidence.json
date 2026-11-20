@@ -1,0 +1,79 @@
+{
+  "context": {
+    "alert": {
+      "category": "strategy",
+      "facts": [
+        {
+          "name": "gain_s",
+          "unit": "s",
+          "value": 1.1
+        }
+      ],
+      "lap": 24,
+      "message_key": "event.strategy_pit_recommended",
+      "priority": "informational"
+    },
+    "constraints": {
+      "max_chars": 220,
+      "max_words": 30,
+      "tone": "radio"
+    },
+    "context_hash": "e20f50425204d6739d92719857401a9e5be3c167e853c1352135cb0aa6c5cf08",
+    "glossary": {
+      "box": "parada en boxes"
+    },
+    "kind": "alert",
+    "language": "es",
+    "metrics": {
+      "fuel.margin_laps": {
+        "quality": "good",
+        "unit": "laps",
+        "value": 1.4
+      },
+      "tyre.wear_mean_pct": {
+        "quality": "good",
+        "unit": "pct",
+        "value": 62.0
+      }
+    },
+    "recent_messages": [],
+    "schema_version": 1,
+    "situation": {
+      "compound": "medium",
+      "lap": 24,
+      "laps_remaining": 20,
+      "position": 5,
+      "tyre_age_laps": 12
+    },
+    "strategy": {
+      "action": "pit",
+      "assumptions": [
+        "degradación estable"
+      ],
+      "compound": "hard",
+      "confidence": null,
+      "data_quality": "unknown",
+      "gain_high_s": 3.6,
+      "gain_low_s": 1.2,
+      "gain_vs_baseline_s": 2.4,
+      "key": "strategy.pit_now",
+      "lap": 24,
+      "laps_remaining": 20,
+      "pit_lap": 25,
+      "risks": [
+        "tráfico al salir"
+      ]
+    },
+    "uncertainties": [
+      "missing:confidence",
+      "stale:strategy"
+    ]
+  },
+  "forbidden_numbers": [],
+  "id": "strategy-no-confidence",
+  "language": "es",
+  "max_chars": null,
+  "max_words": null,
+  "recorded_response": "{\"should_speak\": true, \"priority\": \"informational\", \"language\": \"es\", \"message\": \"No hay confianza suficiente en la estrategia. Seguimos con el plan actual.\", \"reason\": \"\", \"used_facts\": []}",
+  "required_facts": []
+}

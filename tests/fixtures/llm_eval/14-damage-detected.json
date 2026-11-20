@@ -1,0 +1,60 @@
+{
+  "context": {
+    "alert": {
+      "category": "damage",
+      "facts": [
+        {
+          "name": "damage_pct",
+          "unit": "pct",
+          "value": 22.0
+        }
+      ],
+      "lap": 24,
+      "message_key": "event.damage_detected",
+      "priority": "strategic"
+    },
+    "constraints": {
+      "max_chars": 220,
+      "max_words": 30,
+      "tone": "radio"
+    },
+    "context_hash": "5c9899acc8c26c90748130a71da5bc3f11b8d70ad0071b50ce24c9466c4edd81",
+    "glossary": {
+      "box": "parada en boxes"
+    },
+    "kind": "alert",
+    "language": "es",
+    "metrics": {
+      "fuel.margin_laps": {
+        "quality": "good",
+        "unit": "laps",
+        "value": 1.4
+      },
+      "tyre.wear_mean_pct": {
+        "quality": "good",
+        "unit": "pct",
+        "value": 62.0
+      }
+    },
+    "recent_messages": [],
+    "schema_version": 1,
+    "situation": {
+      "compound": "medium",
+      "lap": 24,
+      "laps_remaining": 20,
+      "position": 5,
+      "tyre_age_laps": 12
+    },
+    "strategy": null,
+    "uncertainties": []
+  },
+  "forbidden_numbers": [],
+  "id": "damage-detected",
+  "language": "es",
+  "max_chars": null,
+  "max_words": null,
+  "recorded_response": "{\"should_speak\": true, \"priority\": \"strategic\", \"language\": \"es\", \"message\": \"Daño detectado en el alerón delantero. El coche pierde carga.\", \"reason\": \"\", \"used_facts\": [\"damage_pct\"]}",
+  "required_facts": [
+    "damage_pct"
+  ]
+}

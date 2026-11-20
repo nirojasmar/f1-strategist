@@ -69,6 +69,7 @@ _SESSION_COLUMNS: tuple[str, ...] = (
     "profile_hash",
     "strategy_fingerprint",
     "gate_fingerprint",
+    "agent_fingerprint",
 )
 
 _WEEKEND_COLUMNS: tuple[str, ...] = (
@@ -131,6 +132,7 @@ class SessionInfo:
     profile_hash: str | None = None
     strategy_fingerprint: str | None = None
     gate_fingerprint: str | None = None
+    agent_fingerprint: str | None = None
 
     def __post_init__(self) -> None:
         if self.session_uid < 0 or self.session_uid > 2**64 - 1:
@@ -337,6 +339,62 @@ class StoredGateDecision:
             raise ValueError("seq debe ser positivo y t_sim_s finito")
 
 
+@dataclass(frozen=True, slots=True)
+class StoredLLMCall:
+    seq: int
+    t_sim_s: float
+    kind: str
+    model: str
+    outcome: str
+    alert_id: str | None = None
+    endpoint_host: str | None = None
+    prompt_version: str | None = None
+    parameters_json: str | None = None
+    context_hash: str | None = None
+    context_json: str | None = None
+    response_text: str | None = None
+    reply_json: str | None = None
+    validation_valid: bool | None = None
+    validation_errors_json: str | None = None
+    fallback_reason: str | None = None
+    error: str | None = None
+    ttft_s: float | None = None
+    total_s: float | None = None
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.seq < 1 or not math.isfinite(self.t_sim_s):
+            raise ValueError("seq debe ser positivo y t_sim_s finito")
+        for name in ("kind", "model", "outcome"):
+            if not getattr(self, name):
+                raise ValueError(f"{name} no puede estar vacío")
+
+
+@dataclass(frozen=True, slots=True)
+class StoredAgentMessage:
+    seq: int
+    t_sim_s: float
+    message_id: str
+    priority: str
+    language: str
+    text: str
+    source: str
+    alert_id: str | None = None
+    event_id: str | None = None
+    used_facts_json: str | None = None
+    lap: int | None = None
+    llm_call_id: str | None = None
+    interrupt: bool = False
+
+    def __post_init__(self) -> None:
+        if self.seq < 1 or not math.isfinite(self.t_sim_s):
+            raise ValueError("seq debe ser positivo y t_sim_s finito")
+        for name in ("message_id", "priority", "language", "source"):
+            if not getattr(self, name):
+                raise ValueError(f"{name} no puede estar vacío")
+
+
 class SessionStore:
     """Conexión a una base de sesiones con API de escritura y lectura."""
 
@@ -441,6 +499,7 @@ class SessionStore:
             info.profile_hash,
             info.strategy_fingerprint,
             info.gate_fingerprint,
+            info.agent_fingerprint,
         ]
         columns = _SESSION_COLUMNS[1:]
         weekend_index = _SESSION_COLUMNS.index("weekend_id") - 1
@@ -531,7 +590,8 @@ class SessionStore:
                 "profile_json = COALESCE(?, profile_json), "
                 "profile_hash = COALESCE(?, profile_hash), "
                 "strategy_fingerprint = COALESCE(?, strategy_fingerprint), "
-                "gate_fingerprint = COALESCE(?, gate_fingerprint) "
+                "gate_fingerprint = COALESCE(?, gate_fingerprint), "
+                "agent_fingerprint = COALESCE(?, agent_fingerprint) "
                 "WHERE id = ?",
                 (
                     info.game_format,
@@ -555,6 +615,7 @@ class SessionStore:
                     info.profile_hash,
                     info.strategy_fingerprint,
                     info.gate_fingerprint,
+                    info.agent_fingerprint,
                     session_id,
                 ),
             )
@@ -973,6 +1034,152 @@ class SessionStore:
                 str(row["reason"]),
                 _optional_str(row["alert_id"]),
                 None if interrupt is None else bool(interrupt),
+            )
+
+    def add_llm_calls(self, session_id: int, calls: Iterable[StoredLLMCall]) -> None:
+        rows = [
+            (
+                session_id,
+                item.seq,
+                item.t_sim_s,
+                item.alert_id,
+                item.kind,
+                item.model,
+                item.endpoint_host,
+                item.prompt_version,
+                item.parameters_json,
+                item.context_hash,
+                item.context_json,
+                item.response_text,
+                item.reply_json,
+                None if item.validation_valid is None else int(item.validation_valid),
+                item.validation_errors_json,
+                item.outcome,
+                item.fallback_reason,
+                item.error,
+                item.ttft_s,
+                item.total_s,
+                item.prompt_tokens,
+                item.completion_tokens,
+            )
+            for item in calls
+        ]
+        if not rows:
+            return
+        with self.transaction() as connection:
+            connection.executemany(
+                "INSERT INTO llm_calls (session_id, seq, t_sim_s, alert_id, kind, model, "
+                "endpoint_host, prompt_version, parameters_json, context_hash, context_json, "
+                "response_text, reply_json, validation_valid, validation_errors_json, outcome, "
+                "fallback_reason, error, ttft_s, total_s, prompt_tokens, completion_tokens) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(session_id, seq) DO UPDATE SET t_sim_s=excluded.t_sim_s, "
+                "alert_id=excluded.alert_id, kind=excluded.kind, model=excluded.model, "
+                "endpoint_host=excluded.endpoint_host, prompt_version=excluded.prompt_version, "
+                "parameters_json=excluded.parameters_json, context_hash=excluded.context_hash, "
+                "context_json=excluded.context_json, response_text=excluded.response_text, "
+                "reply_json=excluded.reply_json, validation_valid=excluded.validation_valid, "
+                "validation_errors_json=excluded.validation_errors_json, "
+                "outcome=excluded.outcome, fallback_reason=excluded.fallback_reason, "
+                "error=excluded.error, ttft_s=excluded.ttft_s, total_s=excluded.total_s, "
+                "prompt_tokens=excluded.prompt_tokens, "
+                "completion_tokens=excluded.completion_tokens",
+                rows,
+            )
+
+    def iter_llm_calls(self, session_id: int) -> Iterator[StoredLLMCall]:
+        cursor = self._connection.execute(
+            "SELECT seq,t_sim_s,alert_id,kind,model,endpoint_host,prompt_version,"
+            "parameters_json,context_hash,context_json,response_text,reply_json,"
+            "validation_valid,validation_errors_json,outcome,fallback_reason,error,ttft_s,"
+            "total_s,prompt_tokens,completion_tokens FROM llm_calls "
+            "WHERE session_id=? ORDER BY seq",
+            (session_id,),
+        )
+        for row in cursor:
+            validation_valid = _optional_int(row["validation_valid"])
+            yield StoredLLMCall(
+                int(row["seq"]),
+                float(row["t_sim_s"]),
+                str(row["kind"]),
+                str(row["model"]),
+                str(row["outcome"]),
+                _optional_str(row["alert_id"]),
+                _optional_str(row["endpoint_host"]),
+                _optional_str(row["prompt_version"]),
+                _optional_str(row["parameters_json"]),
+                _optional_str(row["context_hash"]),
+                _optional_str(row["context_json"]),
+                _optional_str(row["response_text"]),
+                _optional_str(row["reply_json"]),
+                None if validation_valid is None else bool(validation_valid),
+                _optional_str(row["validation_errors_json"]),
+                _optional_str(row["fallback_reason"]),
+                _optional_str(row["error"]),
+                _optional_float(row["ttft_s"]),
+                _optional_float(row["total_s"]),
+                _optional_int(row["prompt_tokens"]),
+                _optional_int(row["completion_tokens"]),
+            )
+
+    def add_agent_messages(self, session_id: int, messages: Iterable[StoredAgentMessage]) -> None:
+        rows = [
+            (
+                session_id,
+                item.seq,
+                item.t_sim_s,
+                item.message_id,
+                item.alert_id,
+                item.event_id,
+                item.priority,
+                item.language,
+                item.text,
+                item.source,
+                item.used_facts_json,
+                item.lap,
+                item.llm_call_id,
+                int(item.interrupt),
+            )
+            for item in messages
+        ]
+        if not rows:
+            return
+        with self.transaction() as connection:
+            connection.executemany(
+                "INSERT INTO agent_messages (session_id, seq, t_sim_s, message_id, alert_id, "
+                "event_id, priority, language, text, source, used_facts_json, lap, llm_call_id, "
+                "interrupt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(session_id, seq) DO UPDATE SET t_sim_s=excluded.t_sim_s, "
+                "message_id=excluded.message_id, alert_id=excluded.alert_id, "
+                "event_id=excluded.event_id, priority=excluded.priority, "
+                "language=excluded.language, text=excluded.text, source=excluded.source, "
+                "used_facts_json=excluded.used_facts_json, lap=excluded.lap, "
+                "llm_call_id=excluded.llm_call_id, interrupt=excluded.interrupt",
+                rows,
+            )
+
+    def iter_agent_messages(self, session_id: int) -> Iterator[StoredAgentMessage]:
+        cursor = self._connection.execute(
+            "SELECT seq,t_sim_s,message_id,alert_id,event_id,priority,language,text,source,"
+            "used_facts_json,lap,llm_call_id,interrupt FROM agent_messages "
+            "WHERE session_id=? ORDER BY seq",
+            (session_id,),
+        )
+        for row in cursor:
+            yield StoredAgentMessage(
+                int(row["seq"]),
+                float(row["t_sim_s"]),
+                str(row["message_id"]),
+                str(row["priority"]),
+                str(row["language"]),
+                str(row["text"]),
+                str(row["source"]),
+                _optional_str(row["alert_id"]),
+                _optional_str(row["event_id"]),
+                _optional_str(row["used_facts_json"]),
+                _optional_int(row["lap"]),
+                _optional_str(row["llm_call_id"]),
+                bool(row["interrupt"]),
             )
 
     # ------------------------------------------------------------------
@@ -1425,6 +1632,7 @@ def _session_from_row(row: sqlite3.Row) -> SessionInfo:
         profile_hash=_optional_str(row["profile_hash"]),
         strategy_fingerprint=_optional_str(row["strategy_fingerprint"]),
         gate_fingerprint=(_optional_str(row_values.get("gate_fingerprint"))),
+        agent_fingerprint=_optional_str(row_values.get("agent_fingerprint")),
     )
 
 

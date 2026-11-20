@@ -1,0 +1,58 @@
+{
+  "context": {
+    "alert": {
+      "category": "track",
+      "facts": [
+        {
+          "name": "gap_s",
+          "unit": "s",
+          "value": 1.2
+        }
+      ],
+      "lap": 24,
+      "message_key": "event.safety_car_deployed",
+      "priority": "critical"
+    },
+    "constraints": {
+      "max_chars": 220,
+      "max_words": 30,
+      "tone": "radio"
+    },
+    "context_hash": "19c46a227fefde159f611b3ec5a7d40e0cb1992b80cbeb044ef4ec76ae68b76d",
+    "glossary": {
+      "box": "parada en boxes"
+    },
+    "kind": "alert",
+    "language": "es",
+    "metrics": {
+      "fuel.margin_laps": {
+        "quality": "good",
+        "unit": "laps",
+        "value": 1.4
+      },
+      "tyre.wear_mean_pct": {
+        "quality": "good",
+        "unit": "pct",
+        "value": 62.0
+      }
+    },
+    "recent_messages": [],
+    "schema_version": 1,
+    "situation": {
+      "compound": "medium",
+      "lap": 24,
+      "laps_remaining": 20,
+      "position": 5,
+      "tyre_age_laps": 12
+    },
+    "strategy": null,
+    "uncertainties": []
+  },
+  "forbidden_numbers": [],
+  "id": "safety-car-deployed",
+  "language": "es",
+  "max_chars": null,
+  "max_words": null,
+  "recorded_response": "{\"should_speak\": true, \"priority\": \"critical\", \"language\": \"es\", \"message\": \"Coche de seguridad en pista. Reduce el ritmo y mantén la temperatura.\", \"reason\": \"\", \"used_facts\": []}",
+  "required_facts": []
+}

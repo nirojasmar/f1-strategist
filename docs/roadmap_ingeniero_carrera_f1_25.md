@@ -471,8 +471,28 @@ Incidencia abierta, registrada como medida y no corregida:
 ### Criterio de salida
 
 El modelo genera mensajes consistentes con los datos y la recomendación
-estructurada, sin convertirse en el responsable de los cálculos
-estratégicos.
+estructurada, sin convertirse en el responsable de los cálculos estratégicos.
+
+Criterio medido en la implementación local:
+
+1. Sin alerta comunicable no se llama al cliente; los críticos usan plantilla
+   inmediata por configuración.
+2. El validador rechaza JSON roto, números, unidades, prioridad, idioma y hechos
+   no respaldados por el contexto.
+3. Ante modelo caído, timeout o respuesta inválida se emite plantilla y queda
+   registrada la causa y la latencia.
+4. Una generación de una alerta cerrada o sustituida se descarta y no se publica.
+5. El modo `template` es determinista y el modo `recorded` reproduce respuestas
+   registradas sin acceso a la red.
+6. La medición de Gemma 4 E2B IT Q4_K_S obtuvo 24 de 34 casos válidos
+   (70,59 %) con razonamiento desactivado; sobre 24 respuestas parseables, cifras,
+   prioridad, idioma y longitud tuvieron 24/24 y `used_facts` 23/24 (95,83 %).
+   La latencia global fue p50 7,0657 s y p95 9,2671 s.
+7. Los críticos siguen dependiendo de plantilla dentro de 1,5 s; el modelo candidato
+   no reemplaza el cálculo determinista ni fija por sí solo los umbrales de la fase.
+
+La suite sintética y el conjunto grabado son reproducibles. Las capturas reales
+continúan marcadas como validación opcional.
 
 ------------------------------------------------------------------------
 

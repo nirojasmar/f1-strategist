@@ -5,6 +5,7 @@ description = "Ingeniero de carrera con IA para F1 25: telemetría UDP, estrateg
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "httpx>=0.27",
     "pydantic>=2.7",
     "rich>=13.7",
 ]
@@ -41,10 +42,11 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-ra -m 'not benchmark'"
+addopts = "-ra -m 'not benchmark and not llm_eval'"
 markers = [
     "benchmark: mediciones de rendimiento no ejecutadas en la suite funcional",
     "real_capture: invariantes y tolerancias sobre una captura real o F1_CAPTURE_FIXTURE",
+    "llm_eval: evaluación contra un modelo real, requiere F1_LLM_ENDPOINT",
 ]
 
 [tool.pyright]

@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import ipaddress
+import os
 import tomllib
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import urlparse
 
 from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    SecretStr,
     ValidationError,
     field_validator,
     model_validator,
@@ -346,6 +349,91 @@ class GateConfig(BaseModel):
     muted: bool = False
 
 
+class LLMConfig(BaseModel):
+    """Endpoint compatible con OpenAI (Fase 6); valores provisionales."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    endpoint: str = "http://127.0.0.1:1234/v1"
+    model: str = ""
+    # SecretStr oculta la clave en repr y en los volcados (también en SQLite).
+    api_key: SecretStr | None = None
+    temperature: float = Field(default=0.3, ge=0, le=2, allow_inf_nan=False)
+    top_p: float | None = Field(default=None, gt=0, le=1, allow_inf_nan=False)
+    seed: int | None = None
+    max_tokens: int = Field(default=200, gt=0)
+    stream: bool = True
+    structured_output: Literal["auto", "json_schema", "json_object", "none"] = "auto"
+    extra_body: dict[str, Any] = Field(default_factory=dict)
+    connect_timeout_s: float = Field(default=2.0, gt=0, allow_inf_nan=False)
+    max_in_flight: int = Field(default=1, ge=1)
+    health_interval_s: float = Field(default=30.0, gt=0, allow_inf_nan=False)
+
+    @field_validator("endpoint")
+    @classmethod
+    def _check_endpoint(cls, value: str) -> str:
+        parsed = urlparse(value)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("endpoint debe ser una URL http o https")
+        if parsed.username is not None or parsed.password is not None:
+            raise ValueError("endpoint no debe incluir credenciales")
+        if not parsed.hostname:
+            raise ValueError("endpoint debe incluir un host")
+        try:
+            _ = parsed.port
+        except ValueError as exc:
+            raise ValueError("endpoint tiene un puerto inválido") from exc
+        return value.rstrip("/")
+
+    @model_validator(mode="after")
+    def _check_model(self) -> LLMConfig:
+        if self.enabled and not self.model.strip():
+            raise ValueError("model es obligatorio cuando el LLM está activado")
+        return self
+
+    @property
+    def resolved_api_key(self) -> str | None:
+        """Clave explícita o, si falta, la de ``F1_LLM_API_KEY``."""
+        if self.api_key is not None:
+            return self.api_key.get_secret_value()
+        return os.environ.get("F1_LLM_API_KEY") or None
+
+
+class AgentConfig(BaseModel):
+    """Comunicación del agente (Fase 6); valores provisionales."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    language: str = Field(default="es", min_length=2, max_length=16)
+    max_words: int = Field(default=30, gt=0)
+    max_chars: int = Field(default=220, gt=0)
+    critical_uses_llm: bool = False
+    timeout_critical_s: float = Field(default=1.5, gt=0, allow_inf_nan=False)
+    timeout_strategic_s: float = Field(default=10.0, gt=0, allow_inf_nan=False)
+    timeout_informational_s: float = Field(default=10.0, gt=0, allow_inf_nan=False)
+    fallback_on_failure: Literal["template", "drop"] = "template"
+    max_alert_age_s: float = Field(default=15.0, gt=0, allow_inf_nan=False)
+    recent_messages: int = Field(default=3, ge=0)
+    context_token_budget: int = Field(default=900, gt=0)
+    offline_mode: Literal["template", "recorded", "live"] = "template"
+    record_context: bool = True
+    imperative_phrases: tuple[str, ...] = (
+        "entra a boxes",
+        "boxea ahora",
+        "ataca ahora",
+        "empuja ahora",
+    )
+
+    def timeout_for(self, priority: str) -> float:
+        """Tiempo de espera según la prioridad; otras prioridades usan el informativo."""
+        if priority == "critical":
+            return self.timeout_critical_s
+        if priority == "strategic":
+            return self.timeout_strategic_s
+        return self.timeout_informational_s
+
+
 class AppConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -356,6 +444,8 @@ class AppConfig(BaseModel):
     strategy: StrategyConfig = Field(default_factory=StrategyConfig)
     events: EventsConfig = Field(default_factory=EventsConfig)
     gate: GateConfig = Field(default_factory=GateConfig)
+    llm: LLMConfig = Field(default_factory=LLMConfig)
+    agent: AgentConfig = Field(default_factory=AgentConfig)
 
 
 def load_config(path: Path | None) -> AppConfig:
@@ -382,7 +472,8 @@ def apply_overrides(
     capture_directory: Path | None = None,
 ) -> AppConfig:
     """Aplica opciones de línea de comandos y vuelve a validar el resultado."""
-    data = cfg.model_dump(mode="json")
+    # Modo Python: el volcado JSON enmascara la clave de API y la perderíamos.
+    data = cfg.model_dump(mode="python")
     if listen_address is not None:
         data["telemetry"]["listen_address"] = listen_address
     if listen_port is not None:

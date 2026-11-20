@@ -14,10 +14,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
+from .agent.communicator import AgentCommunicator, AlertSources, build_communicator
+from .agent.types import AgentMessage, LLMCallRecord
 from .config import AppConfig, MetricsConfig, RecordingConfig, StrategyConfig
 from .events.engine import EventEngine
 from .events.types import EventSignal, GateDecision
 from .fingerprint import (
+    AgentFingerprintAccumulator,
     GateFingerprintAccumulator,
     RunInfo,
     build_run_info,
@@ -38,10 +41,12 @@ from .store import (
     Participant,
     SessionInfo,
     SessionStore,
+    StoredAgentMessage,
     StoredDetectedEvent,
     StoredError,
     StoredEvent,
     StoredGateDecision,
+    StoredLLMCall,
     StoredStrategyEvaluation,
     StoreError,
     TyreInventorySnapshot,
@@ -107,6 +112,12 @@ class RecorderStore(Protocol):
         self, session_id: int, decisions: Iterable[StoredGateDecision]
     ) -> None: ...
 
+    def add_llm_calls(self, session_id: int, calls: Iterable[StoredLLMCall]) -> None: ...
+
+    def add_agent_messages(
+        self, session_id: int, messages: Iterable[StoredAgentMessage]
+    ) -> None: ...
+
 
 def _enum_value(value: object) -> str:
     raw = getattr(value, "value", value)
@@ -141,6 +152,8 @@ class _Batch:
     strategy_evaluations: tuple[StoredStrategyEvaluation, ...] = ()
     detected_events: tuple[StoredDetectedEvent, ...] = ()
     gate_decisions: tuple[StoredGateDecision, ...] = ()
+    llm_calls: tuple[StoredLLMCall, ...] = ()
+    agent_messages: tuple[StoredAgentMessage, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -249,6 +262,9 @@ class SessionRecorder:
         self._detected_event_seq = 0
         self._gate_decision_seq = 0
         self._gate_fingerprint = GateFingerprintAccumulator()
+        self._llm_call_seq = 0
+        self._agent_message_seq = 0
+        self._agent_fingerprint = AgentFingerprintAccumulator()
         self._last_strategy_lap: int | None = None
         self._last_strategy_revision: int | None = None
         self._last_strategy_inputs_hash: str | None = None
@@ -553,6 +569,124 @@ class SessionRecorder:
         except Exception as exc:  # noqa: BLE001 - el grabador nunca detiene la captura
             self._remember_error(exc)
 
+    def record_agent(
+        self,
+        calls: Iterable[LLMCallRecord],
+        messages: Iterable[AgentMessage],
+        observed_at: float,
+    ) -> None:
+        """Encola llamadas al LLM y mensajes del agente sin bloquear al consumidor."""
+        try:
+            call_values = tuple(calls)
+            message_values = tuple(messages)
+            if not call_values and not message_values:
+                return
+            if not math.isfinite(observed_at):
+                raise ValueError("observed_at debe ser finito")
+            with self._lock:
+                info = self._producer_info
+                uid = self._session_uid
+                if info is None or uid is None:
+                    return
+                call_start = self._llm_call_seq
+                message_start = self._agent_message_seq
+                call_rows = tuple(
+                    StoredLLMCall(
+                        seq=call_start + index,
+                        t_sim_s=observed_at,
+                        kind=_enum_value(item.kind),
+                        model=item.model,
+                        outcome=_enum_value(item.outcome),
+                        alert_id=item.alert_id,
+                        endpoint_host=item.endpoint_host,
+                        prompt_version=item.prompt_version,
+                        parameters_json=item.parameters_json,
+                        context_hash=item.context_hash,
+                        context_json=item.context_json,
+                        response_text=item.response_text,
+                        reply_json=item.reply_json,
+                        validation_valid=item.validation_valid,
+                        validation_errors_json=(
+                            _canonical_json(list(item.validation_errors))
+                            if item.validation_errors
+                            else None
+                        ),
+                        fallback_reason=(
+                            None
+                            if item.fallback_reason is None
+                            else _enum_value(item.fallback_reason)
+                        ),
+                        error=item.error,
+                        ttft_s=item.ttft_s,
+                        total_s=item.total_s,
+                        prompt_tokens=item.prompt_tokens,
+                        completion_tokens=item.completion_tokens,
+                    )
+                    for index, item in enumerate(call_values, 1)
+                )
+                message_rows = tuple(
+                    StoredAgentMessage(
+                        seq=message_start + index,
+                        t_sim_s=observed_at,
+                        message_id=item.message_id,
+                        priority=_enum_value(item.priority),
+                        language=item.language,
+                        text=item.text,
+                        source=_enum_value(item.source),
+                        alert_id=item.alert_id,
+                        event_id=item.event_id,
+                        used_facts_json=(
+                            _canonical_json(list(item.used_facts)) if item.used_facts else None
+                        ),
+                        lap=item.lap or None,
+                        llm_call_id=item.llm_call_id,
+                        interrupt=item.interrupt,
+                    )
+                    for index, item in enumerate(message_values, 1)
+                )
+                fingerprint_state = self._agent_fingerprint.copy()
+                fingerprint_state.add(
+                    {
+                        "message_id": item.message_id,
+                        "alert_id": item.alert_id,
+                        "event_id": item.event_id,
+                        "priority": _enum_value(item.priority),
+                        "language": item.language,
+                        "text": item.text,
+                        "source": _enum_value(item.source),
+                        "used_facts": list(item.used_facts),
+                        "lap": item.lap,
+                        "llm_call_id": item.llm_call_id,
+                        "interrupt": item.interrupt,
+                    }
+                    for item in message_values
+                )
+                if message_values:
+                    info = replace(info, agent_fingerprint=fingerprint_state.fingerprint)
+                incomplete = self._writer_incomplete or uid in self._dropped_by_uid
+            enqueued = self._enqueue(
+                _Batch(
+                    session_uid=uid,
+                    session_info=info,
+                    participants=(),
+                    laps=(),
+                    events=(),
+                    metrics=(),
+                    errors=(),
+                    incomplete=incomplete,
+                    incomplete_uids=self._incomplete_uids(),
+                    llm_calls=call_rows,
+                    agent_messages=message_rows,
+                )
+            )
+            if enqueued:
+                self._llm_call_seq = call_start + len(call_rows)
+                self._agent_message_seq = message_start + len(message_rows)
+                self._agent_fingerprint = fingerprint_state
+                self._producer_info = info
+        except Exception as exc:  # noqa: BLE001 - el grabador nunca detiene la captura
+            self._remember_error(exc)
+
     def flush(self, timeout: float) -> bool:
         """Espera, con límite, a que el escritor confirme todo el trabajo encolado."""
         if not math.isfinite(timeout) or timeout <= 0:
@@ -748,6 +882,9 @@ class SessionRecorder:
         self._detected_event_seq = 0
         self._gate_decision_seq = 0
         self._gate_fingerprint = GateFingerprintAccumulator()
+        self._llm_call_seq = 0
+        self._agent_message_seq = 0
+        self._agent_fingerprint = AgentFingerprintAccumulator()
         self._last_strategy_lap = None
         self._last_strategy_revision = None
         self._last_strategy_inputs_hash = None
@@ -1149,6 +1286,10 @@ class SessionRecorder:
             self._store.add_detected_events(session_id, batch.detected_events)
         if batch.gate_decisions:
             self._store.add_gate_decisions(session_id, batch.gate_decisions)
+        if batch.llm_calls:
+            self._store.add_llm_calls(session_id, batch.llm_calls)
+        if batch.agent_messages:
+            self._store.add_agent_messages(session_id, batch.agent_messages)
         return created_session_id
 
     def _close_current(
@@ -1251,11 +1392,13 @@ class _IngestCollector:
         event_engine: EventEngine,
         *,
         profiles_by_uid: Mapping[int, WeekendProfile],
+        agent: AgentCommunicator | None = None,
     ) -> None:
         self.engine = engine
         self.strategy_engine = strategy_engine
         self.recorder = recorder
         self.event_engine = event_engine
+        self.agent = agent
         self.profiles_by_uid = dict(profiles_by_uid)
         self.events: list[RaceEvent] = []
         self.state = RaceState(self.events.append)
@@ -1285,6 +1428,12 @@ class _IngestCollector:
                 self.engine.history,
                 header=self.last_header,
             )
+            if self.agent is not None:
+                calls, messages = self.agent.drain_records()
+                if calls or messages:
+                    self.recorder.record_agent(calls, messages, self.last_observed_at)
+                # La sesión anterior termina aquí: no debe publicar más allá.
+                self.agent.reset()
         self.last_state = snapshot
         self.last_observed_at = observed_at
         self.last_header_time = packet.header.session_time
@@ -1329,6 +1478,21 @@ class _IngestCollector:
         if evaluation is not None:
             self.recorder.record_events(evaluation.signals, evaluation.decisions, observed_at)
         self.recorder.record_strategy(self.strategy_engine.snapshot())
+        if self.agent is not None:
+            events_snapshot = self.event_engine.snapshot()
+            self.agent.observe(
+                events_snapshot,
+                AlertSources(
+                    state=snapshot,
+                    metrics=self.engine.snapshot(),
+                    strategy=self.strategy_engine.snapshot(),
+                    events=events_snapshot,
+                    observed_at=observed_at,
+                ),
+            )
+            calls, messages = self.agent.drain_records()
+            if calls or messages:
+                self.recorder.record_agent(calls, messages, observed_at)
 
 
 def ingest_capture(
@@ -1365,12 +1529,15 @@ def ingest_capture(
         metrics_config=app_config.metrics,
         strategy_config=app_config.strategy,
     )
+    agent = build_communicator(app_config.agent, app_config.llm, mode=app_config.agent.offline_mode)
+    agent.start()
     collector = _IngestCollector(
         engine,
         strategy_engine,
         recorder,
         event_engine,
         profiles_by_uid=registered_profiles,
+        agent=agent,
     )
     offline: OfflineResult | None = None
     metrics: MetricsSnapshot | None = None
@@ -1397,6 +1564,10 @@ def ingest_capture(
             run_info=run_info,
         )
     finally:
+        agent.stop()
+        calls, messages = agent.drain_records()
+        if calls or messages:
+            recorder.record_agent(calls, messages, collector.last_observed_at or 0.0)
         recorder.stop(
             fingerprint=fingerprint,
             incomplete=(offline is None or offline.truncated or collector.event_evaluation_failed),

@@ -22,6 +22,7 @@ from f1_strategist.config import (
 from f1_strategist.fingerprint import (
     _FingerprintCollector,
     build_run_info,
+    compute_agent_fingerprint,
     compute_config_hash,
     compute_fingerprint,
     compute_gate_fingerprint,
@@ -225,6 +226,22 @@ def test_gate_fingerprint_ignores_record_order_and_platform(
     monkeypatch.setattr("f1_strategist.fingerprint.platform.python_version", lambda: "0.0")
 
     assert compute_gate_fingerprint(reversed(records)) == expected
+    assert len(expected) == 64
+
+
+def test_agent_fingerprint_ignores_message_order_and_platform(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    records = (
+        {"message_id": "a", "text": "Box this lap", "priority": "strategic"},
+        {"message_id": "b", "text": "Stay out", "priority": "informational"},
+    )
+    expected = compute_agent_fingerprint(records)
+    monkeypatch.setattr("f1_strategist.fingerprint.platform.platform", lambda: "other-os")
+    monkeypatch.setattr("f1_strategist.fingerprint.platform.python_version", lambda: "0.0")
+
+    assert compute_agent_fingerprint(reversed(records)) == expected
+    assert compute_agent_fingerprint(records + ({"message_id": "c"},)) != expected
     assert len(expected) == 64
 
 
