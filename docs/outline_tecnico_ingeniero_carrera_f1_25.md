@@ -480,8 +480,8 @@ La salida estructurada usa el esquema `LLMReply`:
 El validador comprueba esquema, hechos utilizados, respaldo de cifras, longitud,
 idioma y prioridad. Las cifras deben existir en los hechos del contexto; las
 incertidumbres no se convierten en certeza. Si la respuesta es inválida o llega
-tarde, el comunicador usa la plantilla local o descarta el informativo según
-`fallback_on_failure`.
+tarde, el comunicador usa la plantilla local o descarta la alerta informativa o
+estratégica según `fallback_on_failure`; las críticas siempre usan plantilla.
 
 Los tiempos de espera son 1,5 s para críticos, 10 s para estratégicos y 10 s para
 informativos por configuración actual. Los críticos usan plantilla por defecto.

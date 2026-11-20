@@ -18,7 +18,7 @@ from f1_strategist.agent.evaluation import (
     run_evaluation,
 )
 from f1_strategist.agent.llm_client import FakeLLMClient, OpenAICompatibleClient
-from f1_strategist.agent.types import LLMResponse
+from f1_strategist.agent.types import ContextKind, LLMResponse
 from f1_strategist.cli import main
 from f1_strategist.config import AgentConfig, LLMConfig
 from f1_strategist.events.types import EventPriority
@@ -145,6 +145,22 @@ def test_evaluation_uses_the_effective_agent_config() -> None:
     assert client.requests[0].stream is True
 
 
+def test_evaluation_selects_the_prompt_from_the_context_kind() -> None:
+    base = _base_case()
+    context = replace(base.context, kind=ContextKind.QUESTION, alert=None, context_hash="")
+    case = replace(base, context=context)
+    client = FakeLLMClient([_reply("Sí, entra esta vuelta.", priority="informational")])
+
+    run_evaluation(client, [case], LLMConfig(model="fake"))
+
+    assert "El piloto hace una pregunta" in client.requests[0].messages[1].content
+
+
+def test_case_language_must_match_the_context_language() -> None:
+    with pytest.raises(ValueError, match="no coincide"):
+        replace(_base_case(), language="en")
+
+
 @pytest.mark.parametrize(
     ("case", "text", "rule"),
     [
@@ -180,6 +196,7 @@ def test_client_error_is_reported_as_fallback() -> None:
     result = report["cases"][0]
     assert "fallback" in result["failed_rules"]
     assert any("boom" in failure["text"] for failure in result["failures"])
+    assert result["latency_s"] is None
 
 
 def test_latency_is_reported_when_available() -> None:

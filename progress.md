@@ -303,13 +303,13 @@ Documentos de diseño:
     desactivado por configuración; las pruebas mostraron que consume el presupuesto y devuelve JSON truncado.
 -   Con razonamiento desactivado, 24 de 34 casos fueron válidos (70,59 %), con 29,41 % de fallback y 70,59 %
     de esquema válido. Cifras, prioridad, idioma y longitud tuvieron 100 % de validez; `used_facts` tuvo
-    97,06 %.
+    23/24 (95,83 %).
 -   Por prioridad: críticos 0/9 válidos con 100 % de fallback por timeout de 1.5 s; informativos 12/12
-    válidos con p50/p95 de 6.8909/8.3478 s; estratégicos 11/13 válidos con p50/p95 de 7.4027/9.3482 s.
+    válidos con p50/p95 de 6.8909/8.3478 s; estratégicos 12/13 válidos con p50/p95 de 7.4027/9.3482 s.
 -   Latencia global p50/p95: 7.0657/9.2671 s. Los logs de LM Studio confirmaron respuestas terminadas con
     `finish_reason: "stop"`, `reasoning_tokens: 0` y generación a unas 20–21 tokens/s en CPU.
 -   Los críticos siguen dependiendo de plantilla inmediata; no se considera que sus timeouts sean un fallo
-    del modelo. La única estrategia fallida aparte de timeout omite el hecho obligatorio `position`.
+    del modelo. La única estrategia fallida omite el hecho obligatorio `position`.
 -   El aumento de `max_tokens` no fue decisivo; desactivar el razonamiento produjo la mejora principal.
     No se considera necesario fine-tuning en esta fase: el modelo base ya alcanza una tasa útil y el validador
     sigue siendo obligatorio para cifras, esquema y hechos.

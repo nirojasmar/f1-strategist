@@ -14,11 +14,11 @@
       "priority": "informational"
     },
     "constraints": {
-      "max_chars": 220,
-      "max_words": 30,
+      "max_chars": 40,
+      "max_words": 6,
       "tone": "radio"
     },
-    "context_hash": "4816e98c7391c403409f196f1e9c473b52f3e77ab2d46312b4ad858eeda1906f",
+    "context_hash": "5b94489ef66ae58ea9c62ec2b03134a32216a844bf751593a2413e305026680f",
     "glossary": {
       "box": "parada en boxes"
     },

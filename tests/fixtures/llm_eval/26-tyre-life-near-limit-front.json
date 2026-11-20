@@ -58,6 +58,6 @@
   "language": "es",
   "max_chars": null,
   "max_words": null,
-  "recorded_response": "{\"should_speak\": true, \"priority\": \"strategic\", \"language\": \"es\", \"message\": \"El neumático delantero izquierdo está al límite. Prepara la parada.\", \"reason\": \"\", \"used_facts\": []}",
+  "recorded_response": "{\"should_speak\": true, \"priority\": \"strategic\", \"language\": \"es\", \"message\": \"Los neumáticos están al límite. Prepara la parada.\", \"reason\": \"\", \"used_facts\": []}",
   "required_facts": []
 }

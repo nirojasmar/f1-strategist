@@ -38,8 +38,8 @@ Las prioridades proceden del Event Gate; el agente no las recalcula.
 
 El comunicador descarta una generación si la alerta queda cerrada, sustituida o supera
 `max_alert_age_s`. Si hay un fallo, timeout o JSON inválido, el comportamiento de
-degradación predeterminado es emitir la plantilla; `drop` solo se permite para
-informativos.
+degradación predeterminado es emitir la plantilla; `drop` se permite para alertas
+informativas y estratégicas, mientras que las críticas siempre emiten la plantilla.
 
 No hablar no implica desactivar la captura. Si no hay alerta comunicable, el modelo no
 recibe una llamada. `gate.muted = true` también silencia al agente sin detener el
@@ -66,7 +66,7 @@ La configuración vive en `[llm]` y `[agent]`. Los parámetros principales son:
 | `agent.language` | Idioma del contexto y del texto final (`es` por defecto). |
 | `agent.max_words`, `agent.max_chars` | Límites del mensaje emitido. |
 | `agent.timeout_*_s` | Presupuestos por prioridad. |
-| `agent.fallback_on_failure` | `template` o `drop` para informativos. |
+| `agent.fallback_on_failure` | `template` o `drop` para informativos y estratégicos; los críticos siempre usan plantilla. |
 | `agent.max_alert_age_s` | Edad máxima antes de descartar una generación. |
 | `agent.recent_messages` | Mensajes recientes incluidos como contexto. |
 | `agent.context_token_budget` | Presupuesto compacto del contexto. |

@@ -2385,7 +2385,8 @@ def _cmd_llm(args: argparse.Namespace, console: Console) -> int:
 
 def _cmd_llm_eval(args: argparse.Namespace, console: Console) -> int:
     out_path: Path | None = args.out
-    database = _sessions_database(args)
+    app_config = load_config(args.config)
+    database = args.db if args.db is not None else app_config.recording.database
     if out_path is not None:
         if _same_file(out_path, database):
             raise ValueError(LLM_EVAL_OVERWRITES_DB)
@@ -2412,7 +2413,6 @@ def _cmd_llm_eval(args: argparse.Namespace, console: Console) -> int:
     if not cases:
         raise ValueError("El conjunto no contiene casos evaluables.")
 
-    app_config = load_config(args.config)
     config: LLMConfig = app_config.llm
     if args.model is not None:
         config = diagnostic_config(config, endpoint=args.endpoint, model=args.model)

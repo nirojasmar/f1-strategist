@@ -20,7 +20,7 @@ from ..config import AgentConfig, LLMConfig
 from ..events.types import EventPriority
 from .llm_client import FakeLLMClient, LLMClient
 from .prompt_registry import PromptRegistry
-from .types import ContextKind, ContextPayload, LLMRequest, LLMResponse, wire_reply_schema
+from .types import ContextPayload, LLMRequest, LLMResponse, wire_reply_schema
 from .validator import ResponseValidator, ValidationIssue
 
 EVAL_SCHEMA_VERSION = 2
@@ -65,6 +65,14 @@ class EvalCase:
     def __post_init__(self) -> None:
         if not self.case_id.strip():
             raise ValueError("case_id no puede estar vacío")
+        if (
+            self.language is not None
+            and self.language.strip().casefold() != self.context.language.strip().casefold()
+        ):
+            raise ValueError(
+                f"language del caso ({self.language}) no coincide con el contexto "
+                f"({self.context.language})"
+            )
         object.__setattr__(self, "required_facts", tuple(self.required_facts))
         object.__setattr__(self, "forbidden_numbers", tuple(self.forbidden_numbers))
 
@@ -256,7 +264,7 @@ def _evaluate_case(
     prompt_set: PromptRegistry,
 ) -> dict[str, Any]:
     priority = _context_priority(case.context)
-    rendered = prompt_set.render(ContextKind.ALERT, case.context)
+    rendered = prompt_set.render(case.context.kind, case.context)
     request = LLMRequest(
         model=llm.model,
         messages=tuple(rendered.messages),
@@ -272,7 +280,7 @@ def _evaluate_case(
     try:
         response = client.generate(request)
     except Exception as exc:  # el cliente real puede lanzar; se cuenta como respaldo
-        response = LLMResponse(error=f"{type(exc).__name__}: {exc}", total_s=0.0)
+        response = LLMResponse(error=f"{type(exc).__name__}: {exc}")
     text = response.text
     failures: list[dict[str, str]] = []
     if response.error is not None:
