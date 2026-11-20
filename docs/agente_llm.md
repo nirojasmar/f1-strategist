@@ -154,12 +154,18 @@ El informe de evaluación incluye esquema válido, cifras consistentes, longitud
 prioridad, idioma, `used_facts`, respaldo, latencia y el texto y regla de cada fallo.
 No fija umbrales ni compara modelos: mide el resultado para repetibilidad.
 
+Cada tasa publica su denominador en `<regla>_evaluable`. Los timeouts y errores del
+cliente no cuentan como aprobados en ninguna regla; el JSON inválido solo entra en el
+denominador de esquema. Las reglas de contenido se calculan únicamente sobre respuestas
+parseables, de modo que un caso no evaluable no infla las cifras.
+
 ## Resultado medido en la integración
 
 La validación local con Gemma 4 E2B IT Q4_K_S y razonamiento desactivado obtuvo
-24 de 34 casos válidos (70,59 %), con 29,41 % de fallback y esquema válido en 70,59 %.
-Cifras, prioridad, idioma y longitud alcanzaron 100 % de validez; `used_facts`
-97,06 %. La latencia global fue p50 7,0657 s y p95 9,2671 s.
+24 de 34 casos válidos (70,59 %), con 29,41 % de fallback (10/34) y esquema válido
+en 24/34 (70,59 %). Sobre los 24 casos con respuesta parseable: cifras, prioridad,
+idioma y longitud 24/24 (100 %); `used_facts` 23/24 (95,83 %). La latencia global
+fue p50 7,0657 s y p95 9,2671 s.
 
 Los críticos dependen de la plantilla por diseño: el timeout de 1,5 s impide esperar al
 modelo. Esta medición no declara al modelo listo para producción ni sustituye la

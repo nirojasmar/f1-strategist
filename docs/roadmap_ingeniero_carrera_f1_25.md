@@ -485,9 +485,9 @@ Criterio medido en la implementación local:
 5. El modo `template` es determinista y el modo `recorded` reproduce respuestas
    registradas sin acceso a la red.
 6. La medición de Gemma 4 E2B IT Q4_K_S obtuvo 24 de 34 casos válidos
-   (70,59 %) con razonamiento desactivado; cifras, prioridad, idioma y longitud
-   tuvieron 100 % de validez y `used_facts` 97,06 %. La latencia global fue
-   p50 7,0657 s y p95 9,2671 s.
+   (70,59 %) con razonamiento desactivado; sobre 24 respuestas parseables, cifras,
+   prioridad, idioma y longitud tuvieron 24/24 y `used_facts` 23/24 (95,83 %).
+   La latencia global fue p50 7,0657 s y p95 9,2671 s.
 7. Los críticos siguen dependiendo de plantilla dentro de 1,5 s; el modelo candidato
    no reemplaza el cálculo determinista ni fija por sí solo los umbrales de la fase.
 

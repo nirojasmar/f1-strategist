@@ -59,12 +59,22 @@ class EvalCase:
     max_words: int | None = None
     max_chars: int | None = None
     recorded_response: str | None = None
+    recorded_error: str | None = None
+    recorded_total_s: float | None = None
 
     def __post_init__(self) -> None:
         if not self.case_id.strip():
             raise ValueError("case_id no puede estar vacío")
         object.__setattr__(self, "required_facts", tuple(self.required_facts))
         object.__setattr__(self, "forbidden_numbers", tuple(self.forbidden_numbers))
+
+
+@dataclass(frozen=True, slots=True)
+class SessionCases:
+    """Casos recuperados de una sesión y llamadas cuyo contexto no es válido."""
+
+    cases: tuple[EvalCase, ...]
+    skipped: tuple[str, ...] = ()
 
 
 def load_cases(directory: Path) -> tuple[EvalCase, ...]:
@@ -133,33 +143,53 @@ def _optional_int(value: object, name: str, path: Path) -> int | None:
     return value
 
 
-def cases_from_calls(calls: Iterable[object]) -> tuple[EvalCase, ...]:
+def cases_from_calls(calls: Iterable[object]) -> SessionCases:
     """Convierte llamadas guardadas (``agent export``) en casos reproducibles."""
     cases: list[EvalCase] = []
-    for call in calls:
+    skipped: list[str] = []
+    for position, call in enumerate(calls, start=1):
+        seq = getattr(call, "seq", position)
         context_json = getattr(call, "context_json", None)
         if not context_json:
+            skipped.append(f"session-{seq}:missing_context")
             continue
         try:
             context = ContextPayload.from_json(context_json)
         except ValueError:
+            skipped.append(f"session-{seq}:invalid_context")
             continue
-        seq = getattr(call, "seq", len(cases) + 1)
+        response_text = getattr(call, "response_text", None)
+        error = getattr(call, "error", None)
+        if response_text is None and error is None:
+            # Una respuesta vacía quedó grabada como None: se reproduce como texto vacío.
+            response_text = ""
         cases.append(
             EvalCase(
                 case_id=f"session-{seq}",
                 context=context,
-                recorded_response=getattr(call, "response_text", None),
+                recorded_response=response_text,
+                recorded_error=error,
+                recorded_total_s=getattr(call, "total_s", None),
             )
         )
-    return tuple(cases)
+    return SessionCases(tuple(cases), tuple(skipped))
 
 
 def replay_client(cases: Sequence[EvalCase]) -> FakeLLMClient | None:
-    """Cliente simulado que repite las respuestas grabadas; ``None`` si falta alguna."""
-    if not cases or any(case.recorded_response is None for case in cases):
+    """Cliente simulado que repite respuestas y errores grabados; ``None`` si falta alguno."""
+    if not cases:
         return None
-    return FakeLLMClient([LLMResponse(text=case.recorded_response or "") for case in cases])
+    responses: list[LLMResponse] = []
+    for case in cases:
+        if case.recorded_error is not None:
+            responses.append(LLMResponse(error=case.recorded_error, total_s=case.recorded_total_s))
+        elif case.recorded_response is None:
+            return None
+        else:
+            responses.append(
+                LLMResponse(text=case.recorded_response, total_s=case.recorded_total_s)
+            )
+    return FakeLLMClient(responses)
 
 
 def run_evaluation(
@@ -174,12 +204,14 @@ def run_evaluation(
     agent_config = agent if agent is not None else AgentConfig()
     prompt_set = registry if registry is not None else PromptRegistry.load(agent_config.language)
     results = [_evaluate_case(client, case, llm, agent_config, prompt_set) for case in cases]
-    metrics: dict[str, Any] = {
-        f"{rule}_valid_rate": _rate(
-            sum(1 for result in results if rule not in result["failed_rules"]), len(results)
+    metrics: dict[str, Any] = {}
+    for rule in _METRIC_RULES:
+        flag = "responded" if rule == "schema" else "parsed"
+        pool = [result for result in results if result[flag]]
+        metrics[f"{rule}_valid_rate"] = _rate(
+            sum(1 for result in pool if rule not in result["failed_rules"]), len(pool)
         )
-        for rule in _METRIC_RULES
-    }
+        metrics[f"{rule}_evaluable"] = len(pool)
     metrics["fallback_rate"] = _rate(
         sum(1 for result in results if result["fallback"]), len(results)
     )
@@ -191,6 +223,8 @@ def run_evaluation(
         priority_results = [result for result in results if result["priority"] == priority]
         metrics["by_priority"][priority] = {
             "case_count": len(priority_results),
+            "responded_count": sum(1 for result in priority_results if result["responded"]),
+            "evaluable_count": sum(1 for result in priority_results if result["parsed"]),
             "valid_rate": _rate(
                 sum(1 for result in priority_results if result["valid"]), len(priority_results)
             ),
@@ -230,7 +264,7 @@ def _evaluate_case(
         top_p=llm.top_p,
         max_tokens=llm.max_tokens,
         seed=llm.seed,
-        stream=False,
+        stream=llm.stream,
         response_format=_response_format(llm),
         extra_body=dict(llm.extra_body),
         timeout_s=agent.timeout_for(priority.value),
@@ -267,6 +301,8 @@ def _evaluate_case(
         "finish_reason": response.finish_reason,
         "reasoning_content": response.reasoning_content,
         "fallback": response.error is not None or not result.valid,
+        "responded": response.error is None,
+        "parsed": reply is not None,
         "valid": not failures,
         "failed_rules": failed_rules,
         "failures": failures,
@@ -341,6 +377,7 @@ def _percentile(ordered: list[float], percentile: float) -> float:
 __all__ = [
     "EVAL_SCHEMA_VERSION",
     "EvalCase",
+    "SessionCases",
     "cases_from_calls",
     "load_cases",
     "replay_client",

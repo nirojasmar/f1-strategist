@@ -400,15 +400,20 @@ def test_critical_template_is_immediate_without_calling_the_model() -> None:
 def test_model_timeout_falls_back_with_reason() -> None:
     alert = _alert()
     events = EventsSnapshot(alerts=(alert,), active_events=(_signal(alert.event_id),))
-    communicator = _communicator(FakeLLMClient([LLMResponse(error="timeout")]), mode="recorded")
+    client = FakeLLMClient([LLMResponse(error="timeout", total_s=10.0)])
+    communicator = _communicator(client, mode="recorded")
 
     communicator.observe(events, _sources(events=events))
     calls, _ = communicator.drain_records()
     snapshot = communicator.snapshot()
 
+    assert client.requests[0].timeout_s == 10.0
     assert calls[0].fallback_reason == "timeout"
+    assert calls[0].total_s == 10.0
     assert snapshot.counters["fallback:timeout"] == 1
     assert snapshot.messages[0].source is MessageSource.TEMPLATE
+    assert snapshot.messages[0].message_id == f"{alert.alert_id}:template"
+    _assert_numbers_from_facts(snapshot.messages[0].text, alert.facts)
 
 
 def test_slow_client_does_not_delay_submission() -> None:
@@ -433,7 +438,10 @@ def test_slow_client_does_not_delay_submission() -> None:
         communicator.stop()
 
     assert elapsed < 0.5
-    assert communicator.snapshot().counters.get("fallback:timeout", 0) >= 1
+    snapshot = communicator.snapshot()
+    assert snapshot.counters.get("fallback:timeout", 0) >= 1
+    assert snapshot.messages
+    assert all(message.source is MessageSource.TEMPLATE for message in snapshot.messages)
 
 
 def test_closed_alert_during_generation_is_discarded() -> None:
@@ -571,13 +579,39 @@ def test_manifest_scenario_with_recorded_context(scenario_id: str) -> None:
         pytest.skip(f"captura no disponible: {scenario.file.name}")
 
     config = AppConfig()
-    communicator = _communicator(RecordedLLMClient({}), mode="recorded")
-    pipeline = OfflineEventPipeline(config, agent_communicator=communicator)
-    result = run_capture_offline(scenario.file, [pipeline])
-    pipeline.stop()
+    recorder = _RecordingClient(LLMResponse(text=_reply(message="Pit ahora.")))
+    first = OfflineEventPipeline(
+        config, agent_communicator=_communicator(recorder, mode="recorded")
+    )
+    result = run_capture_offline(scenario.file, [first])
+    first.stop()
+    first_snapshot = first.agent_snapshot()
 
+    assert recorder.records
     assert result.integrity_problems() == ()
-    assert pipeline.agent_snapshot().error is None
+    assert first_snapshot.error is None
+
+    replay = OfflineEventPipeline(
+        config,
+        agent_communicator=_communicator(RecordedLLMClient(recorder.records), mode="recorded"),
+    )
+    replay_result = run_capture_offline(scenario.file, [replay])
+    replay.stop()
+    replay_snapshot = replay.agent_snapshot()
+
+    assert replay_result.integrity_problems() == ()
+    assert replay_snapshot.error is None
+    first_messages = tuple(
+        (message.alert_id, message.text, message.emitted_at) for message in first_snapshot.messages
+    )
+    replay_messages = tuple(
+        (message.alert_id, message.text, message.emitted_at) for message in replay_snapshot.messages
+    )
+    assert first_messages
+    assert first_messages == replay_messages
+    assert compute_agent_fingerprint(first_snapshot.messages) == compute_agent_fingerprint(
+        replay_snapshot.messages
+    )
 
 
 @pytest.mark.benchmark

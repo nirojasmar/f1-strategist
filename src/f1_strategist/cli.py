@@ -53,6 +53,11 @@ from .console_messages import (
     AGENT_SUMMARY_TITLE,
     AGENT_SUMMARY_VALIDATION_TITLE,
     AGENT_UNKNOWN_VALUE,
+    LLM_EVAL_OVERWRITES_CAPTURE,
+    LLM_EVAL_OVERWRITES_CONFIG,
+    LLM_EVAL_OVERWRITES_DATASET,
+    LLM_EVAL_OVERWRITES_DB,
+    LLM_EVAL_SKIPPED_CALLS,
     render_agent_priority,
     render_agent_source,
     render_event_message,
@@ -2380,18 +2385,35 @@ def _cmd_llm(args: argparse.Namespace, console: Console) -> int:
 
 def _cmd_llm_eval(args: argparse.Namespace, console: Console) -> int:
     out_path: Path | None = args.out
-    if out_path is not None and args.config is not None and _same_file(out_path, args.config):
-        raise ValueError("El informe no puede sobrescribir la configuración.")
+    database = _sessions_database(args)
+    if out_path is not None:
+        if _same_file(out_path, database):
+            raise ValueError(LLM_EVAL_OVERWRITES_DB)
+        if args.config is not None and _same_file(out_path, args.config):
+            raise ValueError(LLM_EVAL_OVERWRITES_CONFIG)
+        if args.dataset is not None and out_path.resolve().is_relative_to(args.dataset.resolve()):
+            raise ValueError(LLM_EVAL_OVERWRITES_DATASET)
+    skipped: tuple[str, ...] = ()
     if args.dataset is not None:
         cases = load_cases(args.dataset)
     else:
-        with SessionStore.open(_sessions_database(args), readonly=True) as store:
+        with SessionStore.open(database, readonly=True) as store:
+            session = require_session(store, args.from_session)
             calls, _messages = _agent_session_rows(store, args.from_session)
-        cases = cases_from_calls(calls)
+            if out_path is not None:
+                capture_path = getattr(session, "capture_path", None)
+                if capture_path is not None and _same_file(out_path, Path(capture_path)):
+                    raise ValueError(LLM_EVAL_OVERWRITES_CAPTURE)
+        recovered = cases_from_calls(calls)
+        cases = recovered.cases
+        skipped = recovered.skipped
+    if skipped:
+        print(LLM_EVAL_SKIPPED_CALLS.format(calls=", ".join(skipped)), file=sys.stderr)
     if not cases:
         raise ValueError("El conjunto no contiene casos evaluables.")
 
-    config: LLMConfig = load_config(args.config).llm
+    app_config = load_config(args.config)
+    config: LLMConfig = app_config.llm
     if args.model is not None:
         config = diagnostic_config(config, endpoint=args.endpoint, model=args.model)
         client = OpenAICompatibleClient(config)
@@ -2399,7 +2421,7 @@ def _cmd_llm_eval(args: argparse.Namespace, console: Console) -> int:
         client = replay_client(cases)
         if client is None:
             raise ValueError("El conjunto no contiene respuestas grabadas; indica --model.")
-    output = report_json(run_evaluation(client, cases, config))
+    output = report_json(run_evaluation(client, cases, config, agent=app_config.agent))
     if out_path is not None:
         with out_path.open("w", encoding="utf-8", newline="") as handle:
             handle.write(output)

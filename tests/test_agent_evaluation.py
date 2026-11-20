@@ -20,8 +20,10 @@ from f1_strategist.agent.evaluation import (
 from f1_strategist.agent.llm_client import FakeLLMClient, OpenAICompatibleClient
 from f1_strategist.agent.types import LLMResponse
 from f1_strategist.cli import main
-from f1_strategist.config import LLMConfig
+from f1_strategist.config import AgentConfig, LLMConfig
 from f1_strategist.events.types import EventPriority
+from f1_strategist.store import SessionInfo, SessionStore
+from f1_strategist.store.sqlite_store import StoredLLMCall
 
 DATASET = Path(__file__).parent / "fixtures" / "llm_eval"
 MESSAGE_KEYS = (
@@ -109,6 +111,38 @@ def test_replay_client_needs_every_recorded_response() -> None:
     assert replay_client(()) is None
     assert replay_client([replace(base, recorded_response=None)]) is None
     assert replay_client([base]) is not None
+    assert (
+        replay_client([replace(base, recorded_response=None, recorded_error="timeout")]) is not None
+    )
+
+
+def test_rates_exclude_cases_that_could_not_be_evaluated() -> None:
+    invalid = run_evaluation(
+        FakeLLMClient(["esto no es json"]), [_base_case()], LLMConfig(model="fake")
+    )["metrics"]
+    timeout = run_evaluation(
+        FakeLLMClient([LLMResponse(error="timeout")]), [_base_case()], LLMConfig(model="fake")
+    )["metrics"]
+
+    assert invalid["schema_valid_rate"] == 0.0
+    assert invalid["schema_evaluable"] == 1
+    assert invalid["numbers_valid_rate"] is None
+    assert invalid["numbers_evaluable"] == 0
+    assert timeout["schema_valid_rate"] is None
+    assert timeout["schema_evaluable"] == 0
+    assert timeout["fallback_rate"] == 1.0
+
+
+def test_evaluation_uses_the_effective_agent_config() -> None:
+    client = FakeLLMClient([_reply("Box esta vuelta.")])
+    llm = LLMConfig(model="fake", stream=True)
+
+    report = run_evaluation(
+        client, [_base_case()], llm, agent=AgentConfig(max_words=1, language="es")
+    )
+
+    assert "length" in report["cases"][0]["failed_rules"]
+    assert client.requests[0].stream is True
 
 
 @pytest.mark.parametrize(
@@ -197,11 +231,102 @@ def test_cases_from_calls_skips_unusable_contexts() -> None:
         SimpleNamespace(seq=3, context_json="{}", response_text=_reply("OK")),
     ]
 
-    cases = cases_from_calls(calls)
+    recovered = cases_from_calls(calls)
 
-    assert [case.case_id for case in cases] == ["session-1"]
-    assert cases[0].recorded_response == _reply("OK")
-    assert cases[0].context.context_hash == context.context_hash
+    assert [case.case_id for case in recovered.cases] == ["session-1"]
+    assert recovered.cases[0].recorded_response == _reply("OK")
+    assert recovered.cases[0].context.context_hash == context.context_hash
+    assert recovered.skipped == ("session-2:missing_context", "session-3:invalid_context")
+
+
+def _session_with_calls(database: Path, capture_path: Path) -> None:
+    context = _base_case().context
+    with SessionStore.open(database) as store:
+        session_id = store.create_session(
+            SessionInfo(
+                session_uid=1,
+                source="live",
+                started_at_utc="2026-11-20T10:00:00Z",
+                capture_path=str(capture_path),
+            )
+        )
+        store.add_llm_calls(
+            session_id,
+            [
+                StoredLLMCall(
+                    seq=1,
+                    t_sim_s=1.0,
+                    kind="alert",
+                    model="fake",
+                    outcome="used",
+                    context_json=context.to_json(),
+                    response_text=_reply("Box esta vuelta."),
+                    total_s=0.2,
+                ),
+                StoredLLMCall(
+                    seq=2,
+                    t_sim_s=2.0,
+                    kind="alert",
+                    model="fake",
+                    outcome="fallback",
+                    context_json=context.to_json(),
+                    error="timeout",
+                    total_s=10.0,
+                ),
+                StoredLLMCall(
+                    seq=3,
+                    t_sim_s=3.0,
+                    kind="alert",
+                    model="fake",
+                    outcome="fallback",
+                ),
+            ],
+        )
+
+
+def test_cli_eval_replays_a_mixed_session_and_reports_skipped_calls(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    database = tmp_path / "sessions.db"
+    _session_with_calls(database, tmp_path / "capture.f1cap")
+
+    assert main(["llm", "eval", "--from-session", "1", "--db", str(database)]) == 0
+
+    captured = capsys.readouterr()
+    report = json.loads(captured.out)
+    assert report["case_count"] == 2
+    assert report["metrics"]["schema_evaluable"] == 1
+    assert report["metrics"]["schema_valid_rate"] == 1.0
+    assert report["metrics"]["fallback_rate"] == 0.5
+    assert "session-3:missing_context" in captured.err
+
+
+@pytest.mark.parametrize("target", ["database", "capture", "config", "dataset"])
+def test_cli_eval_refuses_to_overwrite_inputs(
+    target: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    database = tmp_path / "sessions.db"
+    capture = tmp_path / "capture.f1cap"
+    config = tmp_path / "config.toml"
+    config.write_text("[agent]\nmax_words = 10\n", encoding="utf-8")
+    _session_with_calls(database, capture)
+    arguments = ["llm", "eval", "--from-session", "1", "--db", str(database)]
+    if target == "dataset":
+        arguments = ["llm", "eval", "--dataset", str(DATASET)]
+        out = DATASET / "report.json"
+    else:
+        out = {"database": database, "capture": capture, "config": config}[target]
+    arguments += ["--out", str(out)]
+    if target == "config":
+        arguments += ["--config", str(config)]
+    before = out.read_bytes() if out.exists() and out.is_file() else None
+
+    assert main(arguments) == 2
+    if before is None:
+        assert not out.exists()
+    else:
+        assert out.read_bytes() == before
+    assert "Error" in capsys.readouterr().err
 
 
 def test_cli_eval_replays_dataset_and_writes_out(
