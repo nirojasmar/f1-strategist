@@ -1,6 +1,6 @@
 # Progreso del proyecto --- F1 Strategist
 
-**Última actualización:** 2026-11-17
+**Última actualización:** 2026-11-20
 **Propósito de este archivo:** llevar trazabilidad del avance importante y dejar el contexto
 necesario para que cualquier persona o agente que llegue al proyecto entienda dónde estamos, qué
 está decidido, qué está verificado y qué falta.
@@ -45,7 +45,8 @@ Documentos de diseño:
 | Lenguaje y entorno | Python 3.12+, `uv`, `ruff`, `pyright`, `pytest` | Acordado (2026-10-31) |
 | Modelos y configuración | `pydantic` v2 y TOML | Acordado |
 | LLM | Cliente HTTP a API compatible con OpenAI, adaptador intercambiable | Acordado; modelo concreto pendiente |
-| Almacenamiento | Captura binaria cruda (`.f1cap`) + SQLite para derivados | Implementado; esquema actual v8 documentado en `docs/almacenamiento_sqlite.md` |
+| Almacenamiento | Captura binaria cruda (`.f1cap`) + SQLite para derivados | Implementado; esquema actual v9 documentado en `docs/almacenamiento_sqlite.md` |
+| Agente LLM | Cliente HTTP compatible con OpenAI, contexto compacto y validador determinista | Implementado en Fase 6; los cálculos siguen fuera del modelo |
 | Grabación e ingesta | Grabador en vivo con hilo y cola acotada; `ingest` offline idempotente | Implementado (G5); la cola del vivo no bloquea y la ingesta espera al escritor para no perder lotes |
 | Replay y huella | Replay interno (`play`) y reemisión UDP (`replay`); huella canónica compartida por `verify` e `ingest` | Implementado (G2, G4, G5); la velocidad no cambia el tiempo simulado y la captura truncada se marca incompleta |
 | Perfil del fin de semana | Se construye al empezar la carrera y se registra en la sesión (`profile_json` + `profile_hash`); la reproducción usa el registrado | Implementado (Fase 3.5, P1--P8); sin fin de semana enlazado no hay perfil y la captura continúa |
@@ -68,7 +69,7 @@ Documentos de diseño:
 | 3.5. Perfil del fin de semana | Implementada; validación local Windows | P1--P8 implementadas. Esquema SQLite v5, enlace de sesiones, resúmenes de tandas, inventario, perfil versionado y métricas `profile.*`; la prueba integrada cubre práctica, clasificación, carrera y reingesta con huella estable. Validación Linux por CI pendiente. |
 | 4. Motor de estrategia | Implementada; validación local Windows | Ola 0 cerrada; S5--S8 cubren evaluación, decisión, motor integrado y registro SQLite; S9 añade panel y comandos; S12 corrige los hallazgos de Sakhir (vida del neumático, carril parcial y estados del HUD); S13 incorpora prior por circuito y rango de reincorporación; S10 añade pruebas analíticas, de captura real y de rendimiento; S11 documenta el modelo. Quedan las incidencias S10-R1 (rendimiento) y S10-H1 (huella entre velocidades) y repetir CI en Linux. |
 | 5. Event Detector y Event Gate | Implementada; validación local Windows | E1--E12 implementadas: 15 reglas, ciclo de vida con persistencia e histéresis, compuerta ordenada con motivos, avisos `AgentAlert`, registro SQLite v8 (`detected_events`, `gate_decisions`, `gate_fingerprint`) y comandos `events show/summary/simulate`. Documentación en `docs/eventos_y_gate.md`. Queda repetir CI en Linux y la validación con capturas reales (E12-R1). |
-| 6. Integración del LLM | En implementación y validación | Ola 1 y L11 implementadas en la rama de trabajo: tipos, cliente, contexto, prompts, validador, plantillas, comunicador, SQLite v9, consola, `llm check/bench` y evaluación. Quedan revisión de ola, extremo a extremo y documentación final. |
+| 6. Integración del LLM | Implementada; validación local completa | L1--L13 implementadas: tipos y configuración, cliente OpenAI-compatible, contexto, prompts, validador, plantillas, comunicador, SQLite v9, consola, diagnóstico `llm check/bench`, evaluación, pruebas sintéticas y documentación. Candidato medido: Gemma 4 E2B IT Q4_K_S; quedan repetir CI en Linux y ampliar validación real. |
 | 7--10 | No iniciadas | |
 
 ## 5. Qué está verificado y qué no
@@ -312,6 +313,10 @@ Documentos de diseño:
 -   El aumento de `max_tokens` no fue decisivo; desactivar el razonamiento produjo la mejora principal.
     No se considera necesario fine-tuning en esta fase: el modelo base ya alcanza una tasa útil y el validador
     sigue siendo obligatorio para cifras, esquema y hechos.
+-   L12 mantiene el alcance de extremo a extremo y rendimiento sobre escenarios sintéticos y contextos
+    grabados; las capturas reales siguen como validación opcional.
+-   L13 cierra la documentación de Fase 6: `docs/agente_llm.md`, las secciones 3.9 y 3.10 del outline,
+    el criterio medido del roadmap, el esquema SQLite v9 y este estado de progreso.
 
 ### 2026-10-31
 

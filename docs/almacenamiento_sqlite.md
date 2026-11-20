@@ -15,13 +15,14 @@ registros de forma permanente; conviene conservar copias de `sessions.db` junto 
 capturas.
 
 El esquema vive en [`src/f1_strategist/store/schema.py`](../src/f1_strategist/store/schema.py)
-y la versión actual es `SCHEMA_VERSION = 8`. La versión se guarda en `PRAGMA user_version`.
+y la versión actual es `SCHEMA_VERSION = 9`. La versión se guarda en `PRAGMA user_version`.
 Al abrir la base en modo escritura se aplican las migraciones pendientes. Los comandos
-de consulta la abren en solo lectura y admiten v6, v7 y v8 sin migrarlas; una base v6 no
+de consulta la abren en solo lectura y admiten v6 a v9 sin migrarlas; una base v6 no
 contiene proyecciones por vuelta y sus evaluaciones no se pueden incluir en `strategy review`.
 Una base v7 no tiene detecciones ni decisiones de la compuerta; `events show` exige una base
-v8 y rechaza la anterior con un mensaje claro. Al abrir una base compatible en modo escritura
-se aplican las migraciones hasta v8. La
+v8 y rechaza la anterior con un mensaje claro. Las tablas del agente requieren v9 y los
+comandos de exportación y evaluación las exigen. Al abrir una base compatible en modo escritura
+se aplican las migraciones hasta v9. La
 apertura de solo lectura rechaza bases anteriores a v6 o creadas por una versión más nueva de
 la herramienta.
 
@@ -119,6 +120,26 @@ Decisiones de la compuerta, en orden por sesión y secuencia. Cada fila conserva
 (supresión por cooldown, duplicado, cambio no material, etc.), `alert_id` del aviso emitido e
 indicador `interrupt`. Una señal puede no tener aviso asociado: la fila explica igualmente por
 qué se emitió, aplazó o silenció. Las bases v7 y anteriores no tienen esta tabla.
+
+### `llm_calls`
+
+Una fila por intento o llamada registrada del agente. La clave `(session_id, seq)` conserva
+la secuencia del comunicador. La fila guarda tiempo simulado, alerta, tipo de llamada,
+modelo, host del endpoint, versión efectiva del prompt, parámetros, hash y contenido del
+contexto, respuesta, respuesta estructurada, resultado de validación, resultado, motivo de
+fallback, error y latencias. También conserva tokens de prompt y de completado cuando el
+runtime los informa. Los contextos pueden desactivarse con `agent.record_context`;
+en ese caso no deben considerarse disponibles para exportación o reproducción.
+Las bases v8 y anteriores no tienen esta tabla.
+
+### `agent_messages`
+
+Mensajes emitidos por el agente, ya sean generados por el LLM o producidos por plantilla.
+La clave `(session_id, seq)` identifica el mensaje. Conserva tiempo simulado, identificadores
+de alerta y evento, prioridad, idioma, texto, fuente (`llm` o `template`), hechos utilizados,
+vuelta, identificador de llamada y si fue una interrupción. La huella del agente se guarda
+además en `sessions.agent_fingerprint`, independiente del orden de los mensajes. Las bases
+v8 y anteriores no tienen esta tabla.
 
 ### `app_errors`
 

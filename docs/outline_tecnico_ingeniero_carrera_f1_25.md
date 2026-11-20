@@ -440,34 +440,29 @@ mensajes espontáneos.
 
 ### 3.9 Context Builder
 
-Construye un contexto compacto según la tarea.
+Construye un contexto compacto y determinista según la alerta o tarea. Para un
+evento incluye prioridad, qué cambió, métricas relevantes, recomendación y
+alternativas del motor, incertidumbres, datos obsoletos o ausentes y mensajes
+recientes. No incluye telemetría cruda ni todo el histórico; el almacenamiento
+permite consultas posteriores, pero el contexto no vuelve a calcular métricas,
+estrategia ni eventos.
 
-Para un evento: - Tipo y prioridad del evento. - Qué cambió. - Métricas
-relevantes. - Recomendación y alternativas del motor. - Incertidumbres y
-datos faltantes. - Mensajes recientes relevantes.
+El contexto incluye el idioma configurado y el glosario correspondiente. Las
+claves y los datos estructurados se envían sin traducir; solo el texto final depende
+del idioma. Los límites están gobernados por `recent_messages` y
+`context_token_budget`. `record_context` permite persistir el JSON y su hash.
 
-Para una pregunta: - Intención detectada. - Resultado de la función
-consultada. - Estado de carrera mínimo necesario. - Restricciones de
-respuesta.
-
-No incluir telemetría cruda irrelevante ni todo el histórico. El
-histórico reside en el estado/almacenamiento y se consulta bajo demanda.
-
-El contexto incluye el idioma de comunicación configurado (`language`)
-y el glosario correspondiente. Los datos y las claves de evento se
-envían sin traducir; solo el texto final depende del idioma.
+En una sesión sin alerta comunicable no se construye una petición ni se llama al
+modelo. Una alerta cerrada o sustituida se descarta antes de publicar su respuesta.
 
 ### 3.10 Local LLM y Response Validator
 
-El LLM: - Explica recomendaciones. - Resume la situación. - Responde en
-lenguaje natural. - Convierte datos estructurados en mensajes breves de
-radio. - Puede señalar contradicciones o información faltante.
+El runtime usa una interfaz desacoplada y un cliente HTTP compatible con OpenAI.
+Puede ejecutarse en el mismo PC o en otro equipo de la red local. El modelo explica
+recomendaciones y convierte datos estructurados en mensajes breves de radio; no
+calcula ni modifica cifras.
 
-No debe: - Inventar cifras. - Modificar resultados numéricos del
-motor. - afirmar que una estimación es certeza. - emitir órdenes si los
-datos necesarios son obsoletos o insuficientes.
-
-Se recomienda una salida estructurada antes de generar voz:
+La salida estructurada usa el esquema `LLMReply`:
 
 ``` json
 {
@@ -482,12 +477,25 @@ Se recomienda una salida estructurada antes de generar voz:
 }
 ```
 
-El validador comprueba el esquema, los hechos utilizados, la longitud, el idioma
-y la prioridad. El Event Gate sigue siendo la autoridad principal sobre si
-llamar al modelo.
+El validador comprueba esquema, hechos utilizados, respaldo de cifras, longitud,
+idioma y prioridad. Las cifras deben existir en los hechos del contexto; las
+incertidumbres no se convierten en certeza. Si la respuesta es inválida o llega
+tarde, el comunicador usa la plantilla local o descarta el informativo según
+`fallback_on_failure`.
 
-El idioma del mensaje de ejemplo es ilustrativo. El idioma real lo
-determina la configuración (3.13).
+Los tiempos de espera son 1,5 s para críticos, 10 s para estratégicos y 10 s para
+informativos por configuración actual. Los críticos usan plantilla por defecto.
+La generación se ejecuta en su propio hilo y el receptor, consumidor y grabador
+no esperan al modelo.
+
+La implementación incluye tres modos: `template` sin llamadas, `recorded` con
+respuestas guardadas y `live` con el endpoint configurado. `llm check` y
+`llm bench` diagnostican el runtime; `llm eval` mide respuestas sintéticas o
+grabadas sin comparar modelos ni fijar umbrales. El registro v9 conserva llamadas,
+respuestas, latencias, validación y mensajes emitidos.
+
+El idioma del mensaje de ejemplo es ilustrativo. El idioma real lo determina
+`agent.language` (3.13).
 
 ### 3.11 Session Recorder y Replay
 
