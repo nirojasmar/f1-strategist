@@ -434,6 +434,71 @@ class AgentConfig(BaseModel):
         return self.timeout_informational_s
 
 
+_PILOT_INTENT_NAMES = frozenset(
+    {
+        "general_race_state",
+        "ask_strategy",
+        "fuel_status",
+        "tyre_life",
+        "pace_diagnosis",
+        "compare_driver",
+        "pit_undercut",
+        "gap_status",
+        "damage_status",
+        "weather_forecast",
+        "unknown",
+    }
+)
+
+
+class PilotConfig(BaseModel):
+    """Preguntas del piloto (Fase 7); valores provisionales."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    language: str = Field(default="es", min_length=2, max_length=16)
+    min_intent_confidence: float = Field(default=0.6, ge=0, le=1, allow_inf_nan=False)
+    dialogue_turns: int = Field(default=3, ge=0)
+    dialogue_ttl_s: float = Field(default=60.0, gt=0, allow_inf_nan=False)
+    clarification_ttl_s: float = Field(default=30.0, gt=0, allow_inf_nan=False)
+    max_question_chars: int = Field(default=200, gt=0)
+    llm_followup: bool = True
+    llm_followup_intents: tuple[str, ...] = (
+        "ask_strategy",
+        "pace_diagnosis",
+        "pit_undercut",
+    )
+    ack_max_ms: int = Field(default=50, gt=0)
+    followup_timeout_s: float = Field(default=12.0, gt=0, allow_inf_nan=False)
+    followup_max_words: int = Field(default=40, gt=0)
+    hedge_words: tuple[str, ...] = (
+        "aproximadamente",
+        "alrededor de",
+        "estimado",
+        "estimada",
+        "en torno a",
+        "posible",
+        "probablemente",
+    )
+    pace_trend_stable_s: float = Field(default=0.05, ge=0, allow_inf_nan=False)
+    undercut_horizon_laps: int = Field(default=3, ge=1)
+    undercut_min_rival_clean_laps: int = Field(default=3, ge=1)
+    history_size: int = Field(default=50, ge=1)
+    record_text: bool = True
+
+    @field_validator("llm_followup_intents")
+    @classmethod
+    def _validate_followup_intents(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        normalized = tuple(item.strip().lower() for item in value)
+        unknown = set(normalized) - _PILOT_INTENT_NAMES
+        if unknown:
+            raise ValueError(
+                f"Intenciones desconocidas en llm_followup_intents: {', '.join(sorted(unknown))}"
+            )
+        return normalized
+
+
 class AppConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -446,6 +511,7 @@ class AppConfig(BaseModel):
     gate: GateConfig = Field(default_factory=GateConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
     agent: AgentConfig = Field(default_factory=AgentConfig)
+    pilot: PilotConfig = Field(default_factory=PilotConfig)
 
 
 def load_config(path: Path | None) -> AppConfig:

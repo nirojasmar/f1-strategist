@@ -22,6 +22,7 @@ from .messages import DiagnosticMessage, message
 from .metrics.engine import MetricsEngine, MetricsSnapshot
 from .packets import PacketHeader, parse_header
 from .parser import PacketParseError, is_ignored_by_design, parse_packet
+from .pilot.types import PilotAnswer, PilotSnapshot, unavailable_answer
 from .race_state import RaceState, RaceStateSnapshot
 from .receiver import Stats, StatsSnapshot, UdpReceiver
 from .recorder import _RACE_SESSION_TYPES, SessionRecorder, serialize_config
@@ -320,6 +321,14 @@ class CaptureSession:
     def agent_snapshot(self) -> AgentSnapshot:
         """Último estado publicado por el comunicador del agente."""
         return self._agent.snapshot()
+
+    def ask_pilot(self, text: str) -> PilotAnswer:
+        """Stub de Q1: el motor de preguntas llega en Q12."""
+        return unavailable_answer()
+
+    def pilot_snapshot(self) -> PilotSnapshot:
+        """Stub de Q1: todavía no hay preguntas registradas."""
+        return PilotSnapshot()
 
     def _consume(self) -> None:
         while not (self._stop_consumer.is_set() and self._queue.empty()):

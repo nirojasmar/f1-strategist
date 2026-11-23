@@ -546,6 +546,9 @@ def _build_parser() -> argparse.ArgumentParser:
     llm_eval.add_argument("--db", type=Path, help="base SQLite (por defecto, configuración)")
     llm_eval.add_argument("--config", type=Path, help="archivo TOML de configuración")
     llm_eval.add_argument("--endpoint", help="URL base compatible con OpenAI")
+
+    sub.add_parser("ask", help="preguntas del piloto por texto")
+    sub.add_parser("queries", help="consulta las preguntas registradas en la base de datos")
     return parser
 
 
@@ -2450,6 +2453,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         "events": _cmd_events,
         "agent": lambda args, console, _err: _cmd_agent(args, console),
         "llm": lambda args, console, _err: _cmd_llm(args, console),
+        "ask": _cmd_pending_group,
+        "queries": _cmd_pending_group,
     }
     try:
         return handlers[args.command](args, console, err)

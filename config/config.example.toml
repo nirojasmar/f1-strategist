@@ -213,3 +213,36 @@ context_token_budget = 900
 offline_mode = "template"
 record_context = true
 imperative_phrases = ["entra a boxes", "boxea ahora", "ataca ahora", "empuja ahora"]
+
+[pilot]
+# Preguntas del piloto (Fase 7). Todos los valores son provisionales.
+enabled = true
+language = "es"
+# Confianza mínima para aceptar una intención.
+min_intent_confidence = 0.6
+# Memoria de diálogo: intercambios y vida en segundos.
+dialogue_turns = 3
+dialogue_ttl_s = 60.0
+# Vida de una aclaración pendiente.
+clarification_ttl_s = 30.0
+# Longitud máxima de una pregunta.
+max_question_chars = 200
+# Seguimiento explicativo con el LLM (solo si el LLM está activado).
+llm_followup = true
+llm_followup_intents = ["ask_strategy", "pace_diagnosis", "pit_undercut"]
+# Tiempo máximo para mostrar el acuse de recibo.
+ack_max_ms = 50
+# Espera máxima de la explicación del LLM y longitud del seguimiento.
+followup_timeout_s = 12.0
+followup_max_words = 40
+# Expresiones de cautela para hechos estimados o recomendados.
+hedge_words = ["aproximadamente", "alrededor de", "estimado", "estimada", "en torno a", "posible", "probablemente"]
+# Umbral para llamar «estable» a la tendencia de ritmo.
+pace_trend_stable_s = 0.05
+# Horizonte y vueltas limpias mínimas de la estimación de undercut.
+undercut_horizon_laps = 3
+undercut_min_rival_clean_laps = 3
+# Intercambios mostrados y guardados en el panel.
+history_size = 50
+# Guardar el texto de las preguntas en SQLite.
+record_text = true

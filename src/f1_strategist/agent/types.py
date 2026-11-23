@@ -434,6 +434,9 @@ class AgentMessage:
     interrupt: bool = False
     latency_s: float | None = None
     llm_call_id: str | None = None
+    # Opcionales de la Fase 7: no cambian la serialización de mensajes anteriores.
+    query_id: str | None = None
+    kind: str | None = None
 
     def __post_init__(self) -> None:
         if not self.message_id.strip():
@@ -441,7 +444,7 @@ class AgentMessage:
         object.__setattr__(self, "used_facts", tuple(self.used_facts))
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        data = {
             "message_id": self.message_id,
             "alert_id": self.alert_id,
             "event_id": self.event_id,
@@ -456,6 +459,11 @@ class AgentMessage:
             "latency_s": self.latency_s,
             "llm_call_id": self.llm_call_id,
         }
+        if self.query_id is not None:
+            data["query_id"] = self.query_id
+        if self.kind is not None:
+            data["kind"] = self.kind
+        return data
 
     def to_json(self) -> str:
         return _dumps(self.to_dict())
@@ -476,6 +484,8 @@ class AgentMessage:
             interrupt=_bool(data, "interrupt", False),
             latency_s=_opt_float(data, "latency_s"),
             llm_call_id=_opt_str(data, "llm_call_id"),
+            query_id=_opt_str(data, "query_id"),
+            kind=_opt_str(data, "kind"),
         )
 
     @classmethod

@@ -8,6 +8,7 @@ from typing import Protocol
 from .agent.types import AgentSnapshot
 from .events.types import EventsSnapshot
 from .metrics.engine import MetricsSnapshot
+from .pilot.types import PilotAnswer, PilotSnapshot
 from .race_state import RaceStateSnapshot
 from .receiver import StatsSnapshot
 from .strategy.types import StrategySnapshot
@@ -34,3 +35,7 @@ class SessionPort(Protocol):
     def events_snapshot(self) -> EventsSnapshot: ...
 
     def agent_snapshot(self) -> AgentSnapshot: ...
+
+    def ask_pilot(self, text: str) -> PilotAnswer: ...
+
+    def pilot_snapshot(self) -> PilotSnapshot: ...
