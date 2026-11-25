@@ -42,6 +42,8 @@ MISSING_GAP = "gap_unavailable"
 MISSING_PIT_LOSS = "pit_loss"
 MISSING_RIVAL_NOT_AHEAD = "rival_not_ahead"
 
+NOTE_PILOT_LEADS = "pilot.leader"
+
 ASSUMPTION_PLAYER_PITS_NOW = "player_pits_now"
 ASSUMPTION_RIVAL_PITS_AFTER_K = "rival_pits_after_k_laps"
 ASSUMPTION_SAME_PIT_LOSS = "same_pit_loss"
@@ -137,6 +139,7 @@ def evaluate_undercut(
             rival_car_index=rival_index if rival is not None else None,
             quality=Quality.INSUFFICIENT,
             missing=(MISSING_PILOT_LEADS,),
+            notes=(NOTE_PILOT_LEADS,),
         )
     if rival is None:
         missing.append(MISSING_RIVAL_UNAVAILABLE)
@@ -289,6 +292,7 @@ def pit_undercut(routed: RoutedQuery, inputs: ToolInputs) -> ToolResult:
             intent=Intent.PIT_UNDERCUT,
             quality=Quality.INSUFFICIENT,
             missing=(MISSING_PILOT_LEADS,),
+            notes=(NOTE_PILOT_LEADS,),
             data_lap=state.current_lap,
         )
 
@@ -403,6 +407,7 @@ __all__ = [
     "ASSUMPTION_PLAYER_PITS_NOW",
     "ASSUMPTION_RIVAL_PITS_AFTER_K",
     "ASSUMPTION_SAME_PIT_LOSS",
+    "NOTE_PILOT_LEADS",
     "UndercutEstimate",
     "evaluate_undercut",
     "pit_undercut",

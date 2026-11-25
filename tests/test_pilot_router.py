@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from f1_strategist.config import PilotConfig
+from f1_strategist.pilot.entities import DriverDirectory
 from f1_strategist.pilot.router import (
     SUGGESTED_INTENTS,
     IntentCatalog,
@@ -15,8 +16,8 @@ from f1_strategist.pilot.router import (
 from f1_strategist.pilot.types import Intent, RoutedQuery
 
 
-class _Drivers:
-    """Doble del DriverDirectory de Q4: el enrutador no lo consulta."""
+class _Drivers(DriverDirectory):
+    """Directorio vacío: no hay pilotos que resolver."""
 
 
 class _Dialogue:
@@ -27,6 +28,15 @@ class _Dialogue:
     def last_intent(self, now: float) -> Intent | None:
         self.calls.append(now)
         return self._intent
+
+    def pending_clarification(self, now: float) -> None:
+        return None
+
+    def resolve_clarification(self, text: str, now: float) -> None:
+        return None
+
+    def cancel_clarification(self) -> None:
+        return None
 
 
 def _route(

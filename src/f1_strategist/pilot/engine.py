@@ -26,6 +26,7 @@ from . import TOOLS
 from .types import (
     AnswerKind,
     Clarification,
+    EntityRef,
     Intent,
     PilotAnswer,
     PilotExchange,
@@ -112,6 +113,10 @@ class PilotEngine:
             if directory_cls is not None:
                 self._directory = directory_cls.from_state
         self._dialogue = dialogue
+        if self._dialogue is None:
+            dialogue_cls = _lazy("entities", "DialogueState")
+            if dialogue_cls is not None:
+                self._dialogue = dialogue_cls(self._config)
         self._tools = TOOLS if tools is None else tools
         self._compose = cast(ComposeFn | None, compose or _lazy("answers", "compose_answer"))
         self._followup = followup
@@ -181,16 +186,60 @@ class PilotEngine:
     def _route_query(self, query: PilotQuery, inputs: PilotInputs) -> RoutedQuery:
         if self._route is None or self._directory is None:
             return RoutedQuery(query=query, intent=Intent.UNKNOWN, confidence=0.0)
+        resolved = self._resolve_pending(query)
+        if resolved is not None:
+            intent = self._last_intent(query.received_at) or Intent.UNKNOWN
+            return RoutedQuery(
+                query=query,
+                intent=intent,
+                confidence=1.0,
+                entities=(EntityRef(resolved.raw, resolved.driver.car_index),),
+            )
         routed = self._route(
             query.text,
             language=query.language,
             drivers=self._directory(inputs.state),
             dialogue=self._dialogue,
             cfg=self._config,
+            now=query.received_at,
         )
-        # El contrato de Q3 no recibe el instante ni el origen: el motor es la
-        # fuente autorizada de la pregunta para la trazabilidad.
-        return replace(routed, query=query)
+        # El motor es la fuente autorizada de la pregunta para la trazabilidad.
+        routed = replace(routed, query=query)
+        if routed.clarification is not None:
+            start = getattr(self._dialogue, "start_clarification", None)
+            if callable(start):
+                start(
+                    routed.clarification.options,
+                    query.received_at,
+                    message_key=routed.clarification.message_key,
+                )
+        return routed
+
+    def _resolve_pending(self, query: PilotQuery) -> Any | None:
+        """Resuelve la aclaración pendiente antes de enrutar el texto nuevo."""
+        dialogue = self._dialogue
+        pending = getattr(dialogue, "pending_clarification", None)
+        resolver = getattr(dialogue, "resolve_clarification", None)
+        if not callable(pending) or not callable(resolver):
+            return None
+        if pending(query.received_at) is None:
+            return None
+        from .entities import Resolved
+
+        outcome = resolver(query.text, query.received_at)
+        if isinstance(outcome, Resolved):
+            return outcome
+        cancel = getattr(dialogue, "cancel_clarification", None)
+        if callable(cancel):
+            cancel()
+        return None
+
+    def _last_intent(self, now: float) -> Intent | None:
+        getter = getattr(self._dialogue, "last_intent", None)
+        if not callable(getter):
+            return None
+        intent = getter(now)
+        return None if intent is None or intent is Intent.UNKNOWN else Intent(intent)
 
     def _build_answer(self, routed: RoutedQuery, inputs: PilotInputs, now: float) -> PilotAnswer:
         if self._compose is None:

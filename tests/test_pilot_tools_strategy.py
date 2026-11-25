@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+from pathlib import Path
+
 from f1_strategist.config import PilotConfig
 from f1_strategist.metrics.engine import MetricsSnapshot
 from f1_strategist.metrics.history import LapHistorySnapshot
 from f1_strategist.metrics.types import Quality
+from f1_strategist.pilot import TOOLS
+from f1_strategist.pilot.evaluation import build_race_state_from_grid, load_pilot_dataset
 from f1_strategist.pilot.tools_strategy import (
     NOTE_COMPOUND_RULE,
     NOTE_COMPOUND_UNAVAILABLE,
@@ -14,6 +19,7 @@ from f1_strategist.pilot.tools_strategy import (
     NOTE_LAP_OUT_OF_WINDOW,
     NOTE_SIMULATED,
     ask_strategy,
+    ask_strategy_or_simulate,
     simulate_strategy,
 )
 from f1_strategist.pilot.types import Intent, PilotQuery, RoutedQuery, ToolInputs
@@ -332,3 +338,67 @@ def test_simulate_without_evaluation_declares_missing_data() -> None:
     assert result.quality is Quality.UNAVAILABLE
     assert result.missing == ("strategy_evaluation",)
     assert NOTE_EVALUATION_MISSING in result.notes
+
+
+def test_dispatcher_sends_hypothetical_to_simulation() -> None:
+    inputs = _inputs(_evaluation(alternatives=_alternatives()))
+
+    simulated = ask_strategy_or_simulate(_query("¿Y si paro ahora?"), inputs)
+    direct = ask_strategy_or_simulate(_query("¿Cambiamos de estrategia?"), inputs)
+
+    assert _facts(simulated)["strategy_simulated"].value is True
+    assert "strategy_simulated" not in _facts(direct)
+    assert _facts(direct)["strategy_action"].kind.value == "recommended"
+
+
+def test_registry_dispatches_strategy_through_simulation_aware_tool() -> None:
+    assert TOOLS[Intent.ASK_STRATEGY] is ask_strategy_or_simulate
+
+
+def test_simulate_runs_real_evaluation_when_published_alternative_is_missing(caplog) -> None:
+    dataset = load_pilot_dataset(Path(__file__).parent / "fixtures" / "pilot_questions")
+    real_state = build_race_state_from_grid(dataset.default_grid)
+    published = _evaluation(alternatives=())
+    inputs = replace(_inputs(published), state=real_state)
+
+    result = simulate_strategy(_query("¿Y si paro ahora?"), inputs)
+
+    assert "pilot_strategy_simulation_failed" not in caplog.text
+    assert result.quality is Quality.UNAVAILABLE
+    assert result.missing == ("strategy_alternative",)
+
+
+def test_simulate_evaluates_requested_option_on_demand(monkeypatch) -> None:
+    published = _evaluation(alternatives=())
+    inputs = replace(
+        _inputs(published), state=replace(_inputs(published).state, player_car_index=0)
+    )
+    on_demand = _evaluation(
+        alternatives=(
+            StrategyAlternative(
+                key="pit_now:medium:set1",
+                remaining_time_s=990.0,
+                gain_vs_baseline_s=1.5,
+                rejoin_position=9,
+            ),
+        )
+    )
+    calls = []
+
+    def fake_evaluate_once(metric_inputs, cfg, *, revision=0):
+        calls.append((metric_inputs, cfg))
+        return on_demand
+
+    monkeypatch.setattr("f1_strategist.pilot.tools_strategy.evaluate_once", fake_evaluate_once)
+
+    result = simulate_strategy(_query("¿Y si paro ahora?"), inputs)
+
+    facts = _facts(result)
+    assert len(calls) == 1
+    assert calls[0][0].car_index == 0
+    assert calls[0][0].now == inputs.now
+    assert result.quality is Quality.OK
+    assert facts["strategy_simulated"].value is True
+    assert facts["strategy_pit_lap"].value == 13
+    assert facts["strategy_gain_s"].value == 1.5
+    assert facts["strategy_rejoin_position"].value == 9

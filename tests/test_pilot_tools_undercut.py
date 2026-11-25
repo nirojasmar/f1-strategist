@@ -10,6 +10,7 @@ from f1_strategist.config import MetricsConfig, PilotConfig, StrategyConfig
 from f1_strategist.metrics.engine import MetricsSnapshot
 from f1_strategist.metrics.history import LapHistorySnapshot, LapRecord, MetricInputs
 from f1_strategist.metrics.types import Quality
+from f1_strategist.pilot.answers import compose_answer
 from f1_strategist.pilot.tools_undercut import (
     MISSING_PILOT_LEADS,
     MISSING_RIVAL_CLEAN_LAPS,
@@ -327,6 +328,9 @@ def test_tool_leader_reports_pilot_leads() -> None:
     assert result.quality is Quality.INSUFFICIENT
     assert result.missing == (MISSING_PILOT_LEADS,)
     assert result.facts == ()
+
+    joined = compose_answer(_routed(), result, language="es", cfg=PilotConfig())
+    assert joined.text == "Vas primero: no hay nadie delante."
 
 
 def test_tool_rival_without_model_is_insufficient() -> None:

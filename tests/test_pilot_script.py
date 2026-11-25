@@ -185,6 +185,26 @@ def test_run_pilot_script_reports_untriggered_steps_beyond_capture_end(
     assert result.untriggered[0].at_lap == 99
 
 
+def test_script_fires_due_steps_behind_a_future_step(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    capture = _synthetic_capture(tmp_path, monkeypatch)
+    script = tmp_path / "guion.jsonl"
+    script.write_text(
+        '{"at_lap": 99, "text": "¿Y ahora?"}\n{"at_lap": 2, "text": "¿Cómo voy?"}\n',
+        encoding="utf-8",
+    )
+
+    result = run_pilot_script(capture, script, responder=_FakeResponder())
+
+    assert len(result.exchanges) == 1
+    assert result.exchanges[0].line == 2
+    assert result.exchanges[0].lap == 2
+    assert len(result.untriggered) == 1
+    assert result.untriggered[0].line == 1
+
+
 def test_ask_capture_at_lap_answers_at_target_lap_and_rejects_missing_lap(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

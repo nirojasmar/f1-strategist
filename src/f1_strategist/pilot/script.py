@@ -400,8 +400,10 @@ class _ScriptCollector:
         strategy = self._strategy.snapshot()
 
         current_lap = _current_lap(state)
-        while self.pending and _step_matches(self.pending[0], current_lap, observed_at):
-            step = self.pending.popleft()
+        for step in tuple(self.pending):
+            if not _step_matches(step, current_lap, observed_at):
+                continue
+            self.pending.remove(step)
             inputs = ToolInputs(
                 state=state,
                 metrics=metrics,

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
@@ -16,6 +18,10 @@ from f1_strategist.metrics.history import LapHistorySnapshot
 from f1_strategist.metrics.types import Quality
 from f1_strategist.offline import OfflineEventPipeline
 from f1_strategist.pilot.engine import PilotEngine, PilotInputs
+from f1_strategist.pilot.evaluation import (
+    build_race_state_from_grid,
+    load_pilot_dataset,
+)
 from f1_strategist.pilot.types import (
     AnswerKind,
     Clarification,
@@ -381,7 +387,9 @@ def test_followup_is_scheduled_and_its_failure_is_isolated(
     assert "pilot_followup_failed" in caplog.text
 
 
-def test_missing_composer_and_reset_clear_state() -> None:
+def test_default_pipeline_answers_and_reset_clear_state() -> None:
+    # Sin colaboradores explícitos el motor resuelve router, directorio, diálogo,
+    # herramientas y compositor reales.
     engine = PilotEngine(
         PilotConfig(),
         snapshots=lambda: _inputs(),
@@ -390,12 +398,60 @@ def test_missing_composer_and_reset_clear_state() -> None:
 
     answer = engine.ask("¿Cómo voy?", now=10.0)
 
-    assert answer.kind is AnswerKind.UNAVAILABLE
+    assert answer.kind is AnswerKind.ANSWER
+    assert answer.text
     assert len(engine.snapshot().recent) == 1
     engine.reset()
     assert engine.snapshot().recent == ()
     assert engine.snapshot().counters == {}
     assert engine.snapshot().pending_clarification is None
+
+
+def test_real_pipeline_resolves_clarification_end_to_end() -> None:
+    dataset = load_pilot_dataset(Path(__file__).parent / "fixtures" / "pilot_questions")
+    state = replace(
+        build_race_state_from_grid(dataset.default_grid),
+        freshness=(PacketFreshness("lap_data", 9.8, 1.5),),
+    )
+    seen: list[RoutedQuery] = []
+
+    def tool(routed: RoutedQuery, inputs: ToolInputs) -> ToolResult:
+        seen.append(routed)
+        return ToolResult(
+            intent=Intent.COMPARE_DRIVER,
+            quality=Quality.OK,
+            facts=(
+                ToolFact(
+                    name="gap_s",
+                    value=1.5,
+                    unit="s",
+                    kind=FactKind.MEASURED,
+                    quality=Quality.OK,
+                ),
+            ),
+        )
+
+    engine = PilotEngine(
+        PilotConfig(),
+        snapshots=lambda: _inputs(state=state),
+        tools={Intent.COMPARE_DRIVER: tool},
+    )
+
+    first = engine.ask("¿Cómo voy respecto a Schumacher?", now=10.0)
+
+    assert first.kind is AnswerKind.CLARIFICATION
+    pending = engine.snapshot().pending_clarification
+    assert pending is not None
+    assert tuple(option.car_index for option in pending.options) == (12, 13)
+
+    second = engine.ask("Mick", now=11.0)
+
+    assert second.kind is AnswerKind.ANSWER
+    assert second.intent is Intent.COMPARE_DRIVER
+    assert second.text
+    assert seen and seen[0].entities[0].car_index == 12
+    assert engine.snapshot().pending_clarification is None
+    assert engine.snapshot().counters == {"answer": 1, "clarification": 1}
 
 
 def test_offline_pipeline_answers_without_packets() -> None:

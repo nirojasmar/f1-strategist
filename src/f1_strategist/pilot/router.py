@@ -1,8 +1,9 @@
 """Enrutador determinista de preguntas del piloto (Fase 7, Q3).
 
 Normaliza el texto, puntúa las intenciones del catálogo del idioma y devuelve
-la mejor por encima de ``min_intent_confidence``. No resuelve entidades (Q4),
-no compone respuestas (Q10) y no lee el reloj: el instante llega como parámetro.
+la mejor por encima de ``min_intent_confidence``. Resuelve las referencias a
+pilotos con el directorio de Q4 (aclaración incluida) y no compone respuestas
+(Q10) ni lee el reloj: el instante llega como parámetro.
 
 El catálogo vive en ``pilot/intents/<idioma>.toml``: por intención, frases y
 palabras clave con peso en (0, 1] y patrones negativos que la descartan.
@@ -23,13 +24,31 @@ from importlib.resources import files
 from typing import Any, Protocol
 
 from ..config import PilotConfig
-from .types import Intent, PilotQuery, RoutedQuery
+from .entities import (
+    _ORDINALS,
+    AMBIGUOUS_DRIVER_MESSAGE_KEY,
+    Ambiguous,
+    DriverDirectory,
+    Resolved,
+    normalize_text,
+    resolve_driver,
+)
+from .types import (
+    Clarification,
+    EntityRef,
+    Intent,
+    PilotQuery,
+    RoutedQuery,
+)
 
 SUGGESTED_INTENTS: tuple[Intent, ...] = (
     Intent.FUEL_STATUS,
     Intent.TYRE_LIFE,
     Intent.ASK_STRATEGY,
 )
+
+# Las métricas del piloto solo existen para el coche propio.
+_PLAYER_ONLY_INTENTS = frozenset({Intent.FUEL_STATUS, Intent.TYRE_LIFE, Intent.DAMAGE_STATUS})
 
 _FUZZY_MIN_LENGTH = 5
 _FUZZY_RATIO = 0.85
@@ -38,19 +57,28 @@ _TIE_TOLERANCE = 1e-9
 
 _INTENTS_PACKAGE = "f1_strategist.pilot"
 
+_RELATIVE_REFERENCE = re.compile(r"\b(?:de|del)\s+(delante|detras|atras)\b")
+_EXTREME_REFERENCE = re.compile(r"\b(?:el|la|al|del)\s+(lider|ultimo)\b")
+_TEAMMATE_REFERENCE = re.compile(r"\b(?:mi|el|al|del|su)\s+companero(?: de equipo)?\b")
+_NUMBER_REFERENCE = re.compile(r"\b(?:el|al|del|numero|num)\s+(\d{1,2})\b")
+_POSITION_REFERENCE = re.compile(r"\b(?:el|al|del)\s+(p\d{1,2})\b")
+_ORDINAL_REFERENCE = re.compile(r"\b(?:el|al|del)\s+([a-z]+)\b")
+
 
 class RouterError(ValueError):
     """Idioma no soportado o catálogo de intenciones inválido."""
 
 
-class DriverDirectory(Protocol):
-    """Marcador del directorio de Q4; el enrutador no resuelve entidades."""
-
-
 class DialogueState(Protocol):
-    """Contrato de Q4 que usa el enrutador: intención del turno anterior."""
+    """Contrato de memoria de diálogo que usa el enrutador (Q4)."""
 
     def last_intent(self, now: float) -> Intent | None: ...
+
+    def pending_clarification(self, now: float) -> Clarification | None: ...
+
+    def resolve_clarification(self, text: str, now: float) -> object: ...
+
+    def cancel_clarification(self) -> None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -160,8 +188,7 @@ def route(
     now: float = 0.0,
     catalog: IntentCatalog | None = None,
 ) -> RoutedQuery:
-    """Clasifica una pregunta; sin intención suficiente devuelve ``UNKNOWN``."""
-    del drivers  # Q4 resuelve entidades; el enrutador solo clasifica.
+    """Clasifica una pregunta y resuelve sus referencias a pilotos."""
     catalog = load_catalog(language) if catalog is None else catalog
     query = PilotQuery(
         query_id=_query_id(language, text, now),
@@ -171,32 +198,183 @@ def route(
     )
     normalized = normalize(text)
     tokens = tuple(normalized.split())
+
+    resolved = _resolve_pending(text, dialogue, now)
+    if resolved is not None:
+        intent = _last_intent(dialogue, now) or Intent.UNKNOWN
+        return _routed(
+            query,
+            normalized,
+            intent,
+            1.0,
+            entities=(EntityRef(resolved.raw, resolved.driver.car_index),),
+        )
+
     scored = sorted(
         ((pattern.intent, pattern.score(normalized, tokens)) for pattern in catalog.intents),
         key=lambda item: -item[1],
     )
     accepted = [item for item in scored if item[1] >= cfg.min_intent_confidence]
+    best_score = scored[0][1] if scored else 0.0
     if len(accepted) >= 2 and math.isclose(
         accepted[0][1], accepted[1][1], rel_tol=0.0, abs_tol=_TIE_TOLERANCE
     ):
         return _routed(query, normalized, Intent.UNKNOWN, 0.0)
     if accepted:
-        return _routed(query, normalized, accepted[0][0], accepted[0][1])
-
-    best_score = scored[0][1] if scored else 0.0
-    last = _last_intent(dialogue, now)
-    if last is not None and normalized.startswith("y "):
+        intent, confidence = accepted[0]
+    else:
+        last = _last_intent(dialogue, now)
+        if last is None or not normalized.startswith("y "):
+            return _routed(query, normalized, Intent.UNKNOWN, best_score)
+        intent = last
         confidence = max(best_score, cfg.min_intent_confidence)
-        return _routed(query, normalized, last, confidence)
-    return _routed(query, normalized, Intent.UNKNOWN, best_score)
+
+    entities, clarification = _references(normalized, drivers, cfg, now)
+    if clarification is None and intent in _PLAYER_ONLY_INTENTS and entities:
+        player = drivers.player_car_index if isinstance(drivers, DriverDirectory) else None
+        if player is not None and entities[0].car_index != player:
+            return _routed(query, normalized, Intent.UNKNOWN, 0.0)
+    return _routed(
+        query,
+        normalized,
+        intent,
+        confidence,
+        entities=entities,
+        clarification=clarification,
+    )
 
 
-def _routed(query: PilotQuery, normalized: str, intent: Intent, confidence: float) -> RoutedQuery:
+def _routed(
+    query: PilotQuery,
+    normalized: str,
+    intent: Intent,
+    confidence: float,
+    *,
+    entities: tuple[EntityRef, ...] = (),
+    clarification: Clarification | None = None,
+) -> RoutedQuery:
     return RoutedQuery(
         query=query,
         intent=intent,
         confidence=confidence,
+        entities=entities,
+        clarification=clarification,
         normalized_text=normalized,
+    )
+
+
+def _resolve_pending(text: str, dialogue: DialogueState | None, now: float) -> Resolved | None:
+    """Contesta a una aclaración pendiente; otro texto la descarta."""
+    if dialogue is None:
+        return None
+    pending = getattr(dialogue, "pending_clarification", None)
+    resolver = getattr(dialogue, "resolve_clarification", None)
+    if not callable(pending) or not callable(resolver) or pending(now) is None:
+        return None
+    outcome = resolver(text, now)
+    if isinstance(outcome, Resolved):
+        return outcome
+    cancel = getattr(dialogue, "cancel_clarification", None)
+    if callable(cancel):
+        cancel()
+    return None
+
+
+def _references(
+    normalized: str,
+    drivers: DriverDirectory,
+    cfg: PilotConfig,
+    now: float,
+) -> tuple[tuple[EntityRef, ...], Clarification | None]:
+    """Extrae y resuelve la primera referencia del texto."""
+    if not isinstance(drivers, DriverDirectory):
+        return (), None
+    raw = _first_reference(normalized, drivers)
+    if raw is None:
+        return (), None
+    outcome = resolve_driver(raw, drivers)
+    if isinstance(outcome, Resolved):
+        return (EntityRef(raw, outcome.driver.car_index),), None
+    if isinstance(outcome, Ambiguous):
+        return (
+            (),
+            Clarification(
+                message_key=AMBIGUOUS_DRIVER_MESSAGE_KEY,
+                options=outcome.candidates,
+                expires_at=now + cfg.clarification_ttl_s,
+            ),
+        )
+    # shortcut: retired o desconocido cae en el rival por defecto de la
+    # herramienta; añadir clave de mensaje "no encontrado" cuando exista.
+    return (), None
+
+
+def _first_reference(normalized: str, drivers: DriverDirectory) -> str | None:
+    refs: list[tuple[int, int, str]] = []
+
+    def add(match: re.Match[str], raw: str) -> None:
+        refs.append((match.start(), -match.end(), raw))
+
+    match = _RELATIVE_REFERENCE.search(normalized)
+    if match is not None:
+        add(match, f"el de {match.group(1)}")
+    match = _EXTREME_REFERENCE.search(normalized)
+    if match is not None:
+        add(match, f"el {match.group(1)}")
+    match = _TEAMMATE_REFERENCE.search(normalized)
+    if match is not None:
+        add(match, "mi companero")
+    for team in _teams(drivers):
+        match = re.search(rf"\b(?:el|al|del|la)\s+de\s+{re.escape(team)}\b", normalized)
+        if match is not None:
+            add(match, f"el de {team}")
+    match = _NUMBER_REFERENCE.search(normalized)
+    if match is not None:
+        add(match, f"el {match.group(1)}")
+    match = _POSITION_REFERENCE.search(normalized)
+    if match is not None:
+        add(match, f"el {match.group(1)}")
+    match = _ORDINAL_REFERENCE.search(normalized)
+    if match is not None and match.group(1) in _ORDINALS:
+        add(match, f"el {match.group(1)}")
+    for candidate in drivers.candidates:
+        for alias in _aliases(candidate.name):
+            match = re.search(rf"(?<!\w){re.escape(alias)}(?!\w)", normalized)
+            if match is not None:
+                add(match, alias)
+    for token in dict.fromkeys(normalized.split()):
+        if len(token) < 3 or not _is_name_prefix(token, drivers):
+            continue
+        match = re.search(rf"(?<!\w){re.escape(token)}(?!\w)", normalized)
+        if match is not None:
+            add(match, token)
+    if not refs:
+        return None
+    refs.sort()
+    return refs[0][2]
+
+
+def _teams(drivers: DriverDirectory) -> tuple[str, ...]:
+    teams = {
+        normalize_text(item.team)
+        for item in drivers.candidates
+        if item.team is not None and normalize_text(item.team)
+    }
+    return tuple(sorted(teams))
+
+
+def _aliases(name: str) -> tuple[str, ...]:
+    full = normalize_text(name)
+    tokens = tuple(token for token in full.split() if len(token) >= 3)
+    return tuple(dict.fromkeys((full, *tokens)))
+
+
+def _is_name_prefix(token: str, drivers: DriverDirectory) -> bool:
+    return any(
+        word.startswith(token)
+        for candidate in drivers.candidates
+        for word in normalize_text(candidate.name).split()
+        if len(word) > len(token)
     )
 
 

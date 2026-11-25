@@ -1,16 +1,20 @@
 """Herramientas de estrategia de las preguntas del piloto (Q8).
 
 ``ask_strategy`` traduce la evaluación publicada por el motor y
-``simulate_strategy`` busca una parada hipotética entre sus alternativas. Ninguna
-de las dos recalcula la estrategia: la evaluación es la única fuente de cifras.
+``simulate_strategy`` responde a una parada hipotética: usa la alternativa
+publicada o la recalcula bajo demanda con ``evaluate_once``.
 """
 
 from __future__ import annotations
 
+import logging
 import re
 import unicodedata
 
+from ..config import MetricsConfig, StrategyConfig
+from ..metrics.history import MetricInputs
 from ..metrics.types import Quality
+from ..strategy import evaluate_once
 from ..strategy.decision import NOTE_NO_ALTERNATIVES
 from ..strategy.types import (
     StrategyAction,
@@ -25,6 +29,7 @@ NOTE_COMPOUND_RULE = "strategy_compound_rule"
 NOTE_COMPOUND_UNAVAILABLE = "strategy_compound_unavailable"
 NOTE_LAP_OUT_OF_WINDOW = "strategy_pit_lap_out_of_window"
 NOTE_SIMULATED = "strategy_simulated"
+NOTE_SIMULATION_FAILED = "strategy_simulation_failed"
 
 _SAFETY_CAR_STATUSES = {
     "full_safety_car",
@@ -33,6 +38,8 @@ _SAFETY_CAR_STATUSES = {
     "formation_lap",
 }
 
+_LOGGER = logging.getLogger(__name__)
+
 _COMPOUND_PATTERNS = (
     (re.compile(r"\b(?:blandos?|softs?)\b"), "soft"),
     (re.compile(r"\b(?:medios?|mediums?)\b"), "medium"),
@@ -40,6 +47,7 @@ _COMPOUND_PATTERNS = (
 )
 _PIT_IN_PATTERN = re.compile(r"\b(?:en|dentro de)\s+(\d+)\s+vueltas?\b")
 _NOW_PATTERN = re.compile(r"\b(?:ahora|now)\b")
+_SIMULATION_PATTERN = re.compile(r"\bsi\s+(?:paro|paramos|entro|entramos|entra)\b")
 
 
 def ask_strategy(query: RoutedQuery, inputs: ToolInputs) -> ToolResult:
@@ -130,7 +138,7 @@ def ask_strategy(query: RoutedQuery, inputs: ToolInputs) -> ToolResult:
 
 
 def simulate_strategy(query: RoutedQuery, inputs: ToolInputs) -> ToolResult:
-    """Responde «¿y si paro ahora / en N vueltas?» con una alternativa publicada."""
+    """Responde «¿y si paro ahora / en N vueltas?» buscando o evaluando la alternativa."""
     evaluation = inputs.strategy.evaluation
     if evaluation is None:
         note = NOTE_EVALUATION_FAILED if inputs.strategy.error else NOTE_EVALUATION_MISSING
@@ -146,6 +154,15 @@ def simulate_strategy(query: RoutedQuery, inputs: ToolInputs) -> ToolResult:
     compound = _requested_compound(text)
     alternatives = evaluation.alternatives
     candidates = tuple(item for item in alternatives if _matches(item, pit_in_laps, compound))
+    if not candidates:
+        # La evaluación publicada puede no incluir la opción pedida; se evalúa bajo demanda.
+        simulated = _evaluate_on_demand(inputs)
+        if simulated is not None:
+            evaluation = simulated
+            alternatives = simulated.alternatives
+            candidates = tuple(
+                item for item in alternatives if _matches(item, pit_in_laps, compound)
+            )
     if not candidates:
         notes = list(_context_notes(evaluation))
         notes.append(_unavailable_reason(evaluation, pit_in_laps, compound, alternatives))
@@ -203,6 +220,34 @@ def simulate_strategy(query: RoutedQuery, inputs: ToolInputs) -> ToolResult:
         data_lap=evaluation.lap,
         notes=notes,
     )
+
+
+def ask_strategy_or_simulate(query: RoutedQuery, inputs: ToolInputs) -> ToolResult:
+    """Despacha la pregunta de estrategia a la simulación hipotética o a la evaluación."""
+    text = query.normalized_text or query.query.text
+    if _SIMULATION_PATTERN.search(_normalize(text)):
+        return simulate_strategy(query, inputs)
+    return ask_strategy(query, inputs)
+
+
+def _evaluate_on_demand(inputs: ToolInputs) -> StrategyEvaluation | None:
+    """Recalcula la estrategia pedida cuando no está entre las alternativas publicadas."""
+    car_index = inputs.state.player_car_index
+    if car_index is None:
+        return None
+    metric_inputs = MetricInputs(
+        inputs.state,
+        inputs.history,
+        MetricsConfig(),
+        inputs.now,
+        car_index,
+        inputs.profile,
+    )
+    try:
+        return evaluate_once(metric_inputs, StrategyConfig())
+    except Exception:  # noqa: BLE001 - una simulación no debe tumbar la respuesta
+        _LOGGER.exception("pilot_strategy_simulation_failed")
+        return None
 
 
 def _matches(item: StrategyAlternative, pit_in_laps: int, compound: str | None) -> bool:
@@ -309,6 +354,8 @@ __all__ = [
     "NOTE_EVALUATION_MISSING",
     "NOTE_LAP_OUT_OF_WINDOW",
     "NOTE_SIMULATED",
+    "NOTE_SIMULATION_FAILED",
     "ask_strategy",
+    "ask_strategy_or_simulate",
     "simulate_strategy",
 ]
