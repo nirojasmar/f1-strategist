@@ -49,11 +49,19 @@ SUGGESTED_INTENTS: tuple[Intent, ...] = (
 
 # Las métricas del piloto solo existen para el coche propio.
 _PLAYER_ONLY_INTENTS = frozenset({Intent.FUEL_STATUS, Intent.TYRE_LIFE, Intent.DAMAGE_STATUS})
+_COMPARABLE_STATE_INTENTS = frozenset({Intent.GENERAL_RACE_STATE, Intent.PACE_DIAGNOSIS})
 
 _FUZZY_MIN_LENGTH = 5
 _FUZZY_RATIO = 0.85
 _FUZZY_PENALTY = 0.85
+_VARIANT_MIN_LENGTH = 4
 _TIE_TOLERANCE = 1e-9
+
+# Preguntas de definición o de ficha técnica del coche, no del estado de la sesión.
+_OUT_OF_SCOPE = re.compile(
+    r"(?<![a-z0-9])(?:que significa|que significan|que quiere decir|que es un|que es una|"
+    r"significado de|cuanto pesa|cuanto mide)(?![a-z0-9])"
+)
 
 _INTENTS_PACKAGE = "f1_strategist.pilot"
 
@@ -128,11 +136,15 @@ class IntentPattern:
         if any(pattern.search(text) for pattern in self.negatives):
             return 0.0
         total = sum(item.weight for item in self.phrases if item.pattern.search(text))
+        words = frozenset(keyword.word for keyword in self.keywords)
         for keyword in self.keywords:
             if keyword.pattern.search(text):
                 total += keyword.weight
-            elif " " not in keyword.word and _fuzzy_match(tokens, keyword.word):
-                total += keyword.weight * _FUZZY_PENALTY
+            elif " " not in keyword.word:
+                if _variant_match(tokens, keyword.word, words):
+                    total += keyword.weight
+                elif _fuzzy_match(tokens, keyword.word):
+                    total += keyword.weight * _FUZZY_PENALTY
         return min(total, 1.0)
 
 
@@ -237,6 +249,9 @@ def route(
             entities=(EntityRef(resolved.raw, resolved.driver.car_index),),
         )
 
+    if _OUT_OF_SCOPE.search(normalized) is not None:
+        return _routed(query, normalized, Intent.UNKNOWN, 0.0)
+
     scored = sorted(
         ((pattern.intent, pattern.score(normalized, tokens)) for pattern in catalog.intents),
         key=lambda item: -item[1],
@@ -260,6 +275,9 @@ def route(
         confidence = max(best_score, cfg.min_intent_confidence)
 
     entities, clarification = _references(normalized, drivers, cfg, now, intent)
+    if intent in _COMPARABLE_STATE_INTENTS and (entities or clarification is not None):
+        # Preguntar por el estado propio mencionando a un piloto es compararse con él.
+        intent = Intent.COMPARE_DRIVER
     if clarification is None and intent in _PLAYER_ONLY_INTENTS and entities:
         player = drivers.player_car_index if isinstance(drivers, DriverDirectory) else None
         if player is not None and entities[0].car_index != player:
@@ -462,6 +480,22 @@ def _last_intent(dialogue: DialogueState | None, now: float) -> Intent | None:
 def _query_id(language: str, text: str, now: float) -> str:
     payload = f"{language}\x1f{text}\x1f{now!r}".encode()
     return f"q-{hashlib.blake2b(payload, digest_size=8).hexdigest()}"
+
+
+def _variant_match(tokens: tuple[str, ...], word: str, words: frozenset[str]) -> bool:
+    """Plural o conjugación: ``falta/faltan``, ``pieza/piezas``.
+
+    El token debe alargar la palabra y no ser ya otra palabra del catálogo, para
+    no contar dos veces singular y plural.
+    """
+    if len(word) < _VARIANT_MIN_LENGTH:
+        return False
+    for token in tokens:
+        if token in words or len(token) < _VARIANT_MIN_LENGTH:
+            continue
+        if 1 <= len(token) - len(word) <= 2 and token.startswith(word):
+            return True
+    return False
 
 
 def _fuzzy_match(tokens: tuple[str, ...], word: str) -> bool:

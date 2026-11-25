@@ -548,3 +548,29 @@ def test_validation_dataset_is_separate_from_training_and_development_sets() -> 
     report = run_pilot_evaluation(validation)
     assert report["dataset"].endswith("pilot_questions_validation")
     assert report["counts"]["in_scope"] == len(validation.in_scope)
+
+
+def test_independent_dataset_is_unseen_and_meets_phase_thresholds() -> None:
+    fixtures = Path(__file__).parent / "fixtures"
+    independent = load_pilot_dataset(fixtures / "pilot_questions_independent")
+    other_names = (
+        "pilot_questions",
+        "pilot_questions_holdout",
+        "pilot_questions_validation",
+        "pilot_questions_final",
+    )
+    others = [load_pilot_dataset(fixtures / name) for name in other_names]
+
+    assert len(independent.in_scope) >= 30
+    assert len(independent.out_of_scope) >= 10
+    assert len(independent.ambiguous) >= 5
+    assert len(independent.dialogue_sequences) >= 3
+    seen = {case.text for dataset in others for case in dataset.in_scope}
+    assert not {case.text for case in independent.in_scope} & seen
+
+    report = run_pilot_evaluation(independent)
+    metrics = report["metrics"]
+    assert metrics["intent_accuracy"] >= 0.95
+    assert metrics["out_of_scope_false_positive_rate"] <= 0.05
+    assert metrics["clarification_accuracy"] >= 0.95
+    assert metrics["dialogue_turn_accuracy"] >= 0.95

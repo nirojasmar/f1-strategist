@@ -202,6 +202,11 @@ class PilotFingerprintAccumulator:
         return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()
 
 
+def pilot_exchange_value(exchange: PilotExchange) -> dict[str, Any]:
+    """Valor canónico del intercambio, apto para persistir y recomponer la huella."""
+    return _pilot_exchange_value(exchange)
+
+
 def _pilot_exchange_value(exchange: object) -> Any:
     if not isinstance(exchange, PilotExchange):
         return _gate_value(exchange)

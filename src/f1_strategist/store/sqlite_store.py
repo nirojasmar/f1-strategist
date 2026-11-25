@@ -420,6 +420,7 @@ class StoredPilotQuery:
     latency_s: float | None = None
     followup_status: str = "none"
     followup_message: str | None = None
+    exchange_json: str | None = None
 
     def __post_init__(self) -> None:
         if self.seq < 1 or not math.isfinite(self.t_sim_s):
@@ -451,6 +452,7 @@ class StoredPilotQuery:
             "latency_s": self.latency_s,
             "followup_status": self.followup_status,
             "followup_message": self.followup_message,
+            "exchange_json": self.exchange_json,
         }
 
 
@@ -1271,6 +1273,7 @@ class SessionStore:
                 item.latency_s,
                 item.followup_status,
                 item.followup_message,
+                item.exchange_json,
             )
             for item in queries
         ]
@@ -1281,7 +1284,8 @@ class SessionStore:
                 "INSERT INTO pilot_queries (session_id, seq, t_sim_s, query_id, text, language, "
                 "intent, confidence, entities_json, clarification_json, facts_json, missing_json, "
                 "answer_text, answer_kind, message_key, latency_s, followup_status, "
-                "followup_message) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "followup_message, exchange_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
+                "?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(session_id, seq) DO UPDATE SET t_sim_s=excluded.t_sim_s, "
                 "query_id=excluded.query_id, text=excluded.text, language=excluded.language, "
                 "intent=excluded.intent, confidence=excluded.confidence, "
@@ -1291,7 +1295,8 @@ class SessionStore:
                 "answer_text=excluded.answer_text, answer_kind=excluded.answer_kind, "
                 "message_key=excluded.message_key, latency_s=excluded.latency_s, "
                 "followup_status=excluded.followup_status, "
-                "followup_message=excluded.followup_message",
+                "followup_message=excluded.followup_message, "
+                "exchange_json=excluded.exchange_json",
                 rows,
             )
 
@@ -1301,7 +1306,8 @@ class SessionStore:
         sql = (
             "SELECT seq,t_sim_s,query_id,text,language,intent,confidence,entities_json,"
             "clarification_json,facts_json,missing_json,answer_text,answer_kind,message_key,"
-            "latency_s,followup_status,followup_message FROM pilot_queries WHERE session_id=?"
+            "latency_s,followup_status,followup_message,exchange_json "
+            "FROM pilot_queries WHERE session_id=?"
         )
         parameters: tuple[object, ...] = (session_id,)
         if intent is not None:
@@ -1327,6 +1333,7 @@ class SessionStore:
                 _optional_float(row["latency_s"]),
                 str(row["followup_status"]),
                 _optional_str(row["followup_message"]),
+                _optional_str(row["exchange_json"]),
             )
 
     # ------------------------------------------------------------------

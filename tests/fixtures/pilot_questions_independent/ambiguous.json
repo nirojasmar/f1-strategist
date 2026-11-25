@@ -1,0 +1,42 @@
+[
+  {
+    "id": "i-amb-01",
+    "text": "¿Cómo voy con el de Ferrari?",
+    "expected_intent": "compare_driver",
+    "expected_candidate_indices": [4, 5],
+    "resolution_text": "el 16",
+    "expected_resolved_car_index": 5
+  },
+  {
+    "id": "i-amb-02",
+    "text": "¿Cuánto me saca el de Red Bull?",
+    "expected_intent": "gap_status",
+    "expected_candidate_indices": [2, 9],
+    "resolution_text": "Max",
+    "expected_resolved_car_index": 2
+  },
+  {
+    "id": "i-amb-03",
+    "text": "¿Hacemos undercut a Carlos?",
+    "expected_intent": "pit_undercut",
+    "expected_candidate_indices": [1, 14],
+    "resolution_text": "el 55",
+    "expected_resolved_car_index": 1
+  },
+  {
+    "id": "i-amb-04",
+    "text": "¿Voy por delante del de Red Bull?",
+    "expected_intent": "compare_driver",
+    "expected_candidate_indices": [2, 9],
+    "resolution_text": "Sergio",
+    "expected_resolved_car_index": 9
+  },
+  {
+    "id": "i-amb-05",
+    "text": "¿Cómo va mi ritmo frente al de McLaren?",
+    "expected_intent": "compare_driver",
+    "expected_candidate_indices": [3, 7],
+    "resolution_text": "Lando",
+    "expected_resolved_car_index": 3
+  }
+]

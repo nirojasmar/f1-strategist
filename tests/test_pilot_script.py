@@ -359,7 +359,8 @@ def test_cli_ask_and_ask_script_json_and_error_handling(
         session_id = store.list_sessions()[0].id
         assert session_id is not None
         rows = list(store.iter_pilot_queries(session_id))
-        assert store.list_sessions()[0].pilot_fingerprint is None
+        extended_fingerprint = store.list_sessions()[0].pilot_fingerprint
+    assert extended_fingerprint is not None
     assert [row.query_id for row in rows] == ["script-1", "script-2", "script-1"]
     assert [row.text for row in rows] == [
         "¿Cómo voy?",
@@ -388,13 +389,20 @@ def test_cli_ask_and_ask_script_json_and_error_handling(
         session_id = store.list_sessions()[0].id
         assert session_id is not None
         rows = list(store.iter_pilot_queries(session_id))
-        assert store.list_sessions()[0].pilot_fingerprint is None
+        repaired_fingerprint = store.list_sessions()[0].pilot_fingerprint
+    assert repaired_fingerprint is not None
     assert [row.text for row in rows] == [
         "¿Cómo voy?",
         "¿Qué neumático llevo?",
         "¿Cuánto combustible queda?",
     ]
     assert [row.seq for row in rows] == [1, 3, 4]
+
+    repeated = main(["ask-script", str(capture), str(script), "--db", str(db_path), "--json"])
+    capsys.readouterr()
+    assert repeated == 0
+    with SessionStore.open(db_path) as store:
+        assert store.list_sessions()[0].pilot_fingerprint == repaired_fingerprint
 
     assert main(["ask-script", str(capture), str(script)]) == 0
     human_out = capsys.readouterr().out

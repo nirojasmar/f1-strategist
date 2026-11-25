@@ -28,6 +28,7 @@ from .fingerprint import (
     build_run_info,
     compute_capture_fingerprint,
     compute_strategy_fingerprint,
+    pilot_exchange_value,
 )
 from .messages import DiagnosticMessage
 from .metrics.engine import MetricsEngine, MetricsSnapshot
@@ -1694,7 +1695,11 @@ def _append_pilot_queries(
     exchanges: tuple[tuple[float, PilotExchange], ...],
     config: AppConfig,
 ) -> None:
-    """Añade a una sesión ya ingerida las preguntas que aún no estén guardadas."""
+    """Añade a una sesión ya ingerida las preguntas que aún no estén guardadas.
+
+    La huella se recompone desde el payload de todas las filas almacenadas, de
+    modo que ampliar o reparar una sesión no la invalida.
+    """
     if not exchanges or session.id is None:
         return
     existing = tuple(store.iter_pilot_queries(session.id))
@@ -1715,24 +1720,21 @@ def _append_pilot_queries(
         rows.append(replace(row, seq=next_seq + len(rows)))
     if not rows:
         return
-    if existing:
-        # Sin los datos completos del intercambio (source, params) no se puede
-        # reconstruir la huella exacta; se invalida antes de añadir filas para
-        # no dejar nunca una huella vieja junto a datos nuevos.
-        with store.transaction() as connection:
-            connection.execute(
-                "UPDATE sessions SET pilot_fingerprint = NULL WHERE id = ?",
-                (session.id,),
-            )
-    store.add_pilot_queries(session.id, rows)
-    if existing:
-        return
-    fingerprint = PilotFingerprintAccumulator()
-    fingerprint.add(exchange for _, exchange in exchanges)
-    store.update_session(
-        session.id,
-        replace(session, pilot_fingerprint=fingerprint.fingerprint),
-    )
+    with store.transaction():
+        store.add_pilot_queries(session.id, rows)
+        stored = tuple(store.iter_pilot_queries(session.id))
+        payloads = [json.loads(row.exchange_json) for row in stored if row.exchange_json]
+        if len(payloads) != len(stored):
+            # Filas antiguas sin payload: no hay forma exacta de recomponer la huella.
+            fingerprint = None
+        else:
+            accumulator = PilotFingerprintAccumulator()
+            accumulator.add(payloads)
+            fingerprint = accumulator.fingerprint
+        store.update_session(
+            session.id,
+            replace(session, pilot_fingerprint=fingerprint),
+        )
 
 
 def _resolve_config(config: AppConfig | MetricsConfig | None) -> AppConfig:
@@ -1891,6 +1893,7 @@ def _stored_pilot_query(
         latency_s=answer.latency_s,
         followup_status=followup_status,
         followup_message=followup_message,
+        exchange_json=(_canonical_json(pilot_exchange_value(exchange)) if record_text else None),
     )
 
 

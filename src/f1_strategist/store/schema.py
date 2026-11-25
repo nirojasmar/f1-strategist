@@ -11,7 +11,7 @@ import sqlite3
 from dataclasses import dataclass
 
 #: Versión que entiende este código.
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 MIN_READONLY_SCHEMA_VERSION = 6
 
 
@@ -422,6 +422,10 @@ _V10_STATEMENTS: tuple[str, ...] = (
     "CREATE INDEX idx_agent_messages_query ON agent_messages(session_id, query_id)",
 )
 
+#: Payload canónico del intercambio para recomponer ``sessions.pilot_fingerprint``
+#: cuando una sesión ya ingerida recibe preguntas nuevas.
+_V11_STATEMENTS: tuple[str, ...] = ("ALTER TABLE pilot_queries ADD COLUMN exchange_json TEXT",)
+
 #: Migraciones ordenadas; el índice 0 lleva el esquema a la versión 1.
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(version=1, statements=_V1_STATEMENTS),
@@ -434,6 +438,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration(version=8, statements=_V8_STATEMENTS),
     Migration(version=9, statements=_V9_STATEMENTS),
     Migration(version=10, statements=_V10_STATEMENTS),
+    Migration(version=11, statements=_V11_STATEMENTS),
 )
 
 
