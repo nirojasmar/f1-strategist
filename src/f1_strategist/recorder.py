@@ -22,6 +22,7 @@ from .events.types import EventSignal, GateDecision
 from .fingerprint import (
     AgentFingerprintAccumulator,
     GateFingerprintAccumulator,
+    PilotFingerprintAccumulator,
     RunInfo,
     build_run_info,
     compute_capture_fingerprint,
@@ -35,6 +36,7 @@ from .metrics.stint_summary import StintSummary, summarize_stints
 from .offline import OfflineResult, run_capture_offline
 from .packets import PacketHeader
 from .parser import ParsedPacket
+from .pilot.types import AnswerKind, PilotExchange
 from .race_state import RaceEvent, RaceState, RaceStateSnapshot
 from .store import (
     MetricSample,
@@ -47,6 +49,7 @@ from .store import (
     StoredEvent,
     StoredGateDecision,
     StoredLLMCall,
+    StoredPilotQuery,
     StoredStrategyEvaluation,
     StoreError,
     TyreInventorySnapshot,
@@ -118,6 +121,8 @@ class RecorderStore(Protocol):
         self, session_id: int, messages: Iterable[StoredAgentMessage]
     ) -> None: ...
 
+    def add_pilot_queries(self, session_id: int, queries: Iterable[StoredPilotQuery]) -> None: ...
+
 
 def _enum_value(value: object) -> str:
     raw = getattr(value, "value", value)
@@ -154,6 +159,7 @@ class _Batch:
     gate_decisions: tuple[StoredGateDecision, ...] = ()
     llm_calls: tuple[StoredLLMCall, ...] = ()
     agent_messages: tuple[StoredAgentMessage, ...] = ()
+    pilot_queries: tuple[StoredPilotQuery, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -208,6 +214,7 @@ class SessionRecorder:
         metrics_config: MetricsConfig | None = None,
         default_profile: tuple[str, str] | None = None,
         strategy_config: StrategyConfig | None = None,
+        pilot_record_text: bool = True,
     ) -> None:
         self._store = store
         self._config = config
@@ -221,6 +228,7 @@ class SessionRecorder:
             compute_strategy_fingerprint(strategy_config) if strategy_config is not None else None
         )
         self._default_profile = default_profile
+        self._pilot_record_text = pilot_record_text
         self._profiles: dict[int, tuple[str, str]] = {}
         self._lock = threading.Lock()
         self._queue: queue.Queue[_Batch | _Barrier | _Stop] = queue.Queue(maxsize=config.queue_size)
@@ -265,6 +273,8 @@ class SessionRecorder:
         self._llm_call_seq = 0
         self._agent_message_seq = 0
         self._agent_fingerprint = AgentFingerprintAccumulator()
+        self._pilot_seq = 0
+        self._pilot_fingerprint = PilotFingerprintAccumulator()
         self._last_strategy_lap: int | None = None
         self._last_strategy_revision: int | None = None
         self._last_strategy_inputs_hash: str | None = None
@@ -687,6 +697,54 @@ class SessionRecorder:
         except Exception as exc:  # noqa: BLE001 - el grabador nunca detiene la captura
             self._remember_error(exc)
 
+    def record_pilot(self, exchanges: Iterable[PilotExchange], observed_at: float) -> None:
+        """Encola consultas del piloto y su huella sin bloquear al consumidor."""
+        try:
+            values = tuple(exchanges)
+            if not values:
+                return
+            if not math.isfinite(observed_at):
+                raise ValueError("observed_at debe ser finito")
+            with self._lock:
+                info = self._producer_info
+                uid = self._session_uid
+                if info is None or uid is None:
+                    return
+                start = self._pilot_seq
+                rows = tuple(
+                    _stored_pilot_query(
+                        start + index,
+                        observed_at,
+                        exchange,
+                        record_text=self._pilot_record_text,
+                    )
+                    for index, exchange in enumerate(values, 1)
+                )
+                fingerprint_state = self._pilot_fingerprint.copy()
+                fingerprint_state.add(values)
+                info = replace(info, pilot_fingerprint=fingerprint_state.fingerprint)
+                incomplete = self._writer_incomplete or uid in self._dropped_by_uid
+            enqueued = self._enqueue(
+                _Batch(
+                    session_uid=uid,
+                    session_info=info,
+                    participants=(),
+                    laps=(),
+                    events=(),
+                    metrics=(),
+                    errors=(),
+                    incomplete=incomplete,
+                    incomplete_uids=self._incomplete_uids(),
+                    pilot_queries=rows,
+                )
+            )
+            if enqueued:
+                self._pilot_seq = start + len(rows)
+                self._pilot_fingerprint = fingerprint_state
+                self._producer_info = info
+        except Exception as exc:  # noqa: BLE001 - el grabador nunca detiene la captura
+            self._remember_error(exc)
+
     def flush(self, timeout: float) -> bool:
         """Espera, con límite, a que el escritor confirme todo el trabajo encolado."""
         if not math.isfinite(timeout) or timeout <= 0:
@@ -885,6 +943,8 @@ class SessionRecorder:
         self._llm_call_seq = 0
         self._agent_message_seq = 0
         self._agent_fingerprint = AgentFingerprintAccumulator()
+        self._pilot_seq = 0
+        self._pilot_fingerprint = PilotFingerprintAccumulator()
         self._last_strategy_lap = None
         self._last_strategy_revision = None
         self._last_strategy_inputs_hash = None
@@ -1290,6 +1350,8 @@ class SessionRecorder:
             self._store.add_llm_calls(session_id, batch.llm_calls)
         if batch.agent_messages:
             self._store.add_agent_messages(session_id, batch.agent_messages)
+        if batch.pilot_queries:
+            self._store.add_pilot_queries(session_id, batch.pilot_queries)
         return created_session_id
 
     def _close_current(
@@ -1528,6 +1590,7 @@ def ingest_capture(
         block_when_full=True,
         metrics_config=app_config.metrics,
         strategy_config=app_config.strategy,
+        pilot_record_text=app_config.pilot.record_text,
     )
     agent = build_communicator(app_config.agent, app_config.llm, mode=app_config.agent.offline_mode)
     agent.start()
@@ -1695,6 +1758,49 @@ def _metric_value(value: object) -> tuple[float | None, str | None]:
     if isinstance(value, tuple):
         return None, _canonical_json(list(value))
     return None, _canonical_json(value)
+
+
+def _stored_pilot_query(
+    seq: int,
+    observed_at: float,
+    exchange: PilotExchange,
+    *,
+    record_text: bool,
+) -> StoredPilotQuery:
+    answer = exchange.answer
+    tool_result = answer.tool_result
+    followup_status = "none"
+    followup_message: str | None = None
+    if answer.kind is AnswerKind.FOLLOWUP:
+        followup_status = "emitted"
+        followup_message = answer.text
+    elif answer.followup_pending:
+        followup_status = "pending"
+    return StoredPilotQuery(
+        seq=seq,
+        t_sim_s=observed_at,
+        query_id=exchange.query.query_id,
+        text=exchange.query.text if record_text else None,
+        language=exchange.query.language,
+        intent=answer.intent.value,
+        confidence=None,
+        entities_json="[]",
+        clarification_json=None,
+        facts_json=(
+            _canonical_json([fact.to_dict() for fact in tool_result.facts])
+            if tool_result is not None
+            else "[]"
+        ),
+        missing_json=(
+            _canonical_json(list(tool_result.missing)) if tool_result is not None else "[]"
+        ),
+        answer_text=answer.text,
+        answer_kind=answer.kind.value,
+        message_key=answer.message_key,
+        latency_s=answer.latency_s,
+        followup_status=followup_status,
+        followup_message=followup_message,
+    )
 
 
 def _canonical_json(value: object) -> str:
