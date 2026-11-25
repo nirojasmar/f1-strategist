@@ -23,6 +23,7 @@ from .config import (
     GateConfig,
     LLMConfig,
     MetricsConfig,
+    PilotConfig,
     StrategyConfig,
 )
 from .events.engine import EventEngine
@@ -31,7 +32,8 @@ from .metrics.engine import MetricsEngine, MetricsSnapshot
 from .metrics.history import LapHistorySnapshot
 from .packets import parse_header
 from .parser import PacketParseError, is_ignored_by_design, parse_packet
-from .pilot.types import PilotAnswer, PilotSnapshot, unavailable_answer
+from .pilot.engine import PilotEngine, PilotInputs
+from .pilot.types import PilotAnswer, PilotSnapshot
 from .race_state import RaceState, RaceStateSnapshot
 from .receiver import Stats, StatsSnapshot
 from .strategy.engine import StrategyEngine
@@ -61,6 +63,7 @@ class PlaybackSession:
         gate_config: GateConfig | None = None,
         agent_config: AgentConfig | None = None,
         llm_config: LLMConfig | None = None,
+        pilot_config: PilotConfig | None = None,
         agent_communicator: AgentCommunicator | None = None,
         clock: Callable[[], float] = time.monotonic,
         wait_timeout: Callable[[float | None], bool] | None = None,
@@ -93,6 +96,7 @@ class PlaybackSession:
         self._thread: threading.Thread | None = None
         self._runs_completed = 0
         self._observed_at = 0.0
+        self._weekend_profile: WeekendProfile | None = None
         self._packets_parsed = 0
         self._race_state = RaceState()
         self._metrics_engine = MetricsEngine(config)
@@ -101,6 +105,12 @@ class PlaybackSession:
             self._events_config,
             gate=self._gate_config,
             evaluation_min_interval_s=self._strategy_config.evaluation_min_interval_s,
+        )
+        self._pilot = PilotEngine(
+            pilot_config or PilotConfig(),
+            snapshots=self._pilot_inputs,
+            followup=getattr(self._agent, "submit_followup", None),
+            note_interaction=self._note_pilot_interaction,
         )
         self._stats = Stats()
         # Valida cabecera y metadatos ahora para que los errores sean inmediatos.
@@ -265,12 +275,28 @@ class PlaybackSession:
         return self._agent.snapshot()
 
     def ask_pilot(self, text: str) -> PilotAnswer:
-        """Stub de Q1: el motor de preguntas llega en Q12."""
-        return unavailable_answer()
+        """Responde con la última telemetría reproducida."""
+        return self._pilot.ask(text, now=self._observed_at)
 
     def pilot_snapshot(self) -> PilotSnapshot:
-        """Stub de Q1: todavía no hay preguntas registradas."""
-        return PilotSnapshot()
+        """Intercambios recientes y aclaración pendiente."""
+        return self._pilot.snapshot()
+
+    def _pilot_inputs(self) -> PilotInputs:
+        return PilotInputs(
+            state=self.race_snapshot(),
+            metrics=self.metrics_snapshot(),
+            strategy=self.strategy_snapshot(),
+            history=self.history_snapshot(),
+            events=self.events_snapshot(),
+            profile=self._weekend_profile,
+        )
+
+    def _note_pilot_interaction(self, now: float) -> None:
+        # EventEngine aún no expone su compuerta; Q12 solo la notifica.
+        gate = getattr(self._event_engine, "_gate", None)
+        if gate is not None:
+            gate.note_pilot_interaction(now)
 
     # ------------------------------------------------------------------
     # Hilo de reproducción
@@ -314,9 +340,11 @@ class PlaybackSession:
             evaluation_min_interval_s=self._strategy_config.evaluation_min_interval_s,
         )
         self._agent.reset()
+        self._pilot.reset()
         self._stats = Stats()
         with self._condition:
             self._observed_at = 0.0
+            self._weekend_profile = None
             self._packets_parsed = 0
 
     def _play_once(self, seek_lap: int | None) -> str:
@@ -368,6 +396,7 @@ class PlaybackSession:
                 and session.session_type.lower() in {"race", "race_2", "race_3"}
                 else None
             )
+            self._weekend_profile = profile
             self._metrics_engine.set_profile(profile)
             self._metrics_engine.apply(packet, observed_at, state)
             self._strategy_engine.apply(

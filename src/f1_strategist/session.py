@@ -22,7 +22,8 @@ from .messages import DiagnosticMessage, message
 from .metrics.engine import MetricsEngine, MetricsSnapshot
 from .packets import PacketHeader, parse_header
 from .parser import PacketParseError, is_ignored_by_design, parse_packet
-from .pilot.types import PilotAnswer, PilotSnapshot, unavailable_answer
+from .pilot.engine import PilotEngine, PilotInputs
+from .pilot.types import PilotAnswer, PilotSnapshot
 from .race_state import RaceState, RaceStateSnapshot
 from .receiver import Stats, StatsSnapshot, UdpReceiver
 from .recorder import _RACE_SESSION_TYPES, SessionRecorder, serialize_config
@@ -53,6 +54,12 @@ class CaptureSession:
         self._strategy_engine = strategy_engine or StrategyEngine(config.strategy, config.metrics)
         self._event_engine = EventEngine(config)
         self._agent = agent_communicator or build_communicator(config.agent, config.llm)
+        self._pilot = PilotEngine(
+            config.pilot,
+            snapshots=self._pilot_inputs,
+            followup=getattr(self._agent, "submit_followup", None),
+            note_interaction=self._note_pilot_interaction,
+        )
         self._queue: queue.Queue[CapturedPacket] = queue.Queue(maxsize=queue_size)
         self._receiver = UdpReceiver(config.telemetry, self._queue, self.stats)
         self._writer: CaptureWriter | None = None
@@ -323,12 +330,28 @@ class CaptureSession:
         return self._agent.snapshot()
 
     def ask_pilot(self, text: str) -> PilotAnswer:
-        """Stub de Q1: el motor de preguntas llega en Q12."""
-        return unavailable_answer()
+        """Responde con la última telemetría sin esperar al LLM."""
+        return self._pilot.ask(text, now=time.monotonic())
 
     def pilot_snapshot(self) -> PilotSnapshot:
-        """Stub de Q1: todavía no hay preguntas registradas."""
-        return PilotSnapshot()
+        """Intercambios recientes y aclaración pendiente."""
+        return self._pilot.snapshot()
+
+    def _pilot_inputs(self) -> PilotInputs:
+        return PilotInputs(
+            state=self.race_snapshot(),
+            metrics=self.metrics_snapshot(),
+            strategy=self.strategy_snapshot(),
+            history=self._metrics_engine.history.snapshot(),
+            events=self.events_snapshot(),
+            profile=self._weekend_profile,
+        )
+
+    def _note_pilot_interaction(self, now: float) -> None:
+        # EventEngine aún no expone su compuerta; Q12 solo la notifica.
+        gate = getattr(self._event_engine, "_gate", None)
+        if gate is not None:
+            gate.note_pilot_interaction(now)
 
     def _consume(self) -> None:
         while not (self._stop_consumer.is_set() and self._queue.empty()):
@@ -401,6 +424,7 @@ class CaptureSession:
                                     )
                             # La sesión anterior termina aquí: no debe publicar más allá.
                             self._agent.reset()
+                            self._pilot.reset()
                             self._weekend_profile = None
                             self._metrics_engine.set_profile(None)
                             self._strategy_engine.set_profile(None)
