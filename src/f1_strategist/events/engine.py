@@ -9,6 +9,7 @@ y estrategia, nunca en la llegada de cada paquete.
 from __future__ import annotations
 
 import math
+import threading
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, cast
@@ -136,10 +137,23 @@ class EventEngine:
         self._evaluated_metrics_token: tuple[float | None, int | None] | None = None
         self._evaluated_strategy_token: tuple[float, int | None, str | None] | None = None
         self._seen_state_events: set[RaceEvent] = set()
+        self._pilot_lock = threading.Lock()
+        self._pending_pilot_interaction: float | None = None
 
     @property
     def config(self) -> EventsConfig:
         return self._config
+
+    def note_pilot_interaction(self, now: float) -> None:
+        """Registra una interacción sin tocar la compuerta desde otro hilo.
+
+        Solo conserva el instante más reciente; el consumidor lo aplica en
+        ``apply`` antes de evaluar, de modo que la compuerta sigue teniendo un
+        único escritor.
+        """
+        _validate_observed_at(now)
+        with self._pilot_lock:
+            self._pending_pilot_interaction = now
 
     def apply(
         self,
@@ -161,6 +175,11 @@ class EventEngine:
         decisions: tuple[GateDecision, ...] = ()
         try:
             _validate_observed_at(observed_at)
+            with self._pilot_lock:
+                pending_interaction = self._pending_pilot_interaction
+                self._pending_pilot_interaction = None
+            if pending_interaction is not None:
+                self._gate.note_pilot_interaction(pending_interaction)
             lap = state.current_lap or 0
             uid = state.session.uid
             if self._needs_reset(uid, state.current_lap):

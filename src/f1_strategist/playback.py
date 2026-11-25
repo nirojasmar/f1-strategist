@@ -76,10 +76,12 @@ class PlaybackSession:
         self._events_config = events_config or EventsConfig()
         self._gate_config = gate_config or GateConfig()
         agent_config = agent_config or AgentConfig()
+        effective_pilot = pilot_config or PilotConfig()
         self._agent = agent_communicator or build_communicator(
             agent_config,
             llm_config or LLMConfig(),
             mode=agent_config.offline_mode,
+            pilot=effective_pilot,
         )
         self._loop = loop
         self._speed = _validate_speed(speed)
@@ -107,7 +109,7 @@ class PlaybackSession:
             evaluation_min_interval_s=self._strategy_config.evaluation_min_interval_s,
         )
         self._pilot = PilotEngine(
-            pilot_config or PilotConfig(),
+            effective_pilot,
             snapshots=self._pilot_inputs,
             followup=getattr(self._agent, "submit_followup", None),
             note_interaction=self._note_pilot_interaction,
@@ -293,10 +295,7 @@ class PlaybackSession:
         )
 
     def _note_pilot_interaction(self, now: float) -> None:
-        # EventEngine aún no expone su compuerta; Q12 solo la notifica.
-        gate = getattr(self._event_engine, "_gate", None)
-        if gate is not None:
-            gate.note_pilot_interaction(now)
+        self._event_engine.note_pilot_interaction(now)
 
     # ------------------------------------------------------------------
     # Hilo de reproducción

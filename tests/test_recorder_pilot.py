@@ -11,11 +11,15 @@ from f1_strategist.fingerprint import compute_pilot_fingerprint
 from f1_strategist.metrics.types import Quality
 from f1_strategist.pilot.types import (
     AnswerKind,
+    Clarification,
+    DriverCandidate,
+    EntityRef,
     FactKind,
     Intent,
     PilotAnswer,
     PilotExchange,
     PilotQuery,
+    RoutedQuery,
     ToolFact,
     ToolResult,
 )
@@ -118,6 +122,38 @@ def test_record_pilot_omits_text_when_record_text_is_disabled(tmp_path: Path) ->
         rows = list(store.iter_pilot_queries(_session_id(recorder)))
         assert len(rows) == 1
         assert rows[0].text is None
+
+
+def test_record_pilot_persists_routed_confidence_entities_and_clarification(
+    tmp_path: Path,
+) -> None:
+    exchange = _exchange("q-routed")
+    routed = RoutedQuery(
+        query=exchange.query,
+        intent=exchange.answer.intent,
+        confidence=0.82,
+        entities=(EntityRef("Peña", car_index=7),),
+        clarification=Clarification(
+            message_key="pilot_clarify_driver",
+            options=(DriverCandidate(7, "Peña"),),
+            expires_at=20.0,
+        ),
+        normalized_text="cuanto combustible queda",
+    )
+    exchange = PilotExchange(query=exchange.query, answer=exchange.answer, routed=routed)
+
+    with SessionStore.open(tmp_path / "sessions.db") as store:
+        recorder = SessionRecorder(store, RecordingConfig(batch_size=1, flush_interval_s=0.01))
+        recorder.observe(1.0, 1.0, _snapshot(), _metrics(), _history())
+        recorder.record_pilot((exchange,), 2.0)
+        recorder.stop()
+
+        row = next(iter(store.iter_pilot_queries(_session_id(recorder))))
+        assert row.confidence == 0.82
+        assert row.entities_json is not None
+        assert '"raw":"Peña"' in row.entities_json
+        assert row.clarification_json is not None
+        assert '"message_key":"pilot_clarify_driver"' in row.clarification_json
 
 
 def test_record_pilot_drops_without_advancing_sequence_when_queue_is_full() -> None:

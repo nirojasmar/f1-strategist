@@ -26,6 +26,7 @@ from .console_messages import (
     PILOT_ANSWER_LABEL,
     PILOT_CLARIFICATION_LABEL,
     PILOT_EMPTY,
+    PILOT_INPUT_BUSY,
     PILOT_INPUT_DISABLED,
     PILOT_INPUT_ERROR,
     PILOT_INPUT_HELP_RUN,
@@ -281,7 +282,10 @@ class _PilotConsole:
         return self._error
 
     def submit(self, text: str) -> None:
-        if not text or self._pending is not None:
+        if not text:
+            return
+        if self._pending is not None:
+            self._error = PILOT_INPUT_BUSY
             return
         self._pending = text
         self._error = None
@@ -299,6 +303,8 @@ class _PilotConsole:
             future.result()
         except Exception:  # la consola no debe caerse por un módulo opcional
             self._error = PILOT_INPUT_ERROR
+        else:
+            self._error = None
 
     def close(self) -> None:
         if self._executor is not None:
@@ -495,9 +501,9 @@ def run_console(
                         question = editor.feed(key) if key is not None else None
                         if question is not None:
                             pilot.submit(question)
-                            live.update(build())
+                            live.update(build(), refresh=True)
                     time.sleep(0.05)
-                    live.update(build())
+                    live.update(build(), refresh=True)
             except KeyboardInterrupt:
                 pass
     finally:

@@ -284,6 +284,29 @@ def _live_config(tmp_path: Path) -> AppConfig:
     )
 
 
+def test_live_pilot_question_is_persisted_without_blocking_capture(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source, _ = _capture(tmp_path, monkeypatch, interval_s=0.01)
+    config = _live_config(tmp_path)
+    session = CaptureSession(config)
+    session.start()
+    try:
+        sent = replay_capture(source, "127.0.0.1", session.bound_port, speed=1)
+        assert _wait_until(lambda: session.snapshot().capture_packets >= sent)
+        session.ask_pilot("¿Cuánto combustible queda?")
+    finally:
+        session.stop()
+
+    with SessionStore.open(config.recording.database) as store:
+        live = next(item for item in store.list_sessions() if item.source == "live")
+        assert live.id is not None
+        rows = list(store.iter_pilot_queries(live.id))
+    assert len(rows) == 1
+    assert rows[0].text == "¿Cuánto combustible queda?"
+
+
 def test_live_capture_matches_ingest_for_laps_and_events(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

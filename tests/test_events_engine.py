@@ -185,6 +185,19 @@ def _serialize(snapshot: EventsSnapshot) -> tuple[Any, ...]:
     )
 
 
+def test_note_pilot_interaction_is_delivered_by_writer_and_reset_clears_it() -> None:
+    engine = EventEngine(EventsConfig(), evaluation_min_interval_s=10.0, rules=[])
+
+    engine.note_pilot_interaction(10.0)
+    engine.note_pilot_interaction(12.0)
+    engine.apply(_state(), _metrics(0.0), StrategySnapshot(), 13.0)
+    assert engine._gate._pilot_interaction_at == 12.0
+
+    engine.note_pilot_interaction(14.0)
+    engine.apply(_state(uid=2), _metrics(0.0, uid=2), StrategySnapshot(), 15.0)
+    assert engine._gate._pilot_interaction_at is None
+
+
 def test_regular_evaluations_respect_the_interval_and_state_events_force_one() -> None:
     rule = _SpyRule()
     engine = EventEngine(

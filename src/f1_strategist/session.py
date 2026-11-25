@@ -53,7 +53,9 @@ class CaptureSession:
         self._metrics_engine = metrics_engine or MetricsEngine(config.metrics)
         self._strategy_engine = strategy_engine or StrategyEngine(config.strategy, config.metrics)
         self._event_engine = EventEngine(config)
-        self._agent = agent_communicator or build_communicator(config.agent, config.llm)
+        self._agent = agent_communicator or build_communicator(
+            config.agent, config.llm, pilot=config.pilot
+        )
         self._pilot = PilotEngine(
             config.pilot,
             snapshots=self._pilot_inputs,
@@ -191,6 +193,7 @@ class CaptureSession:
                     config_json=serialize_config(self.config),
                     metrics_config=self.config.metrics,
                     strategy_config=self.config.strategy,
+                    pilot_record_text=self.config.pilot.record_text,
                 )
             except BaseException:
                 store.close()
@@ -331,7 +334,21 @@ class CaptureSession:
 
     def ask_pilot(self, text: str) -> PilotAnswer:
         """Responde con la última telemetría sin esperar al LLM."""
-        return self._pilot.ask(text, now=time.monotonic())
+        answer = self._pilot.ask(text, now=time.monotonic())
+        recorder = self._recorder
+        observed_at = self._last_observed_at
+        if recorder is not None and observed_at is not None:
+            exchange = next(
+                (
+                    exchange
+                    for exchange in reversed(self._pilot.snapshot().recent)
+                    if exchange.answer.query_id == answer.query_id
+                ),
+                None,
+            )
+            if exchange is not None:
+                recorder.record_pilot((exchange,), observed_at)
+        return answer
 
     def pilot_snapshot(self) -> PilotSnapshot:
         """Intercambios recientes y aclaración pendiente."""
@@ -348,10 +365,7 @@ class CaptureSession:
         )
 
     def _note_pilot_interaction(self, now: float) -> None:
-        # EventEngine aún no expone su compuerta; Q12 solo la notifica.
-        gate = getattr(self._event_engine, "_gate", None)
-        if gate is not None:
-            gate.note_pilot_interaction(now)
+        self._event_engine.note_pilot_interaction(now)
 
     def _consume(self) -> None:
         while not (self._stop_consumer.is_set() and self._queue.empty()):

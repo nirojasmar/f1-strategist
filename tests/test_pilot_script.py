@@ -28,6 +28,7 @@ from f1_strategist.pilot.types import (
     ToolInputs,
     ToolResult,
 )
+from f1_strategist.store import SessionStore
 
 from .conftest import make_packet
 from .scenarios import ScenarioCar, build_race_timed
@@ -282,6 +283,37 @@ def test_cli_ask_and_ask_script_json_and_error_handling(
     payload = json.loads(capsys.readouterr().out)
     assert len(payload["exchanges"]) == 2
     assert len(payload["fingerprint"]) == 64
+
+    with SessionStore.open(db_path) as store:
+        sessions = store.list_sessions()
+        assert len(sessions) == 1
+        session_id = sessions[0].id
+        assert session_id is not None
+        rows = list(store.iter_pilot_queries(session_id))
+    assert [row.query_id for row in rows] == ["script-1", "script-2"]
+    assert [row.text for row in rows] == [
+        "¿Cómo voy?",
+        "¿Cuánto combustible queda?",
+    ]
+
+    assert (
+        main(
+            [
+                "ask-script",
+                str(capture),
+                str(script),
+                "--db",
+                str(db_path),
+                "--json",
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
+    with SessionStore.open(db_path) as store:
+        session_id = store.list_sessions()[0].id
+        assert session_id is not None
+        assert len(list(store.iter_pilot_queries(session_id))) == 2
 
     assert main(["ask-script", str(capture), str(script)]) == 0
     human_out = capsys.readouterr().out
