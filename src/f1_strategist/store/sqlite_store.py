@@ -1284,7 +1284,7 @@ class SessionStore:
                 "INSERT INTO pilot_queries (session_id, seq, t_sim_s, query_id, text, language, "
                 "intent, confidence, entities_json, clarification_json, facts_json, missing_json, "
                 "answer_text, answer_kind, message_key, latency_s, followup_status, "
-                "followup_message, exchange_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
+                "followup_message, exchange_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
                 "?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(session_id, seq) DO UPDATE SET t_sim_s=excluded.t_sim_s, "
                 "query_id=excluded.query_id, text=excluded.text, language=excluded.language, "
