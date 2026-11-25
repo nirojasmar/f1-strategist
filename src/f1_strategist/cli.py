@@ -82,6 +82,13 @@ from .offline import OfflineResult, run_capture_offline
 from .packets import packet_name
 from .parser import ParsedPacket
 from .pilot.console_input import LineEditor, TerminalKeyReader
+from .pilot.evaluation import (
+    DEFAULT_PILOT_DATASET,
+    evaluation_report_json,
+    load_pilot_dataset,
+    run_pilot_evaluation,
+)
+from .pilot.script import ask_capture_at_lap, run_pilot_script
 from .playback import PlaybackSession
 from .race_state import RaceState
 from .receiver import ReceiverError
@@ -561,8 +568,6 @@ def _build_parser() -> argparse.ArgumentParser:
     llm_eval.add_argument("--config", type=Path, help="archivo TOML de configuración")
     llm_eval.add_argument("--endpoint", help="URL base compatible con OpenAI")
 
-    sub.add_parser("ask", help="preguntas del piloto por texto")
-
     queries = sub.add_parser(
         "queries", help="consulta las preguntas registradas en la base de datos"
     )
@@ -580,6 +585,45 @@ def _build_parser() -> argparse.ArgumentParser:
         "--format", choices=("json", "jsonl", "csv"), default="json", help="formato de salida"
     )
     queries_export.add_argument("--db", type=Path, help="base SQLite (por defecto, configuración)")
+
+    ask = sub.add_parser("ask", help="preguntas del piloto por texto")
+    ask.add_argument("file", nargs="?", type=Path, help="captura de entrada (.f1cap o .f1cap.gz)")
+    ask.add_argument("--lap", type=_positive_int, help="vuelta en la que lanzar la pregunta")
+    ask.add_argument("question", nargs="?", help="texto de la pregunta")
+    ask.add_argument("--config", type=Path, help="archivo TOML de configuración")
+    ask.add_argument("--json", action="store_true", help="imprime la respuesta en JSON")
+
+    ask_script = sub.add_parser(
+        "ask-script",
+        help="ejecuta un guion JSONL de preguntas sobre una captura",
+    )
+    ask_script.add_argument("file", type=Path, help="captura de entrada (.f1cap o .f1cap.gz)")
+    ask_script.add_argument("script", type=Path, help="guion de preguntas (.jsonl)")
+    ask_script.add_argument(
+        "--db",
+        type=Path,
+        help="base SQLite (por defecto, la de la configuración)",
+    )
+    ask_script.add_argument("--json", action="store_true", help="imprime el resultado en JSON")
+    ask_script.add_argument("--config", type=Path, help="archivo TOML de configuración")
+
+    pilot = sub.add_parser("pilot", help="herramientas y evaluación de preguntas del piloto")
+    pilot_sub = pilot.add_subparsers(dest="pilot_command", required=True)
+    pilot_eval = pilot_sub.add_parser(
+        "eval",
+        help="evalúa el enrutador, entidades y aclaraciones sobre conjuntos etiquetados",
+    )
+    pilot_eval.add_argument(
+        "--dataset",
+        type=Path,
+        default=DEFAULT_PILOT_DATASET,
+        metavar="DIR",
+        help=f"directorio con los conjuntos etiquetados (por defecto, {DEFAULT_PILOT_DATASET})",
+    )
+    pilot_eval.add_argument("--config", type=Path, help="archivo TOML de configuración")
+    pilot_eval.add_argument("--out", type=Path, metavar="ARCHIVO", help="archivo JSON de salida")
+    pilot_eval.add_argument("--json", action="store_true", help="imprime el informe en JSON")
+
     return parser
 
 
@@ -2625,6 +2669,120 @@ def _cmd_llm_eval(args: argparse.Namespace, console: Console) -> int:
     return 0
 
 
+def _cmd_ask(args: argparse.Namespace, console: Console, err: Console) -> int:
+    if args.file is None or args.lap is None or args.question is None:
+        raise ValueError('Uso: f1-strategist ask CAPTURA --lap N "pregunta"')
+    cfg = load_config(args.config)
+    profiles = _profiles_for_capture(cfg, args.file, err)
+    exchange, offline = ask_capture_at_lap(
+        args.file,
+        args.lap,
+        args.question,
+        cfg,
+        profiles_by_uid=profiles,
+    )
+    _warn_offline_issues(offline, err)
+    if args.json:
+        payload = json.dumps(exchange.to_dict(), ensure_ascii=False, indent=2, sort_keys=True)
+        _write_stdout(payload + "\n")
+        return 0
+    console.print(
+        f"Vuelta {exchange.lap} ({exchange.t_sim_s:.1f} s) · "
+        f"{exchange.answer.intent.value} · {exchange.answer.kind.value}"
+    )
+    console.print(exchange.answer.text or exchange.answer.message_key)
+    return 0
+
+
+def _cmd_ask_script(args: argparse.Namespace, console: Console, err: Console) -> int:
+    cfg = load_config(args.config)
+    if args.db is not None:
+        cfg = cfg.model_copy(
+            update={"recording": cfg.recording.model_copy(update={"database": args.db})}
+        )
+    profiles = _profiles_for_capture(cfg, args.file, err)
+    result = run_pilot_script(args.file, args.script, cfg, profiles_by_uid=profiles)
+    _warn_offline_issues(result.offline, err)
+    if args.json:
+        _write_stdout(result.to_json())
+        return 0
+
+    table = Table(title="Preguntas guiadas", expand=False)
+    for column in ("Línea", "Disparador", "Tiempo", "Vuelta", "Pregunta", "Intención", "Respuesta"):
+        table.add_column(column, overflow="fold")
+    for item in result.exchanges:
+        table.add_row(
+            str(item.line),
+            item.trigger,
+            f"{item.t_sim_s:.1f} s",
+            "—" if item.lap is None else str(item.lap),
+            item.query_text,
+            item.answer.intent.value,
+            item.answer.text or item.answer.message_key,
+        )
+    if result.exchanges:
+        console.print(table)
+    else:
+        console.print("No se disparó ninguna pregunta del guion.")
+    if result.untriggered:
+        lines = ", ".join(str(step.line) for step in result.untriggered)
+        err.print(f"[yellow]Aviso:[/] pasos sin disparar (líneas {lines}).")
+    console.print(f"Huella determinista: [bold]{result.fingerprint}[/]")
+    return 0
+
+
+def _cmd_pilot(args: argparse.Namespace, console: Console, err: Console) -> int:
+    del err
+    if args.pilot_command != "eval":
+        return 0
+    cfg = load_config(args.config)
+    out_path: Path | None = args.out
+    dataset_dir: Path = args.dataset
+    if out_path is not None:
+        if args.config is not None and _same_file(out_path, args.config):
+            raise ValueError("El informe no puede sobrescribir la configuración.")
+        if out_path.resolve().is_relative_to(dataset_dir.resolve()):
+            raise ValueError("El informe no puede escribirse dentro del conjunto de evaluación.")
+    dataset = load_pilot_dataset(dataset_dir)
+    report = run_pilot_evaluation(dataset, config=cfg.pilot)
+    output = evaluation_report_json(report)
+    if out_path is not None:
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        with out_path.open("w", encoding="utf-8", newline="") as handle:
+            handle.write(output)
+    if args.json:
+        _write_stdout(output)
+        return 0
+
+    metrics = report["metrics"]
+    table = Table(title="Evaluación de preguntas del piloto", expand=False)
+    table.add_column("Métrica")
+    table.add_column("Valor", justify="right")
+    for label, key in (
+        ("Exactitud de intención", "intent_accuracy"),
+        ("Exactitud de entidad", "entity_accuracy"),
+        ("Falsos positivos fuera de alcance", "out_of_scope_false_positive_rate"),
+        ("Aclaraciones correctas", "clarification_accuracy"),
+        ("Secuencias de diálogo", "dialogue_sequence_accuracy"),
+        ("Turnos de diálogo", "dialogue_turn_accuracy"),
+    ):
+        value = metrics.get(key)
+        table.add_row(label, "—" if value is None else f"{value:.1%}")
+    console.print(table)
+
+    failures = report["failures"]
+    if failures:
+        fail_table = Table(title=f"Frases fallidas ({len(failures)})", expand=False)
+        for column in ("Conjunto", "ID", "Frase", "Motivo"):
+            fail_table.add_column(column, overflow="fold")
+        for item in failures:
+            fail_table.add_row(item["split"], item["id"], item["text"], item["reason"])
+        console.print(fail_table)
+    else:
+        console.print("Sin fallos en los conjuntos evaluados.")
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     console = Console()
@@ -2646,8 +2804,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         "events": _cmd_events,
         "agent": lambda args, console, _err: _cmd_agent(args, console),
         "llm": lambda args, console, _err: _cmd_llm(args, console),
-        "ask": _cmd_pending_group,
         "queries": _cmd_queries,
+        "ask": _cmd_ask,
+        "ask-script": _cmd_ask_script,
+        "pilot": _cmd_pilot,
     }
     try:
         return handlers[args.command](args, console, err)
