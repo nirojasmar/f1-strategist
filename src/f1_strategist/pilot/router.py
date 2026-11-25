@@ -59,6 +59,7 @@ _INTENTS_PACKAGE = "f1_strategist.pilot"
 
 _RELATIVE_REFERENCE = re.compile(r"\b(?:de|del)\s+(delante|detras|atras)\b")
 _EXTREME_REFERENCE = re.compile(r"\b(?:el|la|al|del)\s+(lider|ultimo)\b")
+_RELATIVE_TO_ME = re.compile(r"(?<![a-z0-9])(delante|detras|atras) de mi(?![a-z0-9])")
 _TEAMMATE_REFERENCE = re.compile(r"\b(?:mi|el|al|del|su)\s+companero(?: de equipo)?\b")
 _NUMBER_REFERENCE = re.compile(r"\b(?:el|al|del|numero|num)\s+(\d{1,2})\b")
 _POSITION_REFERENCE = re.compile(r"\b(?:el|al|del)\s+(p\d{1,2})\b")
@@ -242,11 +243,14 @@ def route(
     )
     accepted = [item for item in scored if item[1] >= cfg.min_intent_confidence]
     best_score = scored[0][1] if scored else 0.0
-    if len(accepted) >= 2 and math.isclose(
+    forced = _forced_intent(normalized, scored, cfg)
+    if forced is not None:
+        intent, confidence = forced
+    elif len(accepted) >= 2 and math.isclose(
         accepted[0][1], accepted[1][1], rel_tol=0.0, abs_tol=_TIE_TOLERANCE
     ):
         return _routed(query, normalized, Intent.UNKNOWN, 0.0)
-    if accepted:
+    elif accepted:
         intent, confidence = accepted[0]
     else:
         last = _last_intent(dialogue, now)
@@ -295,6 +299,24 @@ def _routed(
         clarification=clarification,
         normalized_text=normalized,
     )
+
+
+_COMPARE_CUE = re.compile(
+    r"(?<![a-z0-9])(?:por delante|por detras|mejor que|peor que|mas rapido)"
+    r"(?![a-z0-9])"
+)
+
+
+def _forced_intent(
+    normalized: str, scored: list[tuple[Intent, float]], cfg: PilotConfig
+) -> tuple[Intent, float] | None:
+    """Una comparación explícita manda sobre el vocabulario de intervalos."""
+    if _COMPARE_CUE.search(normalized) is None:
+        return None
+    compare = next((score for intent, score in scored if intent is Intent.COMPARE_DRIVER), 0.0)
+    if compare <= 0:
+        return None
+    return Intent.COMPARE_DRIVER, max(compare, cfg.min_intent_confidence)
 
 
 def _resolve_pending(text: str, dialogue: DialogueState | None, now: float) -> Resolved | None:
@@ -357,6 +379,10 @@ def _first_reference(normalized: str, drivers: DriverDirectory) -> str | None:
     match = _EXTREME_REFERENCE.search(normalized)
     if match is not None:
         add(match, f"el {match.group(1)}")
+    match = _RELATIVE_TO_ME.search(normalized)
+    if match is not None:
+        word = "detras" if match.group(1) in {"detras", "atras"} else "delante"
+        add(match, f"el de {word}")
     match = _TEAMMATE_REFERENCE.search(normalized)
     if match is not None:
         add(match, "mi companero")
