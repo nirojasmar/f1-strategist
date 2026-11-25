@@ -111,12 +111,21 @@ class TerminalKeyReader:
         self._fd: int | None = None
         if not enabled or self._windows:
             return
+        if not getattr(sys.stdin, "isatty", lambda: False)():
+            self._enabled = False
+            return
         import termios  # noqa: PLC0415
         import tty  # noqa: PLC0415
 
-        self._fd = sys.stdin.fileno()
-        self._saved_attributes = termios.tcgetattr(self._fd)  # type: ignore[reportAttributeAccessIssue]
-        tty.setcbreak(self._fd)  # type: ignore[reportAttributeAccessIssue]
+        try:
+            self._fd = sys.stdin.fileno()
+            self._saved_attributes = termios.tcgetattr(self._fd)  # type: ignore[reportAttributeAccessIssue]
+            tty.setcbreak(self._fd)  # type: ignore[reportAttributeAccessIssue]
+        except (AttributeError, OSError, ValueError):
+            # Captured stdin (pytest, pipes) has no terminal; reading keys is not possible.
+            self._enabled = False
+            self._fd = None
+            self._saved_attributes = None
 
     @property
     def enabled(self) -> bool:

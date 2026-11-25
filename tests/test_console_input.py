@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import sys
 import threading
 from io import StringIO
 from typing import Any, cast
@@ -26,6 +28,7 @@ from f1_strategist.pilot.console_input import (
     HISTORY_DOWN,
     HISTORY_UP,
     LineEditor,
+    TerminalKeyReader,
 )
 from f1_strategist.pilot.types import (
     AnswerKind,
@@ -372,3 +375,23 @@ def test_cli_accepts_no_input(command: str) -> None:
     args = cli_module._build_parser().parse_args(argv)
 
     assert args.no_input is True
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX reader only")
+def test_key_reader_disables_itself_when_stdin_has_no_terminal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Pseudofile:
+        def isatty(self) -> bool:
+            return False
+
+        def fileno(self) -> int:
+            raise OSError("redirected stdin is pseudofile, has no fileno()")
+
+    monkeypatch.setattr(sys, "stdin", Pseudofile())
+
+    reader = TerminalKeyReader(enabled=True)
+
+    assert reader.enabled is False
+    assert reader.read() is None
+    reader.close()
