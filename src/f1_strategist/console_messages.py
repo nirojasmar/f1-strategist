@@ -9,6 +9,7 @@ from .metrics.engine import MetricsSnapshot
 from .metrics.types import Metric, Quality
 from .packets import packet_name
 from .parser import ParseIssue
+from .pilot.types import Clarification, PilotAnswer
 from .race_state import CarSnapshot, RaceEvent, RaceStateSnapshot
 from .receiver import PacketSequenceStats
 from .strategy.types import (
@@ -52,6 +53,36 @@ LLM_EVAL_OVERWRITES_DATASET = "El informe no puede escribirse dentro del conjunt
 LLM_EVAL_SKIPPED_CALLS = "Llamadas omitidas por contexto no recuperable: {calls}"
 AGENT_UNKNOWN_VALUE = "desconocido"
 AGENT_EXPORT_SCHEMA_VERSION = 1
+
+PILOT_PANEL_TITLE = "Preguntas"
+PILOT_QUESTION_LABEL = "Tú"
+PILOT_ANSWER_LABEL = "Ingeniero"
+PILOT_EMPTY = "Sin preguntas todavía."
+PILOT_ACK_TEXT = "Recibido: consultando…"
+PILOT_UNAVAILABLE_TEXT = "El ingeniero no está disponible."
+PILOT_CLARIFICATION_LABEL = "Aclaración pendiente"
+PILOT_INPUT_PROMPT = "Pregunta> "
+PILOT_INPUT_HELP_RUN = (
+    "Escribe tu pregunta · Enter: enviar · Esc: borrar · ↑↓: historial · Ctrl+C: salir"
+)
+PILOT_PLAY_HELP = "espacio: pausa · +/-: velocidad · /: preguntar · q: salir"
+PILOT_PLAY_HELP_DISABLED = "espacio: pausa · +/-: velocidad · q: salir"
+PILOT_INPUT_DISABLED = "Entrada de preguntas desactivada."
+PILOT_INPUT_NO_TERMINAL = "Sin terminal interactiva: entrada de preguntas desactivada."
+PILOT_INPUT_ERROR = "No se pudo enviar la pregunta."
+
+_PILOT_KIND_LABELS = {
+    "ack": "Acuse",
+    "answer": "Respuesta",
+    "clarification": "Aclaración",
+    "unknown": "Desconocido",
+    "unavailable": "No disponible",
+    "followup": "Seguimiento",
+}
+_PILOT_MESSAGE_TEXTS = {
+    "pilot_ack": PILOT_ACK_TEXT,
+    "pilot_unavailable": PILOT_UNAVAILABLE_TEXT,
+}
 
 #: Marcadores del panel: distinguen «no disponible» de «no aplica a la acción».
 _STRATEGY_UNKNOWN = "Desconocido"
@@ -487,6 +518,23 @@ def render_agent_source(source: str) -> str:
 
 def render_agent_priority(priority: str) -> str:
     return _AGENT_PRIORITY_LABELS.get(priority, priority)
+
+
+def render_pilot_kind(kind: str) -> str:
+    return _PILOT_KIND_LABELS.get(kind, AGENT_UNKNOWN_VALUE)
+
+
+def render_pilot_answer(answer: PilotAnswer) -> str:
+    if answer.text:
+        return answer.text
+    return _PILOT_MESSAGE_TEXTS.get(answer.message_key, answer.message_key)
+
+
+def render_pilot_clarification(clarification: Clarification) -> str:
+    options = ", ".join(option.name for option in clarification.options)
+    if not options:
+        return PILOT_CLARIFICATION_LABEL
+    return f"{PILOT_CLARIFICATION_LABEL}: {options}"
 
 
 def _render_strategy_keys(keys: tuple[str, ...]) -> str:
