@@ -89,6 +89,7 @@ from .pilot.evaluation import (
     run_pilot_evaluation,
 )
 from .pilot.script import ask_capture_at_lap, run_pilot_script
+from .pilot.types import PilotExchange, PilotQuery
 from .playback import PlaybackSession
 from .race_state import RaceState
 from .receiver import ReceiverError
@@ -773,7 +774,7 @@ def _run_playback_console(
 
     def build() -> Group:
         pilot.poll()
-        return _render_playback(
+        view = _render_playback(
             cfg,
             session,
             pilot_pending=pilot.pending_text,
@@ -782,6 +783,8 @@ def _run_playback_console(
             pilot_error=pilot.error_text,
             pilot_help=PILOT_PLAY_HELP if keys.enabled else PILOT_PLAY_HELP_DISABLED,
         )
+        pilot.mark_rendered()
+        return view
 
     try:
         with Live(build(), console=console, refresh_per_second=4) as live:
@@ -792,9 +795,9 @@ def _run_playback_console(
                         editing, quit_ = _apply_play_key(key, session, editor, pilot, editing)
                         if quit_:
                             break
-                        live.update(build())
+                        live.update(build(), refresh=True)
                     time.sleep(0.05)
-                    live.update(build())
+                    live.update(build(), refresh=True)
             except KeyboardInterrupt:
                 pass
     finally:
@@ -815,6 +818,9 @@ def _cmd_play(args: argparse.Namespace, console: Console, err: Console) -> int:
         strategy_config=cfg.strategy,
         events_config=cfg.events,
         gate_config=cfg.gate,
+        agent_config=cfg.agent,
+        llm_config=cfg.llm,
+        pilot_config=cfg.pilot,
     )
     _install_signal_handlers()
     try:
@@ -2702,6 +2708,26 @@ def _cmd_ask_script(args: argparse.Namespace, console: Console, err: Console) ->
         )
     profiles = _profiles_for_capture(cfg, args.file, err)
     result = run_pilot_script(args.file, args.script, cfg, profiles_by_uid=profiles)
+    if args.db is not None:
+        exchanges = tuple(
+            (
+                item.t_sim_s,
+                PilotExchange(
+                    query=PilotQuery(
+                        item.answer.query_id,
+                        item.query_text,
+                        cfg.pilot.language,
+                        item.t_sim_s,
+                        source="script",
+                    ),
+                    answer=item.answer,
+                    routed=item.routed,
+                ),
+            )
+            for item in result.exchanges
+        )
+        with SessionStore.open(cfg.recording.database) as store:
+            ingest_capture(args.file, store, cfg, pilot_exchanges=exchanges)
     _warn_offline_issues(result.offline, err)
     if args.json:
         _write_stdout(result.to_json())

@@ -26,6 +26,7 @@ from .console_messages import (
     PILOT_ANSWER_LABEL,
     PILOT_CLARIFICATION_LABEL,
     PILOT_EMPTY,
+    PILOT_INPUT_BUSY,
     PILOT_INPUT_DISABLED,
     PILOT_INPUT_ERROR,
     PILOT_INPUT_HELP_RUN,
@@ -271,6 +272,7 @@ class _PilotConsole:
         self._future: Future[PilotAnswer] | None = None
         self._pending: str | None = None
         self._error: str | None = None
+        self._error_fresh = False
 
     @property
     def pending_text(self) -> str | None:
@@ -281,17 +283,26 @@ class _PilotConsole:
         return self._error
 
     def submit(self, text: str) -> None:
-        if not text or self._pending is not None:
+        if not text:
+            return
+        if self._pending is not None:
+            self._error = PILOT_INPUT_BUSY
+            self._error_fresh = True
             return
         self._pending = text
         self._error = None
+        self._error_fresh = False
         if self._executor is None:
             self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="pilot")
         self._future = self._executor.submit(self._session.ask_pilot, text)
 
     def poll(self) -> None:
         future = self._future
-        if future is None or not future.done():
+        if future is None:
+            if not self._error_fresh:
+                self._error = None
+            return
+        if not future.done():
             return
         self._future = None
         self._pending = None
@@ -299,6 +310,16 @@ class _PilotConsole:
             future.result()
         except Exception:  # la consola no debe caerse por un módulo opcional
             self._error = PILOT_INPUT_ERROR
+            self._error_fresh = True
+        else:
+            # Cualquier aviso recién creado debe sobrevivir al menos a un render,
+            # aunque la pregunta anterior termine justo después del rechazo.
+            if not self._error_fresh:
+                self._error = None
+
+    def mark_rendered(self) -> None:
+        """Confirma que el aviso ya se mostró y puede caducar en el siguiente poll."""
+        self._error_fresh = False
 
     def close(self) -> None:
         if self._executor is not None:
@@ -477,7 +498,7 @@ def run_console(
 
     def build() -> Group:
         pilot.poll()
-        return render(
+        view = render(
             cfg,
             session,
             pilot_pending=pilot.pending_text,
@@ -485,6 +506,8 @@ def run_console(
             pilot_input_warning=warning,
             pilot_error=pilot.error_text,
         )
+        pilot.mark_rendered()
+        return view
 
     try:
         with Live(build(), console=console, refresh_per_second=4) as live:
@@ -495,9 +518,9 @@ def run_console(
                         question = editor.feed(key) if key is not None else None
                         if question is not None:
                             pilot.submit(question)
-                            live.update(build())
+                            live.update(build(), refresh=True)
                     time.sleep(0.05)
-                    live.update(build())
+                    live.update(build(), refresh=True)
             except KeyboardInterrupt:
                 pass
     finally:

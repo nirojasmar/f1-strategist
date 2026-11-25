@@ -16,6 +16,7 @@ from f1_strategist.console_messages import (
     PILOT_ACK_TEXT,
     PILOT_CLARIFICATION_LABEL,
     PILOT_EMPTY,
+    PILOT_INPUT_BUSY,
     PILOT_INPUT_ERROR,
     PILOT_INPUT_PROMPT,
     PILOT_PANEL_TITLE,
@@ -240,12 +241,17 @@ def test_pilot_console_shows_ack_while_ask_is_in_flight() -> None:
 
         pilot.submit("otra pregunta")
         assert calls == ["¿Combustible?"]
+        assert pilot.error_text == PILOT_INPUT_BUSY
 
         release.set()
         assert pilot._future is not None
         pilot._future.result(timeout=5)
         pilot.poll()
         assert pilot.pending_text is None
+        assert pilot.error_text == PILOT_INPUT_BUSY
+
+        pilot.mark_rendered()
+        pilot.poll()
         assert pilot.error_text is None
     finally:
         pilot.close()
@@ -264,6 +270,12 @@ def test_pilot_console_reports_ask_failure() -> None:
         pilot.poll()
         assert pilot.pending_text is None
         assert pilot.error_text == PILOT_INPUT_ERROR
+        pilot.poll()
+        assert pilot.error_text == PILOT_INPUT_ERROR
+
+        pilot.mark_rendered()
+        pilot.poll()
+        assert pilot.error_text is None
     finally:
         pilot.close()
 

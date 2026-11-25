@@ -66,6 +66,7 @@ class OfflineEventPipeline:
             config.agent,
             config.llm,
             mode=config.agent.offline_mode,
+            pilot=config.pilot,
         )
         self._observed_at = 0.0
         self._weekend_profile: WeekendProfile | None = None
@@ -162,10 +163,10 @@ class OfflineEventPipeline:
         )
 
     def _note_pilot_interaction(self, now: float) -> None:
-        # EventEngine aún no expone su compuerta; Q12 solo la notifica.
-        gate = getattr(self._event_engine, "_gate", None)
-        if gate is not None:
-            gate.note_pilot_interaction(now)
+        self._event_engine.note_pilot_interaction(
+            now,
+            session_uid=self.race_snapshot().session.uid,
+        )
 
 
 @dataclass(frozen=True, slots=True)

@@ -70,6 +70,7 @@ PILOT_PLAY_HELP_DISABLED = "espacio: pausa · +/-: velocidad · q: salir"
 PILOT_INPUT_DISABLED = "Entrada de preguntas desactivada."
 PILOT_INPUT_NO_TERMINAL = "Sin terminal interactiva: entrada de preguntas desactivada."
 PILOT_INPUT_ERROR = "No se pudo enviar la pregunta."
+PILOT_INPUT_BUSY = "Hay una pregunta en curso; espera a la respuesta."
 
 _PILOT_KIND_LABELS = {
     "ack": "Acuse",

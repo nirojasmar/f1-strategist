@@ -111,6 +111,7 @@ class ScriptExchange:
     lap: int | None
     query_text: str
     answer: PilotAnswer
+    routed: RoutedQuery | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -207,10 +208,12 @@ class DefaultScriptResponder:
         )
         self._dialogue = _build_dialogue(self._dialogue_cls, self._config)
         self._seq = 0
+        self.last_routed: RoutedQuery | None = None
 
     def reset(self) -> None:
         self._dialogue = _build_dialogue(self._dialogue_cls, self._config)
         self._seq = 0
+        self.last_routed = None
 
     def ask(self, text: str, *, inputs: ToolInputs, source: str = "script") -> PilotAnswer:
         self._seq += 1
@@ -244,6 +247,7 @@ class DefaultScriptResponder:
             cfg=pilot_cfg,
         )
         answer = replace(answer, query_id=query_id, latency_s=None, followup_pending=False)
+        self.last_routed = routed
         self._dialogue.record(PilotExchange(query=normalized_query, answer=answer), inputs.now)
         return answer
 
@@ -426,6 +430,7 @@ class _ScriptCollector:
                     lap=current_lap,
                     query_text=step.text,
                     answer=answer,
+                    routed=getattr(self._responder, "last_routed", None),
                 )
             )
 

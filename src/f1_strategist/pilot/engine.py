@@ -297,7 +297,7 @@ class PilotEngine:
     def _remember(
         self, query: PilotQuery, answer: PilotAnswer, routed: RoutedQuery, now: float
     ) -> None:
-        exchange = PilotExchange(query=query, answer=answer)
+        exchange = PilotExchange(query=query, answer=answer, routed=routed)
         self._recent.append(exchange)
         if len(self._recent) > self._config.history_size:
             del self._recent[: len(self._recent) - self._config.history_size]

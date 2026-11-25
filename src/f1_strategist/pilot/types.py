@@ -450,6 +450,8 @@ class PilotExchange:
 
     query: PilotQuery
     answer: PilotAnswer
+    # Interpretación completa para el grabador; fuera del JSON público y la huella.
+    routed: RoutedQuery | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {"query": self.query.to_dict(), "answer": self.answer.to_dict()}

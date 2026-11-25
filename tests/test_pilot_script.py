@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import struct
 from pathlib import Path
 
@@ -28,6 +29,7 @@ from f1_strategist.pilot.types import (
     ToolInputs,
     ToolResult,
 )
+from f1_strategist.store import SessionStore
 
 from .conftest import make_packet
 from .scenarios import ScenarioCar, build_race_timed
@@ -302,6 +304,97 @@ def test_cli_ask_and_ask_script_json_and_error_handling(
     payload = json.loads(capsys.readouterr().out)
     assert len(payload["exchanges"]) == 2
     assert len(payload["fingerprint"]) == 64
+
+    with SessionStore.open(db_path) as store:
+        sessions = store.list_sessions()
+        assert len(sessions) == 1
+        session_id = sessions[0].id
+        assert session_id is not None
+        rows = list(store.iter_pilot_queries(session_id))
+        fingerprint = sessions[0].pilot_fingerprint
+    assert fingerprint is not None
+    assert [row.query_id for row in rows] == ["script-1", "script-2"]
+    assert [row.text for row in rows] == [
+        "¿Cómo voy?",
+        "¿Cuánto combustible queda?",
+    ]
+
+    assert (
+        main(
+            [
+                "ask-script",
+                str(capture),
+                str(script),
+                "--db",
+                str(db_path),
+                "--json",
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
+    with SessionStore.open(db_path) as store:
+        session_id = store.list_sessions()[0].id
+        assert session_id is not None
+        assert len(list(store.iter_pilot_queries(session_id))) == 2
+        assert store.list_sessions()[0].pilot_fingerprint == fingerprint
+
+    different = tmp_path / "otro.jsonl"
+    different.write_text('{"at_lap": 3, "text": "¿Qué neumático llevo?"}\n', encoding="utf-8")
+    assert (
+        main(
+            [
+                "ask-script",
+                str(capture),
+                str(different),
+                "--db",
+                str(db_path),
+                "--json",
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
+    with SessionStore.open(db_path) as store:
+        session_id = store.list_sessions()[0].id
+        assert session_id is not None
+        rows = list(store.iter_pilot_queries(session_id))
+        assert store.list_sessions()[0].pilot_fingerprint is None
+    assert [row.query_id for row in rows] == ["script-1", "script-2", "script-1"]
+    assert [row.text for row in rows] == [
+        "¿Cómo voy?",
+        "¿Cuánto combustible queda?",
+        "¿Qué neumático llevo?",
+    ]
+
+    # Una fila perdida se repara al repetir el guion sin duplicar las demás.
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("DELETE FROM pilot_queries WHERE seq = 2")
+    assert (
+        main(
+            [
+                "ask-script",
+                str(capture),
+                str(script),
+                "--db",
+                str(db_path),
+                "--json",
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
+    with SessionStore.open(db_path) as store:
+        session_id = store.list_sessions()[0].id
+        assert session_id is not None
+        rows = list(store.iter_pilot_queries(session_id))
+        assert store.list_sessions()[0].pilot_fingerprint is None
+    assert [row.text for row in rows] == [
+        "¿Cómo voy?",
+        "¿Qué neumático llevo?",
+        "¿Cuánto combustible queda?",
+    ]
+    assert [row.seq for row in rows] == [1, 3, 4]
 
     assert main(["ask-script", str(capture), str(script)]) == 0
     human_out = capsys.readouterr().out

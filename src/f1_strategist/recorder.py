@@ -7,6 +7,7 @@ import math
 import queue
 import threading
 import time
+from collections import Counter
 from collections.abc import Iterable, Mapping
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, replace
@@ -1563,12 +1564,15 @@ def ingest_capture(
     config: AppConfig | MetricsConfig | None = None,
     *,
     replace: bool = False,
+    pilot_exchanges: Iterable[tuple[float, PilotExchange]] = (),
 ) -> IngestResult:
     """Reproduce una captura y guarda en el almacén la misma sesión que exporta métricas."""
     app_config = _resolve_config(config)
+    exchanges = tuple(pilot_exchanges)
     run_info = build_run_info(app_config, path)
     existing = _find_ingested(store, run_info)
     if existing is not None and not replace:
+        _append_pilot_queries(store, existing, exchanges, app_config)
         return _result_from_session(store, existing, skipped=True)
     old_sessions = _find_same_capture(store, run_info) if replace else ()
 
@@ -1592,7 +1596,12 @@ def ingest_capture(
         strategy_config=app_config.strategy,
         pilot_record_text=app_config.pilot.record_text,
     )
-    agent = build_communicator(app_config.agent, app_config.llm, mode=app_config.agent.offline_mode)
+    agent = build_communicator(
+        app_config.agent,
+        app_config.llm,
+        mode=app_config.agent.offline_mode,
+        pilot=app_config.pilot,
+    )
     agent.start()
     collector = _IngestCollector(
         engine,
@@ -1626,6 +1635,8 @@ def ingest_capture(
             path,
             run_info=run_info,
         )
+        for observed_at, exchange in exchanges:
+            recorder.record_pilot((exchange,), observed_at)
     finally:
         agent.stop()
         calls, messages = agent.drain_records()
@@ -1654,6 +1665,74 @@ def ingest_capture(
     if session is None:
         raise StoreError(f"No existe la sesión {session_id}")
     return _result_from_session(store, session, skipped=False, offline=offline)
+
+
+def _pilot_query_identity(row: StoredPilotQuery) -> tuple[object, ...]:
+    """Identidad estable de una pregunta almacenada, sin secuencia ni latencia."""
+    return (
+        row.t_sim_s,
+        row.query_id,
+        row.text,
+        row.language,
+        row.intent,
+        row.confidence,
+        row.entities_json,
+        row.clarification_json,
+        row.facts_json,
+        row.missing_json,
+        row.answer_text,
+        row.answer_kind,
+        row.message_key,
+        row.followup_status,
+        row.followup_message,
+    )
+
+
+def _append_pilot_queries(
+    store: SessionStore,
+    session: SessionInfo,
+    exchanges: tuple[tuple[float, PilotExchange], ...],
+    config: AppConfig,
+) -> None:
+    """Añade a una sesión ya ingerida las preguntas que aún no estén guardadas."""
+    if not exchanges or session.id is None:
+        return
+    existing = tuple(store.iter_pilot_queries(session.id))
+    remaining = Counter(_pilot_query_identity(row) for row in existing)
+    next_seq = max((row.seq for row in existing), default=0) + 1
+    rows: list[StoredPilotQuery] = []
+    for index, (observed_at, exchange) in enumerate(exchanges, start=1):
+        row = _stored_pilot_query(
+            index,
+            observed_at,
+            exchange,
+            record_text=config.pilot.record_text,
+        )
+        identity = _pilot_query_identity(row)
+        if remaining[identity] > 0:
+            remaining[identity] -= 1
+            continue
+        rows.append(replace(row, seq=next_seq + len(rows)))
+    if not rows:
+        return
+    if existing:
+        # Sin los datos completos del intercambio (source, params) no se puede
+        # reconstruir la huella exacta; se invalida antes de añadir filas para
+        # no dejar nunca una huella vieja junto a datos nuevos.
+        with store.transaction() as connection:
+            connection.execute(
+                "UPDATE sessions SET pilot_fingerprint = NULL WHERE id = ?",
+                (session.id,),
+            )
+    store.add_pilot_queries(session.id, rows)
+    if existing:
+        return
+    fingerprint = PilotFingerprintAccumulator()
+    fingerprint.add(exchange for _, exchange in exchanges)
+    store.update_session(
+        session.id,
+        replace(session, pilot_fingerprint=fingerprint.fingerprint),
+    )
 
 
 def _resolve_config(config: AppConfig | MetricsConfig | None) -> AppConfig:
@@ -1768,7 +1847,19 @@ def _stored_pilot_query(
     record_text: bool,
 ) -> StoredPilotQuery:
     answer = exchange.answer
+    routed = exchange.routed
     tool_result = answer.tool_result
+    confidence = None if routed is None else routed.confidence
+    entities_json = (
+        "[]"
+        if routed is None
+        else _canonical_json([entity.to_dict() for entity in routed.entities])
+    )
+    clarification_json = (
+        None
+        if routed is None or routed.clarification is None
+        else _canonical_json(routed.clarification.to_dict())
+    )
     followup_status = "none"
     followup_message: str | None = None
     if answer.kind is AnswerKind.FOLLOWUP:
@@ -1783,9 +1874,9 @@ def _stored_pilot_query(
         text=exchange.query.text if record_text else None,
         language=exchange.query.language,
         intent=answer.intent.value,
-        confidence=None,
-        entities_json="[]",
-        clarification_json=None,
+        confidence=confidence,
+        entities_json=entities_json,
+        clarification_json=clarification_json,
         facts_json=(
             _canonical_json([fact.to_dict() for fact in tool_result.facts])
             if tool_result is not None
