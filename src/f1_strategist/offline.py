@@ -75,6 +75,8 @@ class OfflineEventPipeline:
             snapshots=self._pilot_inputs,
             followup=getattr(self._agent, "submit_followup", None),
             note_interaction=self._note_pilot_interaction,
+            metrics_config=config.metrics,
+            strategy_config=config.strategy,
         )
         self._agent.start()
 

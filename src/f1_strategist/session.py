@@ -61,6 +61,8 @@ class CaptureSession:
             snapshots=self._pilot_inputs,
             followup=getattr(self._agent, "submit_followup", None),
             note_interaction=self._note_pilot_interaction,
+            metrics_config=config.metrics,
+            strategy_config=config.strategy,
         )
         self._queue: queue.Queue[CapturedPacket] = queue.Queue(maxsize=queue_size)
         self._receiver = UdpReceiver(config.telemetry, self._queue, self.stats)

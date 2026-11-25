@@ -113,6 +113,8 @@ class PlaybackSession:
             snapshots=self._pilot_inputs,
             followup=getattr(self._agent, "submit_followup", None),
             note_interaction=self._note_pilot_interaction,
+            metrics_config=config or MetricsConfig(),
+            strategy_config=self._strategy_config,
         )
         self._stats = Stats()
         # Valida cabecera y metadatos ahora para que los errores sean inmediatos.
