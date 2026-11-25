@@ -270,6 +270,12 @@ def test_pilot_console_reports_ask_failure() -> None:
         pilot.poll()
         assert pilot.pending_text is None
         assert pilot.error_text == PILOT_INPUT_ERROR
+        pilot.poll()
+        assert pilot.error_text == PILOT_INPUT_ERROR
+
+        pilot.mark_rendered()
+        pilot.poll()
+        assert pilot.error_text is None
     finally:
         pilot.close()
 

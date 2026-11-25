@@ -1715,10 +1715,17 @@ def _append_pilot_queries(
         rows.append(replace(row, seq=next_seq + len(rows)))
     if not rows:
         return
+    if existing:
+        # Sin los datos completos del intercambio (source, params) no se puede
+        # reconstruir la huella exacta; se invalida antes de añadir filas para
+        # no dejar nunca una huella vieja junto a datos nuevos.
+        with store.transaction() as connection:
+            connection.execute(
+                "UPDATE sessions SET pilot_fingerprint = NULL WHERE id = ?",
+                (session.id,),
+            )
     store.add_pilot_queries(session.id, rows)
     if existing:
-        # La huella antigua no se puede reconstruir desde las filas guardadas;
-        # se conserva la existente en lugar de publicar una huella incompleta.
         return
     fingerprint = PilotFingerprintAccumulator()
     fingerprint.add(exchange for _, exchange in exchanges)
