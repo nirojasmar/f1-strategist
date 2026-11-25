@@ -138,7 +138,7 @@ def test_types_are_immutable() -> None:
     with pytest.raises(TypeError):
         answer.params["driver"] = "Verstappen"  # type: ignore[index]
 
-    assert set(TOOLS) <= set(Intent)
+    assert {Intent.COMPARE_DRIVER, Intent.GAP_STATUS, Intent.PACE_DIAGNOSIS} <= set(TOOLS)
 
 
 def test_tool_fact_rejects_invalid_values() -> None:
