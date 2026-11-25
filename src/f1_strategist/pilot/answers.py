@@ -79,6 +79,12 @@ _ES_FIXED: Mapping[str, str] = MappingProxyType(
         "pilot.clarification_no_options": "¿A cuál te refieres?",
         "pilot.leader": "Vas primero: no hay nadie delante.",
         "pilot.last": "Vas último: no hay nadie detrás.",
+        "pilot.no_car_ahead": "No hay nadie delante de ti.",
+        "pilot.no_car_behind": "No hay nadie detrás de ti.",
+        "pilot.driver_retired": ("El piloto que pides está retirado y no tengo datos suyos."),
+        "pilot.driver_unknown": (
+            "No sé a qué piloto te refieres; no tengo datos de esa referencia."
+        ),
         "pilot.stale": " Los datos están desactualizados.",
         "pilot.missing": " No tengo {missing}.",
         "pilot.generic": "Datos: {facts}.",

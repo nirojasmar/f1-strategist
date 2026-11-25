@@ -469,3 +469,60 @@ def test_offline_pipeline_answers_without_packets() -> None:
         assert snapshot.counters == {"unavailable": 1}
     finally:
         pipeline.stop()
+
+
+def _grid_state():
+    dataset = load_pilot_dataset(Path(__file__).parent / "fixtures" / "pilot_questions")
+    return replace(
+        build_race_state_from_grid(dataset.default_grid),
+        freshness=(PacketFreshness("lap_data", 9.8, 1.5),),
+    )
+
+
+def _engine_with_real_tools(state: RaceStateSnapshot) -> PilotEngine:
+    return PilotEngine(PilotConfig(), snapshots=lambda: _inputs(state=state))
+
+
+def test_real_flow_retired_and_unknown_rivals_do_not_use_a_substitute() -> None:
+    engine = _engine_with_real_tools(_grid_state())
+
+    retired = engine.ask("¿Cómo voy respecto a Lawson?", now=10.0)
+    unknown = engine.ask("¿Cómo voy respecto a Senna?", now=10.0)
+
+    assert retired.intent is Intent.COMPARE_DRIVER
+    assert retired.text == "El piloto que pides está retirado y no tengo datos suyos."
+    assert unknown.intent is Intent.COMPARE_DRIVER
+    assert unknown.text == "No sé a qué piloto te refieres; no tengo datos de esa referencia."
+
+
+def test_real_flow_undercut_retired_rival_is_not_replaced() -> None:
+    engine = _engine_with_real_tools(_grid_state())
+
+    answer = engine.ask("¿Podemos hacer undercut a Lawson?", now=10.0)
+
+    assert answer.intent is Intent.PIT_UNDERCUT
+    assert answer.text == "El piloto que pides está retirado y no tengo datos suyos."
+
+
+def test_real_flow_extreme_relatives_answer_without_numbers() -> None:
+    state = _grid_state()
+    leader = replace(
+        state,
+        cars=tuple(
+            replace(car, position=1) if car.car_index == state.player_car_index else car
+            for car in state.cars
+        ),
+    )
+    ahead = _engine_with_real_tools(leader).ask("¿A cuánto está el de delante?", now=10.0)
+
+    last = replace(
+        state,
+        cars=tuple(
+            replace(car, position=20) if car.car_index == state.player_car_index else car
+            for car in state.cars
+        ),
+    )
+    behind = _engine_with_real_tools(last).ask("¿A cuánto está el de atrás?", now=10.0)
+
+    assert ahead.text == "No hay nadie delante de ti."
+    assert behind.text == "No hay nadie detrás de ti."

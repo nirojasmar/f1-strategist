@@ -62,6 +62,32 @@ _EXTREME_REFERENCE = re.compile(r"\b(?:el|la|al|del)\s+(lider|ultimo)\b")
 _TEAMMATE_REFERENCE = re.compile(r"\b(?:mi|el|al|del|su)\s+companero(?: de equipo)?\b")
 _NUMBER_REFERENCE = re.compile(r"\b(?:el|al|del|numero|num)\s+(\d{1,2})\b")
 _POSITION_REFERENCE = re.compile(r"\b(?:el|al|del)\s+(p\d{1,2})\b")
+_UNKNOWN_REFERENCE = re.compile(
+    r"(?<![a-z0-9])(?:respecto a|frente a|contra|comparado con|comparame con|comparativa con|"
+    r"a cuanto esta|a cuantos segundos esta|undercut a|undercut al|undercut contra|con)"
+    r"\s+([a-z][a-z0-9]{2,})(?![a-z0-9])"
+)
+_UNKNOWN_REFERENCE_STOPWORDS = frozenset(
+    {
+        "coche",
+        "piloto",
+        "rival",
+        "undercut",
+        "delante",
+        "detras",
+        "atras",
+        "lider",
+        "ultimo",
+        "este",
+        "esa",
+        "ese",
+        "vuelta",
+        "boxes",
+        "ritmo",
+        "gap",
+    }
+)
+_DRIVER_INTENTS = frozenset({Intent.COMPARE_DRIVER, Intent.GAP_STATUS, Intent.PIT_UNDERCUT})
 _ORDINAL_REFERENCE = re.compile(r"\b(?:el|al|del)\s+([a-z]+)\b")
 
 
@@ -229,11 +255,19 @@ def route(
         intent = last
         confidence = max(best_score, cfg.min_intent_confidence)
 
-    entities, clarification = _references(normalized, drivers, cfg, now)
+    entities, clarification = _references(normalized, drivers, cfg, now, intent)
     if clarification is None and intent in _PLAYER_ONLY_INTENTS and entities:
         player = drivers.player_car_index if isinstance(drivers, DriverDirectory) else None
         if player is not None and entities[0].car_index != player:
             return _routed(query, normalized, Intent.UNKNOWN, 0.0)
+    if clarification is not None:
+        start = getattr(dialogue, "start_clarification", None)
+        if callable(start):
+            start(
+                clarification.options,
+                now,
+                message_key=clarification.message_key,
+            )
     return _routed(
         query,
         normalized,
@@ -285,28 +319,30 @@ def _references(
     drivers: DriverDirectory,
     cfg: PilotConfig,
     now: float,
+    intent: Intent,
 ) -> tuple[tuple[EntityRef, ...], Clarification | None]:
     """Extrae y resuelve la primera referencia del texto."""
     if not isinstance(drivers, DriverDirectory):
         return (), None
     raw = _first_reference(normalized, drivers)
     if raw is None:
-        return (), None
+        unknown = _unknown_reference(normalized, intent)
+        if unknown is None:
+            return (), None
+        return (EntityRef(unknown, reason="driver_not_found"),), None
     outcome = resolve_driver(raw, drivers)
     if isinstance(outcome, Resolved):
         return (EntityRef(raw, outcome.driver.car_index),), None
     if isinstance(outcome, Ambiguous):
-        return (
-            (),
-            Clarification(
-                message_key=AMBIGUOUS_DRIVER_MESSAGE_KEY,
-                options=outcome.candidates,
-                expires_at=now + cfg.clarification_ttl_s,
-            ),
+        clarification = Clarification(
+            message_key=AMBIGUOUS_DRIVER_MESSAGE_KEY,
+            options=outcome.candidates,
+            expires_at=now + cfg.clarification_ttl_s,
         )
-    # shortcut: retired o desconocido cae en el rival por defecto de la
-    # herramienta; añadir clave de mensaje "no encontrado" cuando exista.
-    return (), None
+        return (), clarification
+    # La referencia fallida se conserva para que la herramienta conteste que no
+    # hay datos de ese piloto en vez de elegir un rival sustituto.
+    return (EntityRef(raw, reason=outcome.reason.value),), None
 
 
 def _first_reference(normalized: str, drivers: DriverDirectory) -> str | None:
@@ -352,6 +388,16 @@ def _first_reference(normalized: str, drivers: DriverDirectory) -> str | None:
         return None
     refs.sort()
     return refs[0][2]
+
+
+def _unknown_reference(normalized: str, intent: Intent) -> str | None:
+    """Reconoce un nombre no listado tras una preposición de comparación."""
+    if intent not in _DRIVER_INTENTS:
+        return None
+    match = _UNKNOWN_REFERENCE.search(normalized)
+    if match is None or match.group(1) in _UNKNOWN_REFERENCE_STOPWORDS:
+        return None
+    return match.group(1)
 
 
 def _teams(drivers: DriverDirectory) -> tuple[str, ...]:

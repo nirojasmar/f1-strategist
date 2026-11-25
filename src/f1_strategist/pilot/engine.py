@@ -15,7 +15,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from typing import Any, Protocol, cast
 
-from ..config import PilotConfig
+from ..config import MetricsConfig, PilotConfig, StrategyConfig
 from ..events.types import EventsSnapshot
 from ..metrics.engine import MetricsSnapshot
 from ..metrics.history import LapHistorySnapshot
@@ -64,6 +64,8 @@ class PilotInputs:
     history: LapHistorySnapshot
     events: EventsSnapshot
     profile: WeekendProfile | None = None
+    metrics_config: MetricsConfig | None = None
+    strategy_config: StrategyConfig | None = None
 
 
 def _lazy(module_name: str, attribute: str) -> Any | None:
@@ -103,6 +105,8 @@ class PilotEngine:
         note_interaction: Callable[[float], None] | None = None,
         publish: Callable[[PilotAnswer], None] | None = None,
         clock: Callable[[], float] = time.monotonic,
+        metrics_config: MetricsConfig | None = None,
+        strategy_config: StrategyConfig | None = None,
     ) -> None:
         self._config = config or PilotConfig()
         self._snapshots = snapshots
@@ -123,6 +127,8 @@ class PilotEngine:
         self._note_interaction = note_interaction
         self._publish = publish
         self._clock = clock
+        self._metrics_config = metrics_config
+        self._strategy_config = strategy_config
         self._recent: list[PilotExchange] = []
         self._counters: dict[str, int] = {}
         self._pending: Clarification | None = None
@@ -262,6 +268,8 @@ class PilotEngine:
                     config=self._config,
                     now=now,
                     profile=inputs.profile,
+                    metrics_config=inputs.metrics_config or self._metrics_config,
+                    strategy_config=inputs.strategy_config or self._strategy_config,
                 ),
             )
         except Exception:

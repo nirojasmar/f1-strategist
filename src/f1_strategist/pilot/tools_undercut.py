@@ -28,6 +28,7 @@ from ..strategy.pace_model import (
 )
 from ..strategy.pit_model import RejoinEstimate, estimate_pit_loss, estimate_rejoin
 from ..strategy.types import ASSUMPTION_RIVALS_DO_NOT_PIT, StrategySnapshot
+from .tools_compare import unresolved_reference_note
 from .types import FactKind, Intent, RoutedQuery, ToolFact, ToolInputs, ToolResult
 
 MISSING_PILOT_LEADS = "pilot_leads"
@@ -293,6 +294,15 @@ def pit_undercut(routed: RoutedQuery, inputs: ToolInputs) -> ToolResult:
             quality=Quality.INSUFFICIENT,
             missing=(MISSING_PILOT_LEADS,),
             notes=(NOTE_PILOT_LEADS,),
+            data_lap=state.current_lap,
+        )
+    note = unresolved_reference_note(routed)
+    if note is not None:
+        return ToolResult(
+            intent=Intent.PIT_UNDERCUT,
+            quality=Quality.INSUFFICIENT,
+            missing=(MISSING_RIVAL_UNAVAILABLE,),
+            notes=(note,),
             data_lap=state.current_lap,
         )
 

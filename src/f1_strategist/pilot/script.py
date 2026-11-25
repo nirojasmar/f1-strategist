@@ -223,6 +223,7 @@ class DefaultScriptResponder:
             drivers=drivers,
             dialogue=self._dialogue,
             cfg=pilot_cfg,
+            now=inputs.now,
         )
         normalized_query = PilotQuery(
             query_id=query_id,
@@ -412,6 +413,8 @@ class _ScriptCollector:
                 config=self._config.pilot,
                 now=observed_at,
                 profile=profile,
+                metrics_config=self._config.metrics,
+                strategy_config=self._config.strategy,
             )
             answer = self._responder.ask(step.text, inputs=inputs, source=self._source)
             answer = replace(answer, latency_s=None, followup_pending=False)

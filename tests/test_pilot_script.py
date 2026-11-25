@@ -320,3 +320,55 @@ def test_cli_ask_and_ask_script_json_and_error_handling(
 
     assert main(["ask"]) == 2
     assert "Uso: f1-strategist ask" in capsys.readouterr().err
+
+
+def test_default_responder_keeps_pending_clarification_between_script_questions() -> None:
+    from dataclasses import replace
+
+    from f1_strategist.config import MetricsConfig, StrategyConfig
+    from f1_strategist.metrics.engine import MetricsSnapshot
+    from f1_strategist.metrics.history import LapHistorySnapshot
+    from f1_strategist.pilot.evaluation import build_race_state_from_grid, load_pilot_dataset
+    from f1_strategist.pilot.script import DefaultScriptResponder
+    from f1_strategist.race_state import PacketFreshness
+    from f1_strategist.strategy.types import StrategySnapshot
+
+    dataset = load_pilot_dataset(Path(__file__).parent / "fixtures" / "pilot_questions")
+    state = replace(
+        build_race_state_from_grid(dataset.default_grid),
+        freshness=(PacketFreshness("lap_data", 9.8, 1.5),),
+    )
+    config = AppConfig()
+    responder = DefaultScriptResponder(config)
+
+    first = responder.ask(
+        "¿Cómo voy respecto a Schumacher?",
+        inputs=ToolInputs(
+            state=state,
+            metrics=MetricsSnapshot(),
+            strategy=StrategySnapshot(),
+            history=LapHistorySnapshot(),
+            config=config.pilot,
+            now=10.0,
+            metrics_config=MetricsConfig(),
+            strategy_config=StrategyConfig(),
+        ),
+    )
+    second = responder.ask(
+        "Mick",
+        inputs=ToolInputs(
+            state=state,
+            metrics=MetricsSnapshot(),
+            strategy=StrategySnapshot(),
+            history=LapHistorySnapshot(),
+            config=config.pilot,
+            now=11.0,
+            metrics_config=MetricsConfig(),
+            strategy_config=StrategyConfig(),
+        ),
+    )
+
+    assert first.kind is AnswerKind.CLARIFICATION
+    assert second.kind is not AnswerKind.CLARIFICATION
+    assert second.intent is Intent.COMPARE_DRIVER
+    assert "comparación" in second.text or "comparacion" in second.text

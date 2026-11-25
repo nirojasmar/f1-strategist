@@ -11,7 +11,6 @@ import logging
 import re
 import unicodedata
 
-from ..config import MetricsConfig, StrategyConfig
 from ..metrics.history import MetricInputs
 from ..metrics.types import Quality
 from ..strategy import evaluate_once
@@ -30,6 +29,7 @@ NOTE_COMPOUND_UNAVAILABLE = "strategy_compound_unavailable"
 NOTE_LAP_OUT_OF_WINDOW = "strategy_pit_lap_out_of_window"
 NOTE_SIMULATED = "strategy_simulated"
 NOTE_SIMULATION_FAILED = "strategy_simulation_failed"
+NOTE_CONFIG_MISSING = "strategy_configuration_missing"
 
 _SAFETY_CAR_STATUSES = {
     "full_safety_car",
@@ -154,9 +154,18 @@ def simulate_strategy(query: RoutedQuery, inputs: ToolInputs) -> ToolResult:
     compound = _requested_compound(text)
     alternatives = evaluation.alternatives
     candidates = tuple(item for item in alternatives if _matches(item, pit_in_laps, compound))
-    if not candidates:
-        # La evaluación publicada puede no incluir la opción pedida; se evalúa bajo demanda.
-        simulated = _evaluate_on_demand(inputs)
+    if not candidates and _needs_recompute(alternatives, pit_in_laps):
+        # La evaluación publicada no cubre la ventana pedida; se evalúa bajo demanda.
+        if inputs.metrics_config is None or inputs.strategy_config is None:
+            return ToolResult(
+                intent=Intent.ASK_STRATEGY,
+                quality=Quality.UNAVAILABLE,
+                missing=("strategy_configuration",),
+                stale=_is_stale(evaluation, inputs),
+                data_lap=evaluation.lap,
+                notes=(*_context_notes(evaluation), NOTE_CONFIG_MISSING),
+            )
+        simulated = _evaluate_on_demand(inputs, pit_in_laps)
         if simulated is not None:
             evaluation = simulated
             alternatives = simulated.alternatives
@@ -230,24 +239,48 @@ def ask_strategy_or_simulate(query: RoutedQuery, inputs: ToolInputs) -> ToolResu
     return ask_strategy(query, inputs)
 
 
-def _evaluate_on_demand(inputs: ToolInputs) -> StrategyEvaluation | None:
-    """Recalcula la estrategia pedida cuando no está entre las alternativas publicadas."""
+def _evaluate_on_demand(
+    inputs: ToolInputs,
+    pit_in_laps: int,
+) -> StrategyEvaluation | None:
+    """Recalcula la estrategia con la configuración real y la ventana pedida."""
     car_index = inputs.state.player_car_index
-    if car_index is None:
+    metrics_cfg = inputs.metrics_config
+    strategy_cfg = inputs.strategy_config
+    if car_index is None or metrics_cfg is None or strategy_cfg is None:
         return None
+    if pit_in_laps > strategy_cfg.max_pit_in_laps:
+        # evaluate_once limita las alternativas a max_pit_in_laps; se amplía para
+        # que la parada pedida exista de verdad. El fin de carrera sigue mandando.
+        strategy_cfg = strategy_cfg.model_copy(update={"max_pit_in_laps": pit_in_laps})
     metric_inputs = MetricInputs(
         inputs.state,
         inputs.history,
-        MetricsConfig(),
+        metrics_cfg,
         inputs.now,
         car_index,
         inputs.profile,
     )
     try:
-        return evaluate_once(metric_inputs, StrategyConfig())
+        return evaluate_once(metric_inputs, strategy_cfg)
     except Exception:  # noqa: BLE001 - una simulación no debe tumbar la respuesta
         _LOGGER.exception("pilot_strategy_simulation_failed")
         return None
+
+
+def _needs_recompute(alternatives: tuple[StrategyAlternative, ...], pit_in_laps: int) -> bool:
+    """Solo recalcula si falta la ventana de parada, no si falta un compuesto concreto."""
+    if not alternatives:
+        return True
+    published = 0
+    for item in alternatives:
+        if not item.key.startswith("pit_in_"):
+            continue
+        try:
+            published = max(published, int(item.key.split("_", 2)[1].split(":", 1)[0]))
+        except (IndexError, ValueError):
+            continue
+    return pit_in_laps > published
 
 
 def _matches(item: StrategyAlternative, pit_in_laps: int, compound: str | None) -> bool:
@@ -350,6 +383,7 @@ def _safety_car_active(inputs: ToolInputs) -> bool:
 __all__ = [
     "NOTE_COMPOUND_RULE",
     "NOTE_COMPOUND_UNAVAILABLE",
+    "NOTE_CONFIG_MISSING",
     "NOTE_EVALUATION_FAILED",
     "NOTE_EVALUATION_MISSING",
     "NOTE_LAP_OUT_OF_WINDOW",

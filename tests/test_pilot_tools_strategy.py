@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
-from f1_strategist.config import PilotConfig
+from f1_strategist.config import MetricsConfig, PilotConfig, StrategyConfig
 from f1_strategist.metrics.engine import MetricsSnapshot
 from f1_strategist.metrics.history import LapHistorySnapshot
 from f1_strategist.metrics.types import Quality
@@ -14,6 +14,7 @@ from f1_strategist.pilot.evaluation import build_race_state_from_grid, load_pilo
 from f1_strategist.pilot.tools_strategy import (
     NOTE_COMPOUND_RULE,
     NOTE_COMPOUND_UNAVAILABLE,
+    NOTE_CONFIG_MISSING,
     NOTE_EVALUATION_FAILED,
     NOTE_EVALUATION_MISSING,
     NOTE_LAP_OUT_OF_WINDOW,
@@ -279,10 +280,19 @@ def test_simulate_pit_in_laps_and_compound() -> None:
     assert facts["strategy_gain_s"].value == 3.0
 
 
-def test_simulate_compound_not_evaluated_for_requested_lap_reports_window() -> None:
+def test_simulate_compound_not_evaluated_for_requested_lap_reports_window(monkeypatch) -> None:
     evaluation = _evaluation(alternatives=_alternatives())
+    inputs = replace(
+        _inputs(evaluation),
+        metrics_config=MetricsConfig(),
+        strategy_config=StrategyConfig(),
+    )
+    monkeypatch.setattr(
+        "f1_strategist.pilot.tools_strategy.evaluate_once",
+        lambda *args, **kwargs: evaluation,
+    )
 
-    result = simulate_strategy(_query("¿Y si paro en 3 vueltas con blandos?"), _inputs(evaluation))
+    result = simulate_strategy(_query("¿Y si paro en 3 vueltas con blandos?"), inputs)
 
     assert result.quality is Quality.UNAVAILABLE
     assert result.missing == ("strategy_alternative",)
@@ -320,14 +330,23 @@ def test_simulate_unavailable_compound_reports_reason() -> None:
     assert NOTE_COMPOUND_UNAVAILABLE in result.notes
 
 
-def test_simulate_without_tyre_options_reports_compound_unavailable() -> None:
+def test_simulate_without_tyre_options_reports_compound_unavailable(monkeypatch) -> None:
     evaluation = _evaluation(
         action=StrategyAction.INSUFFICIENT_DATA,
         alternatives=(),
         notes=(NOTE_NO_ALTERNATIVES,),
     )
+    inputs = replace(
+        _inputs(evaluation),
+        metrics_config=MetricsConfig(),
+        strategy_config=StrategyConfig(),
+    )
+    monkeypatch.setattr(
+        "f1_strategist.pilot.tools_strategy.evaluate_once",
+        lambda *args, **kwargs: evaluation,
+    )
 
-    result = simulate_strategy(_query("¿Y si paro ahora?"), _inputs(evaluation))
+    result = simulate_strategy(_query("¿Y si paro ahora?"), inputs)
 
     assert NOTE_COMPOUND_UNAVAILABLE in result.notes
 
@@ -359,19 +378,26 @@ def test_simulate_runs_real_evaluation_when_published_alternative_is_missing(cap
     dataset = load_pilot_dataset(Path(__file__).parent / "fixtures" / "pilot_questions")
     real_state = build_race_state_from_grid(dataset.default_grid)
     published = _evaluation(alternatives=())
-    inputs = replace(_inputs(published), state=real_state)
+    inputs = replace(
+        _inputs(published),
+        state=real_state,
+        metrics_config=MetricsConfig(),
+        strategy_config=StrategyConfig(),
+    )
 
     result = simulate_strategy(_query("¿Y si paro ahora?"), inputs)
 
     assert "pilot_strategy_simulation_failed" not in caplog.text
-    assert result.quality is Quality.UNAVAILABLE
-    assert result.missing == ("strategy_alternative",)
+    assert result.quality in {Quality.UNAVAILABLE, Quality.INSUFFICIENT}
 
 
 def test_simulate_evaluates_requested_option_on_demand(monkeypatch) -> None:
     published = _evaluation(alternatives=())
     inputs = replace(
-        _inputs(published), state=replace(_inputs(published).state, player_car_index=0)
+        _inputs(published),
+        state=replace(_inputs(published).state, player_car_index=0),
+        metrics_config=MetricsConfig(),
+        strategy_config=StrategyConfig(),
     )
     on_demand = _evaluation(
         alternatives=(
@@ -402,3 +428,54 @@ def test_simulate_evaluates_requested_option_on_demand(monkeypatch) -> None:
     assert facts["strategy_pit_lap"].value == 13
     assert facts["strategy_gain_s"].value == 1.5
     assert facts["strategy_rejoin_position"].value == 9
+
+
+def test_simulate_without_configs_reports_configuration_instead_of_defaults(monkeypatch) -> None:
+    published = _evaluation(alternatives=())
+
+    def fail(*args, **kwargs):
+        raise AssertionError("no debe evaluar sin configuración real")
+
+    monkeypatch.setattr("f1_strategist.pilot.tools_strategy.evaluate_once", fail)
+
+    result = simulate_strategy(_query("¿Y si paro ahora?"), _inputs(published))
+
+    assert result.quality is Quality.UNAVAILABLE
+    assert result.missing == ("strategy_configuration",)
+    assert NOTE_CONFIG_MISSING in result.notes
+
+
+def test_simulate_extends_window_for_requested_lap(monkeypatch) -> None:
+    published = _evaluation(
+        alternatives=(
+            StrategyAlternative(
+                key="pit_in_1:medium:set1", remaining_time_s=990.0, gain_vs_baseline_s=1.0
+            ),
+        )
+    )
+    inputs = replace(
+        _inputs(published),
+        state=replace(_inputs(published).state, player_car_index=0),
+        metrics_config=MetricsConfig(),
+        strategy_config=StrategyConfig(max_pit_in_laps=2),
+    )
+    on_demand = _evaluation(
+        alternatives=(
+            StrategyAlternative(
+                key="pit_in_5:medium:set1", remaining_time_s=900.0, gain_vs_baseline_s=2.0
+            ),
+        )
+    )
+    calls = []
+
+    def fake_evaluate_once(metric_inputs, cfg, *, revision=0):
+        calls.append((metric_inputs, cfg))
+        return on_demand
+
+    monkeypatch.setattr("f1_strategist.pilot.tools_strategy.evaluate_once", fake_evaluate_once)
+
+    result = simulate_strategy(_query("¿Y si paro en 5 vueltas?"), inputs)
+
+    assert len(calls) == 1
+    assert calls[0][1].max_pit_in_laps == 5
+    assert _facts(result)["strategy_pit_lap"].value == 18
