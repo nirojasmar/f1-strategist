@@ -96,9 +96,10 @@ def test_question_prompt_is_available() -> None:
         ContextKind.QUESTION, _context(ContextKind.QUESTION)
     )
 
-    assert rendered.prompt_version.startswith("es/question.v1+")
+    assert rendered.prompt_version.startswith("es/question.v2+")
     _system, user = rendered.messages
-    assert "El piloto hace una pregunta" in user.content
+    assert "aclárala o contextualízala" in user.content
+    assert "previous_answer" in user.content
 
 
 def test_examples_are_marked_as_illustration() -> None:

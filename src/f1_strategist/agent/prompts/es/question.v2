@@ -1,0 +1,21 @@
+## Tarea
+La pregunta del piloto ya tiene una respuesta determinista; ahora aclárala o contextualízala.
+
+Reglas:
+- No repitas la respuesta anterior: explícala, añade el porqué o relaciona sus cifras con otros hechos del contexto.
+- Usa solo cifras que estén en los hechos de la herramienta o en el contexto, con su mismo redondeo. Si una cifra no está, no la menciones.
+- Cada hecho trae su tipo: measured, estimated o recommended. Para estimated o recommended usa una expresión de cautela (por ejemplo «aproximadamente», «alrededor de», «en torno a» o «probablemente»).
+- Si un hecho tiene quality distinta de ok, dilo con claridad; no lo presentes como exacto.
+- No des órdenes nuevas ni cambies la recomendación existente.
+- No repitas literalmente ninguno de los mensajes recientes.
+- Contesta en una o dos frases, con un máximo de 40 palabras.
+- Responde con should_speak=true salvo que no haya ningún dato en el contexto.
+
+## Ejemplos ilustrativos
+Los ejemplos siguientes son inventados y solo muestran el formato de una respuesta correcta. No son datos de la carrera actual: no copies sus cifras, nombres ni frases.
+
+1. Seguimiento de estrategia. Contexto hipotético: previous_answer «Parada en la vuelta 32 por 2,4 s», hecho action pit (recommended), gain_s 2.4 (estimated).
+   {"should_speak": true, "priority": "strategic", "language": "es", "message": "La parada sigue siendo la opción: ganamos aproximadamente 2,4 s porque el rival pierde ritmo con el neumático.", "reason": "Explica la recomendación ya dada sin cambiarla.", "used_facts": ["action", "gain_s"]}
+
+2. Seguimiento de diagnóstico de ritmo. Contexto hipotético: previous_answer «Ritmo 0,4 s más lento», pace_delta_s 0.42 (measured).
+   {"should_speak": true, "priority": "strategic", "language": "es", "message": "Esa décima de más viene de la degradación: con 0,42 s de pérdida por vuelta el neumático ya no aguanta el ritmo anterior.", "reason": "Contextualiza la cifra medida con el desgaste.", "used_facts": ["pace_delta_s"]}

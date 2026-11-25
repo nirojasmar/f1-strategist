@@ -14,6 +14,7 @@ from f1_strategist.events.types import (
 )
 from f1_strategist.metrics.engine import MetricsSnapshot
 from f1_strategist.metrics.types import Metric, Quality, Window
+from f1_strategist.pilot.types import AnswerKind, FactKind, Intent, PilotAnswer, ToolFact
 from f1_strategist.race_state import CarSnapshot, RaceSessionSnapshot, RaceStateSnapshot
 from f1_strategist.strategy.types import (
     ASSUMPTION_RIVALS_DO_NOT_PIT,
@@ -360,3 +361,40 @@ def test_build_question_uses_the_question_contract_without_alert() -> None:
     assert context.constraints["question"] == "¿Puedo entrar a boxes?"
     assert context.recent_messages == ("anterior",)
     assert context.context_hash
+
+
+def test_build_question_includes_tool_facts_and_previous_answer() -> None:
+    fact = ToolFact(
+        name="tyre_life_laps",
+        value=8,
+        unit="lap",
+        kind=FactKind.ESTIMATED,
+        quality=Quality.OK,
+    )
+    answer = PilotAnswer(
+        query_id="q1",
+        intent=Intent.TYRE_LIFE,
+        kind=AnswerKind.ANSWER,
+        text="Quedan 8 vueltas.",
+        message_key="pilot.tyre_life",
+    )
+
+    context = ContextBuilder(AgentConfig()).build_question(
+        "¿Y eso por qué?",
+        state=_state(),
+        tool_facts=(fact,),
+        previous_answer=answer,
+    )
+
+    assert context.tool_facts == (
+        {
+            "name": "tyre_life_laps",
+            "value": 8,
+            "unit": "lap",
+            "kind": "estimated",
+            "quality": "ok",
+        },
+    )
+    assert context.previous_answer is not None
+    assert context.previous_answer["text"] == "Quedan 8 vueltas."
+    assert context.previous_answer["intent"] == "tyre_life"
