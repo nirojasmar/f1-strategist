@@ -72,6 +72,17 @@ negative = [
 "situacion" = 0.4
 "carrera" = 0.35
 "voy" = 0.35
+"puesto" = 0.6
+"marcha" = 0.6
+"bandera" = 0.6
+"cuadros" = 0.5
+"clasificacion" = 0.5
+"estado" = 0.35
+"yendo" = 0.4
+"falta" = 0.25
+"acabar" = 0.3
+"vueltas" = 0.3
+"resumen" = 0.4
 
 [intents.ask_strategy]
 negative = [
@@ -112,6 +123,18 @@ negative = [
 "entramos" = 0.45
 "hacemos" = 0.45
 "plan" = 0.3
+"metemos" = 0.5
+"entro" = 0.5
+"dentro" = 0.35
+"aguantamos" = 0.5
+"fuera" = 0.4
+"paramos" = 0.5
+"entrar" = 0.4
+"pista" = 0.4
+"conviene" = 0.4
+"proxima" = 0.2
+"seguimos" = 0.4
+"mantener" = 0.4
 
 [intents.fuel_status]
 negative = [
@@ -146,6 +169,11 @@ negative = [
 "gasolina" = 0.8
 "fuel" = 0.7
 "deposito" = 0.6
+"llegar" = 0.4
+"final" = 0.3
+"ahorrar" = 0.5
+"consumo" = 0.5
+"carburante" = 0.8
 
 [intents.tyre_life]
 negative = [
@@ -187,6 +215,9 @@ negative = [
 "compuesto" = 0.5
 "duran" = 0.5
 "aguantan" = 0.6
+"resisten" = 0.6
+"gastados" = 0.6
+"gastando" = 0.6
 
 [intents.pace_diagnosis]
 negative = [
@@ -230,6 +261,15 @@ negative = [
 "sector" = 0.45
 "tiempo" = 0.35
 "trafico" = 0.5
+"rindiendo" = 0.7
+"rendimiento" = 0.6
+"perdida" = 0.6
+"escapan" = 0.6
+"decimas" = 0.5
+"caida" = 0.5
+"cediendo" = 0.5
+"frenando" = 0.6
+"bajado" = 0.5
 
 [intents.compare_driver]
 negative = [
@@ -261,6 +301,10 @@ negative = [
 "cuantas paradas lleva" = 0.95
 "que ritmo lleva" = 0.95
 "como va mi ritmo" = 0.95
+"por delante o por detras" = 0.95
+"mas rapido" = 0.6
+"voy delante" = 0.95
+"voy detras" = 0.95
 
 [intents.compare_driver.keywords]
 "rival" = 0.7
@@ -268,6 +312,14 @@ negative = [
 "comparacion" = 0.7
 "diferencia" = 0.5
 "companero" = 0.5
+"compara" = 0.7
+"ando" = 0.5
+"frente" = 0.6
+"delante" = 0.45
+"detras" = 0.45
+"respecto" = 0.6
+"rapido" = 0.5
+"lento" = 0.4
 
 [intents.pit_undercut]
 negative = [
@@ -329,6 +381,9 @@ negative = [
 "diferencia tengo con" = 0.95
 "me recorta" = 0.7
 "se esta acercando" = 0.7
+"a cuanto" = 0.85
+"detras de mi" = 0.9
+"esta cerca" = 0.8
 
 [intents.gap_status.keywords]
 "distancia" = 0.6
@@ -340,6 +395,10 @@ negative = [
 "hueco" = 0.6
 "recorta" = 0.6
 "acercando" = 0.6
+"rueda" = 0.45
+"segundos" = 0.5
+"ventaja" = 0.6
+"desventaja" = 0.6
 
 [intents.damage_status]
 negative = [
@@ -377,6 +436,16 @@ negative = [
 "aleron" = 0.5
 "coche" = 0.35
 "drs" = 0.4
+"entero" = 0.6
+"roto" = 0.6
+"toque" = 0.5
+"suelo" = 0.5
+"golpe" = 0.5
+"tocado" = 0.6
+"piezas" = 0.5
+"monoplaza" = 0.35
+"chasis" = 0.5
+"intacto" = 0.6
 
 [intents.weather_forecast]
 negative = [
@@ -411,3 +480,8 @@ negative = [
 "temperatura" = 0.55
 "meteorologico" = 0.7
 "pronostico" = 0.7
+"cielo" = 0.6
+"pinta" = 0.5
+"chubascos" = 0.6
+"tormenta" = 0.7
+"paraguas" = 0.6

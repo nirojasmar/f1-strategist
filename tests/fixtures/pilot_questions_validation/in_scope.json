@@ -1,0 +1,50 @@
+[
+  {"id": "v-grs-01", "text": "¿Cómo va la carrera ahora mismo?", "expected_intent": "general_race_state", "expect_no_entity": true},
+  {"id": "v-grs-02", "text": "Dime qué puesto ocupo", "expected_intent": "general_race_state", "expect_no_entity": true},
+  {"id": "v-grs-03", "text": "¿Cuántas vueltas faltan?", "expected_intent": "general_race_state", "expect_no_entity": true},
+  {"id": "v-grs-04", "text": "Resumen de la situación actual", "expected_intent": "general_race_state", "expect_no_entity": true},
+
+  {"id": "v-str-01", "text": "¿Hacemos parada esta vuelta?", "expected_intent": "ask_strategy", "expect_no_entity": true},
+  {"id": "v-str-02", "text": "¿Entramos ya o seguimos en pista?", "expected_intent": "ask_strategy", "expect_no_entity": true},
+  {"id": "v-str-03", "text": "¿Conviene parar en la próxima vuelta?", "expected_intent": "ask_strategy", "expect_no_entity": true},
+  {"id": "v-str-04", "text": "¿Aguantamos fuera hasta el final?", "expected_intent": "ask_strategy", "expect_no_entity": true},
+
+  {"id": "v-fue-01", "text": "¿Cuánta gasolina llevamos?", "expected_intent": "fuel_status", "expect_no_entity": true},
+  {"id": "v-fue-02", "text": "¿Nos alcanza el combustible para acabar?", "expected_intent": "fuel_status", "expect_no_entity": true},
+  {"id": "v-fue-03", "text": "¿Qué consumo tenemos por vuelta?", "expected_intent": "fuel_status", "expect_no_entity": true},
+  {"id": "v-fue-04", "text": "¿Vamos bien de carburante?", "expected_intent": "fuel_status", "expect_no_entity": true},
+
+  {"id": "v-tyr-01", "text": "¿Cuánto resisten los neumáticos?", "expected_intent": "tyre_life", "expect_no_entity": true},
+  {"id": "v-tyr-02", "text": "¿Las gomas aguantan hasta el final?", "expected_intent": "tyre_life", "expect_no_entity": true},
+  {"id": "v-tyr-03", "text": "¿Están gastados ya?", "expected_intent": "tyre_life", "expect_no_entity": true},
+  {"id": "v-tyr-04", "text": "¿Qué desgaste acumulan?", "expected_intent": "tyre_life", "expect_no_entity": true},
+
+  {"id": "v-pac-01", "text": "¿Por qué somos tan lentos?", "expected_intent": "pace_diagnosis", "expect_no_entity": true},
+  {"id": "v-pac-02", "text": "¿Dónde estamos cediendo tiempo?", "expected_intent": "pace_diagnosis", "expect_no_entity": true},
+  {"id": "v-pac-03", "text": "¿Qué nos está frenando?", "expected_intent": "pace_diagnosis", "expect_no_entity": true},
+  {"id": "v-pac-04", "text": "¿Por qué ha bajado el ritmo?", "expected_intent": "pace_diagnosis", "expect_no_entity": true},
+
+  {"id": "v-cmp-01", "text": "¿Quién es más rápido, Leclerc o yo?", "expected_intent": "compare_driver", "expected_car_index": 5},
+  {"id": "v-cmp-02", "text": "¿Voy delante de Norris?", "expected_intent": "compare_driver", "expected_car_index": 3},
+  {"id": "v-cmp-03", "text": "¿Cómo se compara mi ritmo con el de Sainz?", "expected_intent": "compare_driver", "expected_car_index": 1},
+  {"id": "v-cmp-04", "text": "¿Estoy por delante de Russell?", "expected_intent": "compare_driver", "expected_car_index": 6},
+
+  {"id": "v-gap-01", "text": "¿Cuántos segundos me saca el de delante?", "expected_intent": "gap_status", "expected_car_index": 4},
+  {"id": "v-gap-02", "text": "¿Qué ventaja tiene Verstappen?", "expected_intent": "gap_status", "expected_car_index": 2},
+  {"id": "v-gap-03", "text": "¿Está cerca el de atrás?", "expected_intent": "gap_status", "expected_car_index": 5},
+  {"id": "v-gap-04", "text": "¿A qué distancia rueda Norris?", "expected_intent": "gap_status", "expected_car_index": 3},
+
+  {"id": "v-dmg-01", "text": "¿El coche está tocado?", "expected_intent": "damage_status", "expect_no_entity": true},
+  {"id": "v-dmg-02", "text": "¿Tenemos alguna pieza rota?", "expected_intent": "damage_status", "expect_no_entity": true},
+  {"id": "v-dmg-03", "text": "¿Ha sufrido golpes el monoplaza?", "expected_intent": "damage_status", "expect_no_entity": true},
+  {"id": "v-dmg-04", "text": "¿Sigue intacto el chasis?", "expected_intent": "damage_status", "expect_no_entity": true},
+
+  {"id": "v-wth-01", "text": "¿Van a caer chubascos?", "expected_intent": "weather_forecast", "expect_no_entity": true},
+  {"id": "v-wth-02", "text": "¿Hay riesgo de tormenta?", "expected_intent": "weather_forecast", "expect_no_entity": true},
+  {"id": "v-wth-03", "text": "¿El asfalto está mojado?", "expected_intent": "weather_forecast", "expect_no_entity": true},
+  {"id": "v-wth-04", "text": "¿Qué temperatura marcan el aire y la pista?", "expected_intent": "weather_forecast", "expect_no_entity": true},
+
+  {"id": "v-und-01", "text": "¿El undercut nos sirve contra Alonso?", "expected_intent": "pit_undercut", "expected_car_index": 8},
+  {"id": "v-und-02", "text": "¿Conviene undercut a Piastri?", "expected_intent": "pit_undercut", "expected_car_index": 7},
+  {"id": "v-und-03", "text": "¿Cuánto ganaríamos haciendo undercut al de delante?", "expected_intent": "pit_undercut", "expected_car_index": 4}
+]

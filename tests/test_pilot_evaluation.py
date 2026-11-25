@@ -529,3 +529,22 @@ def test_holdout_dataset_is_separate_and_evaluable() -> None:
     report = run_pilot_evaluation(holdout)
     assert report["dataset"].endswith("pilot_questions_holdout")
     assert report["counts"]["in_scope"] == len(holdout.in_scope)
+
+
+def test_validation_dataset_is_separate_from_training_and_development_sets() -> None:
+    validation = load_pilot_dataset(
+        Path(__file__).parent / "fixtures" / "pilot_questions_validation"
+    )
+    development = load_pilot_dataset(Path(__file__).parent / "fixtures" / "pilot_questions_holdout")
+    training = load_pilot_dataset(DEFAULT_PILOT_DATASET)
+
+    assert len(validation.in_scope) >= 30
+    assert len(validation.out_of_scope) >= 10
+    assert len(validation.ambiguous) >= 5
+    assert len(validation.dialogue_sequences) >= 3
+    used = {case.text for case in training.in_scope} | {case.text for case in development.in_scope}
+    assert not {case.text for case in validation.in_scope} & used
+
+    report = run_pilot_evaluation(validation)
+    assert report["dataset"].endswith("pilot_questions_validation")
+    assert report["counts"]["in_scope"] == len(validation.in_scope)
