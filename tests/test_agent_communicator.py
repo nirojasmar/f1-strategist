@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import json
 import struct
 import threading
+import time
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Literal
 
@@ -25,9 +28,11 @@ from f1_strategist.agent.types import (
     LLMRequest,
     LLMResponse,
     LLMStatus,
+    MessageKind,
     MessageSource,
     ValidationResult,
 )
+from f1_strategist.agent.validator import ResponseValidator
 from f1_strategist.capture import CapturedPacket, CaptureWriter
 from f1_strategist.config import AgentConfig, AppConfig, LLMConfig
 from f1_strategist.events.types import (
@@ -39,8 +44,17 @@ from f1_strategist.events.types import (
     Fact,
 )
 from f1_strategist.metrics.engine import MetricsSnapshot
+from f1_strategist.metrics.types import Quality
 from f1_strategist.packets import HEADER_SIZE
 from f1_strategist.parser import ParsedPacket
+from f1_strategist.pilot.types import (
+    AnswerKind,
+    FactKind,
+    Intent,
+    PilotAnswer,
+    ToolFact,
+    ToolResult,
+)
 from f1_strategist.playback import PlaybackSession
 from f1_strategist.race_state import RaceState, RaceStateSnapshot
 from f1_strategist.session import CaptureSession
@@ -73,6 +87,7 @@ class FakeClient:
 class FakeBuilder:
     def __init__(self) -> None:
         self.calls = 0
+        self.question_calls = 0
 
     def build_alert(
         self,
@@ -89,6 +104,29 @@ class FakeBuilder:
             kind=ContextKind.ALERT,
             language="es",
             alert={"message_key": alert.message_key, "recent": list(recent)},
+        )
+
+    def build_question(
+        self,
+        question: str,
+        *,
+        state: RaceStateSnapshot,
+        metrics: MetricsSnapshot | None = None,
+        strategy: StrategySnapshot | None = None,
+        events: EventsSnapshot | None = None,
+        recent: Sequence[str] = (),
+        tool_facts: Sequence[ToolFact] = (),
+        previous_answer: PilotAnswer | None = None,
+    ) -> ContextPayload:
+        self.question_calls += 1
+        return ContextPayload(
+            kind=ContextKind.QUESTION,
+            language="es",
+            alert={"priority": EventPriority.STRATEGIC.value},
+            constraints={"question": question},
+            recent_messages=tuple(recent),
+            tool_facts=tuple(fact.to_dict() for fact in tool_facts),
+            previous_answer=None if previous_answer is None else previous_answer.to_dict(),
         )
 
 
@@ -119,15 +157,18 @@ class FakeValidator:
         self.should_speak = should_speak
         self.calls = 0
 
-    def validate(self, text: str, context: ContextPayload, alert: AgentAlert) -> ValidationResult:
+    def validate(
+        self, text: str, context: ContextPayload, alert: AgentAlert | None = None
+    ) -> ValidationResult:
         self.calls += 1
         if not self.valid:
             return ValidationResult(valid=False, errors=("bad_fact",))
+        question = context.constraints.get("question", "pregunta")
         reply = LLMReply(
             should_speak=self.should_speak,
-            priority=alert.priority,
+            priority=alert.priority if alert is not None else EventPriority.STRATEGIC,
             language="es",
-            message=f"LLM {alert.alert_id}",
+            message=f"LLM {alert.alert_id if alert is not None else question}",
         )
         return ValidationResult(valid=True, reply=reply)
 
@@ -169,9 +210,12 @@ def _signal(event_id: str = "event1") -> EventSignal:
     )
 
 
-def _sources(observed_at: float = 10.0) -> AlertSources:
+def _sources(observed_at: float = 10.0, *, lap: int | None = None) -> AlertSources:
+    state = RaceState().snapshot()
+    if lap is not None:
+        state = replace(state, current_lap=lap)
     return AlertSources(
-        state=RaceState().snapshot(),
+        state=state,
         metrics=MetricsSnapshot(),
         strategy=StrategySnapshot(),
         events=EventsSnapshot(),
@@ -179,15 +223,44 @@ def _sources(observed_at: float = 10.0) -> AlertSources:
     )
 
 
+def _answer(
+    query_id: str = "q1",
+    *,
+    intent: Intent = Intent.ASK_STRATEGY,
+    kind: AnswerKind = AnswerKind.ANSWER,
+    text: str = "Te quedan 8 vueltas de neumático.",
+    facts: tuple[ToolFact, ...] = (),
+) -> PilotAnswer:
+    return PilotAnswer(
+        query_id=query_id,
+        intent=intent,
+        kind=kind,
+        text=text,
+        message_key="pilot.tyre_life",
+        tool_result=ToolResult(intent=intent, quality=Quality.OK, facts=facts),
+    )
+
+
+def _estimated_life() -> ToolFact:
+    return ToolFact(
+        name="tyre_life_laps",
+        value=8,
+        unit="lap",
+        kind=FactKind.ESTIMATED,
+        quality=Quality.OK,
+    )
+
+
 def _communicator(
     client: FakeClient | None = None,
     *,
     mode: AgentMode = "live",
-    validator: FakeValidator | None = None,
+    validator: FakeValidator | ResponseValidator | None = None,
     critical_uses_llm: bool = False,
     fallback_on_failure: Literal["template", "drop"] = "template",
     queue_capacity: int = 64,
     registry: Any = None,
+    clock: Any = time.monotonic,
 ) -> AgentCommunicator:
     return AgentCommunicator(
         AgentConfig(
@@ -203,6 +276,7 @@ def _communicator(
         template_renderer=_renderer,
         mode=mode,
         queue_capacity=queue_capacity,
+        clock=clock,
     )
 
 
@@ -614,3 +688,183 @@ def test_playback_template_messages_are_invariant_to_speed(
 
     assert results[0]
     assert results[0] == results[1] == results[2]
+
+
+def _reply_client(message: str, *, used: tuple[str, ...] = ()) -> FakeClient:
+    text = json.dumps(
+        {
+            "should_speak": True,
+            "priority": "strategic",
+            "language": "es",
+            "message": message,
+            "reason": "",
+            "used_facts": list(used),
+        }
+    )
+    return FakeClient(LLMResponse(text=text))
+
+
+def test_followup_emits_a_followup_message() -> None:
+    client = FakeClient()
+    communicator = _communicator(client)
+    communicator.start()
+    try:
+        communicator.submit_followup(_answer(facts=(_estimated_life(),)), _sources(lap=3))
+        assert communicator.wait_idle(timeout=5.0)
+    finally:
+        communicator.stop()
+
+    snapshot = communicator.snapshot()
+    assert len(snapshot.messages) == 1
+    message = snapshot.messages[0]
+    assert message.source is MessageSource.LLM
+    assert message.kind == MessageKind.FOLLOWUP.value
+    assert message.query_id == "q1"
+    assert message.alert_id is None
+    assert message.priority is EventPriority.STRATEGIC
+    assert snapshot.counters["followup:used"] == 1
+    assert len(client.calls) == 1
+
+
+def test_followup_is_skipped_without_a_model() -> None:
+    client = FakeClient()
+    communicator = _communicator(client, mode="template")
+    communicator.submit_followup(_answer(), _sources(lap=3))
+
+    snapshot = communicator.snapshot()
+    assert client.calls == []
+    assert not snapshot.messages
+    assert snapshot.counters["followup:skipped"] == 1
+
+
+def test_followup_is_skipped_for_non_explanatory_intents() -> None:
+    client = FakeClient()
+    communicator = _communicator(client)
+    communicator.submit_followup(_answer(intent=Intent.GAP_STATUS), _sources(lap=3))
+
+    snapshot = communicator.snapshot()
+    assert client.calls == []
+    assert snapshot.counters["followup:skipped"] == 1
+
+
+def test_followup_with_an_invented_number_is_invalid() -> None:
+    client = _reply_client("Quedan 13 vueltas.")
+    communicator = _communicator(
+        client, validator=ResponseValidator(AgentConfig()), mode="recorded"
+    )
+    communicator.submit_followup(_answer(facts=(_estimated_life(),)), _sources(lap=3))
+
+    snapshot = communicator.snapshot()
+    assert not snapshot.messages
+    assert snapshot.counters["followup:invalid"] == 1
+    calls, _ = communicator.drain_records()
+    assert calls[0].kind == "followup"
+    assert calls[0].validation_valid is False
+
+
+def test_followup_with_an_estimate_without_caution_is_invalid() -> None:
+    client = _reply_client("Quedan 8 vueltas.", used=("tyre_life_laps",))
+    communicator = _communicator(
+        client, validator=ResponseValidator(AgentConfig()), mode="recorded"
+    )
+    communicator.submit_followup(_answer(facts=(_estimated_life(),)), _sources(lap=3))
+
+    assert not communicator.snapshot().messages
+    assert communicator.snapshot().counters["followup:invalid"] == 1
+    calls, _ = communicator.drain_records()
+    assert "estimate_without_caution" in calls[0].validation_errors
+
+
+def test_followup_with_a_hedged_estimate_is_valid() -> None:
+    client = _reply_client("Quedan aproximadamente 8 vueltas.", used=("tyre_life_laps",))
+    communicator = _communicator(
+        client, validator=ResponseValidator(AgentConfig()), mode="recorded"
+    )
+    communicator.submit_followup(_answer(facts=(_estimated_life(),)), _sources(lap=3))
+
+    snapshot = communicator.snapshot()
+    assert len(snapshot.messages) == 1
+    assert snapshot.counters["followup:used"] == 1
+
+
+def test_followup_expires_after_the_timeout() -> None:
+    client = FakeClient(blocking=True)
+    now = [100.0]
+    communicator = _communicator(client, clock=lambda: now[0])
+    communicator.start()
+    try:
+        communicator.submit_followup(_answer(), _sources(lap=3))
+        assert client.started.wait(timeout=5.0)
+        now[0] += 13.0
+        client.release.set()
+        assert communicator.wait_idle(timeout=5.0)
+    finally:
+        client.release.set()
+        communicator.stop()
+
+    snapshot = communicator.snapshot()
+    assert not snapshot.messages
+    assert snapshot.counters["followup:expired"] == 1
+
+
+def test_followup_is_not_emitted_after_a_lap_change() -> None:
+    client = FakeClient(blocking=True)
+    communicator = _communicator(client)
+    communicator.start()
+    try:
+        communicator.submit_followup(_answer(), _sources(lap=3))
+        assert client.started.wait(timeout=5.0)
+        communicator.observe(EventsSnapshot(), _sources(observed_at=20.0, lap=4))
+        client.release.set()
+        assert communicator.wait_idle(timeout=5.0)
+    finally:
+        client.release.set()
+        communicator.stop()
+
+    snapshot = communicator.snapshot()
+    assert not snapshot.messages
+    assert snapshot.counters["followup:expired"] == 1
+
+
+def test_critical_does_not_wait_for_a_followup() -> None:
+    client = FakeClient(blocking=True)
+    communicator = _communicator(client)
+    communicator.start()
+    try:
+        communicator.submit_followup(_answer(), _sources(lap=3))
+        assert client.started.wait(timeout=5.0)
+        communicator.submit(
+            _alert("critical1", priority=EventPriority.CRITICAL), _sources(observed_at=11.0)
+        )
+        assert [message.text for message in communicator.snapshot().messages] == ["T:event.test"]
+        client.release.set()
+        assert communicator.wait_idle(timeout=5.0)
+    finally:
+        client.release.set()
+        communicator.stop()
+
+    snapshot = communicator.snapshot()
+    assert len(snapshot.messages) == 1
+    assert snapshot.messages[0].source is MessageSource.TEMPLATE
+    assert snapshot.messages[0].alert_id == "critical1"
+    assert snapshot.counters["followup:expired"] == 1
+
+
+def test_second_queued_followup_replaces_the_first() -> None:
+    client = FakeClient(blocking=True)
+    communicator = _communicator(client)
+    communicator.start()
+    try:
+        communicator.submit_followup(_answer("q1"), _sources(lap=3))
+        assert client.started.wait(timeout=5.0)
+        communicator.submit_followup(_answer("q2", text="Rueda dos."), _sources(lap=3))
+        communicator.submit_followup(_answer("q3", text="Rueda tres."), _sources(lap=3))
+        client.release.set()
+        assert communicator.wait_idle(timeout=5.0)
+    finally:
+        client.release.set()
+        communicator.stop()
+
+    snapshot = communicator.snapshot()
+    assert [message.query_id for message in snapshot.messages] == ["q1", "q3"]
+    assert snapshot.counters["followup:skipped"] == 1

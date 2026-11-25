@@ -16,10 +16,11 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from ..config import AgentConfig, AppConfig
+from ..config import AgentConfig, AppConfig, PilotConfig
 from ..events.types import AgentAlert, EventPriority
+from ..pilot.types import FactKind
 from .templates import fact_unit
-from .types import ContextPayload, LLMReply, ValidationResult
+from .types import ContextKind, ContextPayload, LLMReply, ValidationResult
 
 
 class ValidationIssue(StrEnum):
@@ -37,6 +38,7 @@ class ValidationIssue(StrEnum):
     FORMAT_INVALID = "format_invalid"
     IMPERATIVE_PHRASE = "imperative_phrase"
     REPEATED_MESSAGE = "repeated_message"
+    ESTIMATE_WITHOUT_CAUTION = "estimate_without_caution"
 
 
 _NUMBER_RE = re.compile(r"(?<![.,])[-+−]?\d+(?:[.,]\d+)?")
@@ -139,10 +141,16 @@ _LAP_FACTS = frozenset(
 class ResponseValidator:
     """Valida el texto crudo del modelo contra el contexto y la alerta."""
 
-    def __init__(self, config: AppConfig | AgentConfig | None = None) -> None:
+    def __init__(
+        self,
+        config: AppConfig | AgentConfig | None = None,
+        *,
+        pilot: PilotConfig | None = None,
+    ) -> None:
         if isinstance(config, AppConfig):
             config = config.agent
         self._config = config if config is not None else AgentConfig()
+        self._pilot = pilot if pilot is not None else PilotConfig()
 
     def validate(
         self,
@@ -177,7 +185,12 @@ class ResponseValidator:
             errors.append(ValidationIssue.EMPTY_MESSAGE)
             return ValidationResult(valid=False, errors=tuple(errors), reply=reply)
 
-        if len(message.split()) > self._config.max_words or len(message) > self._config.max_chars:
+        max_words = (
+            self._pilot.followup_max_words
+            if context.kind is ContextKind.QUESTION
+            else self._config.max_words
+        )
+        if len(message.split()) > max_words or len(message) > self._config.max_chars:
             errors.append(ValidationIssue.TOO_LONG)
         if "\n" in message or "\r" in message or _MARKDOWN_RE.search(message):
             errors.append(ValidationIssue.FORMAT_INVALID)
@@ -186,6 +199,12 @@ class ResponseValidator:
 
         for code in _number_errors(message, _numbers(context, alert)):
             errors.append(code)
+
+        if _caution_facts(context, reply.used_facts) and not _has_hedge(
+            message, self._pilot.hedge_words
+        ):
+            # Una estimación o recomendación sin cautela se lee como dato medido.
+            errors.append(ValidationIssue.ESTIMATE_WITHOUT_CAUTION)
 
         if _has_high_uncertainty(context.uncertainties):
             folded = _collapse(message)
@@ -233,6 +252,9 @@ def _fact_names(context: ContextPayload, alert: AgentAlert | None) -> set[str]:
     for block in (context.alert, context.situation, context.strategy, context.metrics):
         if isinstance(block, Mapping):
             _collect_names(block, names)
+    for item in context.tool_facts:
+        if isinstance(item, Mapping) and item.get("name") is not None:
+            names.add(str(item["name"]))
     return names
 
 
@@ -281,6 +303,14 @@ def _numbers(context: ContextPayload, alert: AgentAlert | None) -> list[_Observa
     for block in (context.alert, context.situation, context.strategy, context.metrics):
         if isinstance(block, Mapping):
             _collect_numbers(block, observations, seen)
+    for item in context.tool_facts:
+        if not isinstance(item, Mapping):
+            continue
+        name = item.get("name")
+        number = _as_number(item.get("value"))
+        if name is not None and number is not None:
+            unit = item.get("unit") if isinstance(item.get("unit"), str) else None
+            _store_number(observations, seen, str(name), number, _canonical_unit(unit))
     return observations
 
 
@@ -454,6 +484,22 @@ def _has_high_uncertainty(uncertainties: tuple[str, ...]) -> bool:
         if tokens & {"stale", "insufficient"}:
             return True
     return False
+
+
+def _caution_facts(context: ContextPayload, used: tuple[str, ...]) -> set[str]:
+    """Hechos usados que son estimación o recomendación y exigen cautela."""
+    kinds = {
+        str(item.get("name")): str(item.get("kind"))
+        for item in context.tool_facts
+        if isinstance(item, Mapping) and item.get("name") is not None
+    }
+    cautious = {FactKind.ESTIMATED.value, FactKind.RECOMMENDED.value}
+    return {name for name in used if kinds.get(name) in cautious}
+
+
+def _has_hedge(message: str, hedge_words: tuple[str, ...]) -> bool:
+    folded = message.casefold()
+    return any(word.casefold() in folded for word in hedge_words if word.strip())
 
 
 def _collapse(text: str) -> str:

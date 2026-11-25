@@ -153,7 +153,7 @@ def test_evaluation_selects_the_prompt_from_the_context_kind() -> None:
 
     run_evaluation(client, [case], LLMConfig(model="fake"))
 
-    assert "El piloto hace una pregunta" in client.requests[0].messages[1].content
+    assert "aclárala o contextualízala" in client.requests[0].messages[1].content
 
 
 def test_case_language_must_match_the_context_language() -> None:

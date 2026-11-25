@@ -17,9 +17,10 @@ from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 from urllib.parse import urlsplit
 
-from ..config import AgentConfig, LLMConfig
+from ..config import AgentConfig, LLMConfig, PilotConfig
 from ..events.types import AgentAlert, EventPhase, EventPriority, EventsSnapshot, Fact
 from ..metrics.engine import MetricsSnapshot
+from ..pilot.types import AnswerKind, PilotAnswer, ToolFact
 from ..race_state import RaceStateSnapshot
 from ..strategy.types import StrategySnapshot
 from .context import ContextBuilder as DefaultContextBuilder
@@ -39,6 +40,7 @@ from .types import (
     LLMRequest,
     LLMResponse,
     LLMStatus,
+    MessageKind,
     MessageSource,
     ValidationResult,
     wire_reply_schema,
@@ -100,8 +102,25 @@ class ResponseValidator(Protocol):
     """Contrato de L5: valida la respuesta del modelo contra el contexto."""
 
     def validate(
-        self, text: str, context: ContextPayload, alert: AgentAlert
+        self, text: str, context: ContextPayload, alert: AgentAlert | None = None
     ) -> ValidationResult: ...
+
+
+class QuestionBuilder(Protocol):
+    """Contrato de Q11: contexto de seguimiento con hechos y respuesta previa."""
+
+    def build_question(
+        self,
+        question: str,
+        *,
+        state: RaceStateSnapshot,
+        metrics: MetricsSnapshot | None = None,
+        strategy: StrategySnapshot | None = None,
+        events: EventsSnapshot | None = None,
+        recent: Sequence[str] = (),
+        tool_facts: Sequence[ToolFact] = (),
+        previous_answer: PilotAnswer | None = None,
+    ) -> ContextPayload: ...
 
 
 TemplateRenderer = Callable[[str, tuple[Fact, ...], str], str]
@@ -135,6 +154,19 @@ class _Pending:
 
 
 @dataclass(frozen=True, slots=True)
+class _Followup:
+    """Seguimiento encolado: respuesta previa, fuentes y caducidad."""
+
+    answer: PilotAnswer
+    sources: AlertSources
+    context: ContextPayload
+    cancel: threading.Event
+    epoch: int
+    lap: int | None
+    submitted_at: float
+
+
+@dataclass(frozen=True, slots=True)
 class _Generation:
     text: str = ""
     error: FallbackReason | None = None
@@ -161,9 +193,11 @@ class AgentCommunicator:
         mode: AgentMode | None = None,
         queue_capacity: int = 64,
         clock: Callable[[], float] = time.monotonic,
+        pilot: PilotConfig | None = None,
     ) -> None:
         self.agent = agent
         self.llm = llm or LLMConfig()
+        self._pilot = pilot if pilot is not None else PilotConfig()
         self._client = client
         self._builder = builder
         self._registry = registry
@@ -176,6 +210,8 @@ class AgentCommunicator:
         self._condition = threading.Condition()
         self._queue: deque[_Pending] = deque()
         self._in_flight: _Pending | None = None
+        self._followup: _Followup | None = None
+        self._followup_in_flight: _Followup | None = None
         self._messages: deque[AgentMessage] = deque(maxlen=max(1, agent.recent_messages))
         self._call_records: list[LLMCallRecord] = []
         self._message_records: list[AgentMessage] = []
@@ -222,6 +258,7 @@ class AgentCommunicator:
             in_flight = self._in_flight
             if in_flight is not None:
                 in_flight.cancel.set()
+            self._cancel_followup_locked()
             self._queue.clear()
             self._condition.notify_all()
             thread = self._thread
@@ -235,7 +272,12 @@ class AgentCommunicator:
         """Espera a que no queden alertas pendientes ni generación en vuelo."""
 
         def idle() -> bool:
-            return not self._queue and self._in_flight is None
+            return (
+                not self._queue
+                and self._in_flight is None
+                and self._followup is None
+                and self._followup_in_flight is None
+            )
 
         with self._condition:
             return self._condition.wait_for(idle, timeout=timeout)
@@ -266,6 +308,7 @@ class AgentCommunicator:
                 self._closed_events.clear()
             current = {alert.alert_id for alert in events.alerts}
             self._seen.intersection_update(current)
+            self._expire_followup_for_lap_locked(sources)
         for alert in events.alerts:
             with self._condition:
                 if alert.alert_id in self._seen:
@@ -282,6 +325,10 @@ class AgentCommunicator:
                 self._superseded.add(alert.supersedes)
             if sources is not None:
                 self._now = sources.observed_at
+                self._expire_followup_for_lap_locked(sources)
+            if alert.priority is EventPriority.CRITICAL:
+                # Un crítico nunca espera detrás de un seguimiento.
+                self._cancel_followup_locked()
 
         if alert.priority is EventPriority.CRITICAL and not self.agent.critical_uses_llm:
             self._emit_template(alert, sources, reason=None, latency_s=0.0)
@@ -342,6 +389,99 @@ class AgentCommunicator:
             self._queue.append(pending)
             self._condition.notify_all()
 
+    def submit_followup(self, answer: PilotAnswer, sources: AlertSources) -> None:
+        """Encola el seguimiento de una pregunta sin bloquear al llamador."""
+        if not self._followup_enabled(answer):
+            with self._condition:
+                self._count_locked("followup:skipped")
+            return
+        if self._mode == "template" or self._client is None:
+            with self._condition:
+                self._count_locked("followup:skipped")
+            return
+        context = self._build_followup_context(answer, sources)
+        if context is None:
+            with self._condition:
+                self._count_locked("followup:skipped")
+            return
+        pending = _Followup(
+            answer=answer,
+            sources=sources,
+            context=context,
+            cancel=threading.Event(),
+            epoch=self._epoch,
+            lap=sources.state.current_lap,
+            submitted_at=self._clock(),
+        )
+        if self._mode == "recorded":
+            self._process_followup(pending)
+            return
+        with self._condition:
+            if pending.epoch != self._epoch:
+                self._count_locked("followup:expired")
+                return
+            if self._followup is not None:
+                # Solo se guarda un seguimiento: el más reciente sustituye al anterior.
+                self._followup.cancel.set()
+                self._count_locked("followup:skipped")
+            self._followup = pending
+            self._condition.notify_all()
+
+    def _followup_enabled(self, answer: PilotAnswer) -> bool:
+        return (
+            self._pilot.enabled
+            and self._pilot.llm_followup
+            and answer.kind is AnswerKind.ANSWER
+            and answer.intent.value in self._pilot.llm_followup_intents
+        )
+
+    def _build_followup_context(
+        self, answer: PilotAnswer, sources: AlertSources
+    ) -> ContextPayload | None:
+        build = getattr(self._builder, "build_question", None)
+        if build is None:
+            return None
+        with self._condition:
+            recent = tuple(message.text for message in self._messages)
+        tool_result = answer.tool_result
+        try:
+            return build(
+                answer.text,
+                state=sources.state,
+                metrics=sources.metrics,
+                strategy=sources.strategy,
+                events=sources.events,
+                recent=recent,
+                tool_facts=tuple(tool_result.facts) if tool_result is not None else (),
+                previous_answer=answer,
+            )
+        except Exception as exc:
+            with self._condition:
+                self._error = f"{type(exc).__name__}: {exc}"
+            return None
+
+    def _expire_followup_for_lap_locked(self, sources: AlertSources) -> None:
+        """Un seguimiento pertenece a una vuelta: al cambiarla ya no procede."""
+        lap = sources.state.current_lap
+        pending = self._followup
+        if pending is not None and lap != pending.lap:
+            pending.cancel.set()
+            self._followup = None
+            self._count_locked("followup:expired")
+        in_flight = self._followup_in_flight
+        if in_flight is not None and lap != in_flight.lap:
+            in_flight.cancel.set()
+
+    def _cancel_followup_locked(self) -> None:
+        pending = self._followup
+        if pending is not None:
+            pending.cancel.set()
+            self._followup = None
+            self._count_locked("followup:expired")
+        in_flight = self._followup_in_flight
+        if in_flight is not None:
+            in_flight.cancel.set()
+
     def cancel_obsolete(self, events: EventsSnapshot, now: float) -> None:
         """Marca obsoletas las generaciones de eventos cerrados o demasiado viejas."""
         with self._condition:
@@ -399,6 +539,7 @@ class AgentCommunicator:
             in_flight = self._in_flight
             if in_flight is not None:
                 in_flight.cancel.set()
+            self._cancel_followup_locked()
             self._messages.clear()
             self._call_records.clear()
             self._message_records.clear()
@@ -422,18 +563,28 @@ class AgentCommunicator:
     def _run(self) -> None:
         while True:
             with self._condition:
-                while not self._stopping and not self._queue:
+                while not self._stopping and not self._queue and self._followup is None:
                     wait_s = self._health_wait_locked()
                     self._condition.wait(timeout=wait_s)
-                    if self._stopping or self._queue:
+                    if self._stopping or self._queue or self._followup is not None:
                         break
                     if self._health_due_locked():
                         break
                 if self._stopping:
                     return
-                pending = self._queue.popleft() if self._queue else None
-                if pending is not None:
-                    self._in_flight = pending
+                followup = self._followup
+                pending: _Pending | None = None
+                if followup is not None:
+                    # Un seguimiento va antes que cualquier alerta no crítica.
+                    self._followup = None
+                    self._followup_in_flight = followup
+                else:
+                    pending = self._queue.popleft() if self._queue else None
+                    if pending is not None:
+                        self._in_flight = pending
+            if followup is not None:
+                self._process_followup(followup)
+                continue
             if pending is None:
                 self.refresh_health()
                 continue
@@ -574,7 +725,190 @@ class AgentCommunicator:
                     self._in_flight = None
                 self._condition.notify_all()
 
+    def _process_followup(self, pending: _Followup) -> None:
+        generation: _Generation | None = None
+        try:
+            with self._condition:
+                if self._followup_expired_locked(pending):
+                    self._count_locked("followup:expired")
+                    return
+            generation = self._generate_followup(pending)
+            with self._condition:
+                if self._followup_expired_locked(pending):
+                    self._count_locked("followup:expired")
+                    self._record_followup_locked(
+                        pending,
+                        generation,
+                        CallOutcome.DISCARDED_OBSOLETE,
+                        fallback_reason=FallbackReason.OBSOLETE,
+                    )
+                    return
+            if generation.error is not None:
+                with self._condition:
+                    self._count_locked("followup:skipped")
+                    self._record_followup_locked(
+                        pending, generation, CallOutcome.FALLBACK, fallback_reason=generation.error
+                    )
+                return
+            if not generation.text.strip() or self._validator is None:
+                with self._condition:
+                    self._count_locked("followup:invalid")
+                    self._record_followup_locked(
+                        pending,
+                        generation,
+                        CallOutcome.FALLBACK,
+                        fallback_reason=FallbackReason.VALIDATION_FAILED,
+                    )
+                return
+            result = self._validator.validate(generation.text, pending.context)
+            with self._condition:
+                if self._followup_expired_locked(pending):
+                    self._count_locked("followup:expired")
+                    self._record_followup_locked(
+                        pending,
+                        generation,
+                        CallOutcome.DISCARDED_OBSOLETE,
+                        fallback_reason=FallbackReason.OBSOLETE,
+                    )
+                    return
+                if result.valid and result.reply is not None and result.reply.should_speak:
+                    self._record_followup_locked(
+                        pending, generation, CallOutcome.USED, validation=result
+                    )
+                    self._emit_followup_locked(pending, result.reply, generation.latency_s)
+                    return
+                self._count_locked("followup:invalid")
+                self._record_followup_locked(
+                    pending,
+                    generation,
+                    CallOutcome.FALLBACK,
+                    validation=result,
+                    fallback_reason=FallbackReason.VALIDATION_FAILED,
+                )
+        except Exception as exc:
+            with self._condition:
+                if pending.epoch == self._epoch:
+                    self._error = f"{type(exc).__name__}: {exc}"
+            if generation is not None:
+                with self._condition:
+                    self._record_followup_locked(
+                        pending,
+                        generation,
+                        CallOutcome.FALLBACK,
+                        fallback_reason=FallbackReason.UNAVAILABLE,
+                        error=f"{type(exc).__name__}: {exc}",
+                    )
+        finally:
+            with self._condition:
+                if self._followup_in_flight is pending:
+                    self._followup_in_flight = None
+                self._condition.notify_all()
+
+    def _followup_expired_locked(self, pending: _Followup) -> bool:
+        return (
+            pending.cancel.is_set()
+            or pending.epoch != self._epoch
+            or self._clock() - pending.submitted_at >= self._pilot.followup_timeout_s
+        )
+
+    def _record_followup_locked(
+        self,
+        pending: _Followup,
+        generation: _Generation,
+        outcome: CallOutcome,
+        *,
+        validation: ValidationResult | None = None,
+        fallback_reason: FallbackReason | None = None,
+        error: str | None = None,
+    ) -> None:
+        if not generation.called or pending.epoch != self._epoch:
+            return
+        parameters = {
+            "temperature": self.llm.temperature,
+            "top_p": self.llm.top_p,
+            "max_tokens": self.llm.max_tokens,
+            "seed": self.llm.seed,
+            "stream": self.llm.stream,
+            "timeout_s": self._pilot.followup_timeout_s,
+        }
+        host = urlsplit(self.llm.endpoint).hostname or None
+        response = generation.response
+        reply = validation.reply if validation is not None else None
+        record = LLMCallRecord(
+            kind="followup",
+            model=self.llm.model,
+            outcome=outcome.value,
+            alert_id=None,
+            endpoint_host=host,
+            prompt_version=generation.prompt_version,
+            parameters_json=json.dumps(
+                parameters, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+            ),
+            context_hash=pending.context.context_hash,
+            context_json=pending.context.to_json() if self.agent.record_context else None,
+            response_text=generation.text or None,
+            reply_json=reply.to_json() if reply is not None else None,
+            validation_valid=validation.valid if validation is not None else None,
+            validation_errors=validation.errors if validation is not None else (),
+            fallback_reason=fallback_reason.value if fallback_reason is not None else None,
+            error=error if error is not None else generation.error_text,
+            ttft_s=response.ttft_s if response is not None else None,
+            total_s=response.total_s if response is not None else generation.latency_s,
+            prompt_tokens=response.prompt_tokens if response is not None else None,
+            completion_tokens=response.completion_tokens if response is not None else None,
+        )
+        self._call_records.append(record)
+
+    def _emit_followup_locked(self, pending: _Followup, reply: LLMReply, latency_s: float) -> None:
+        query_id = pending.answer.query_id
+        message = AgentMessage(
+            message_id=f"{query_id}:followup",
+            alert_id=None,
+            event_id=None,
+            priority=EventPriority.STRATEGIC,
+            language=reply.language or self.agent.language,
+            text=reply.message,
+            source=MessageSource.LLM,
+            used_facts=reply.used_facts,
+            lap=pending.lap or 0,
+            emitted_at=pending.sources.observed_at,
+            latency_s=latency_s,
+            llm_call_id=f"{query_id}:followup",
+            query_id=query_id,
+            kind=MessageKind.FOLLOWUP.value,
+        )
+        self._messages.append(message)
+        self._message_records.append(message)
+        self._count_locked("followup:used")
+        self._last_latency_s = latency_s
+        self._health = LLMHealth(
+            LLMStatus.AVAILABLE, self.llm.model, latency_s, checked_at=self._clock()
+        )
+
     def _generate(self, pending: _Pending) -> _Generation:
+        return self._generate_prompt(
+            pending.context,
+            ContextKind.ALERT,
+            pending.cancel,
+            timeout_s=self.agent.timeout_for(pending.alert.priority.value),
+        )
+
+    def _generate_followup(self, pending: _Followup) -> _Generation:
+        return self._generate_prompt(
+            pending.context,
+            ContextKind.QUESTION,
+            pending.cancel,
+            timeout_s=self._pilot.followup_timeout_s,
+        )
+
+    def _generate_prompt(
+        self,
+        context: ContextPayload,
+        kind: ContextKind,
+        cancel: threading.Event,
+        *,
+        timeout_s: float,
+    ) -> _Generation:
         assert self._client is not None
         started = self._clock()
         called = False
@@ -584,7 +918,7 @@ class AgentCommunicator:
                 if self._registry is not None
                 else DefaultPromptRegistry.load(self.agent.language)
             )
-            rendered = prompt_set.render(ContextKind.ALERT, pending.context)
+            rendered = prompt_set.render(kind, context)
             response_format = None
             if self.llm.structured_output != "none":
                 response_format = {
@@ -604,10 +938,10 @@ class AgentCommunicator:
                 stream=self.llm.stream,
                 response_format=response_format,
                 extra_body=dict(self.llm.extra_body),
-                timeout_s=self.agent.timeout_for(pending.alert.priority.value),
+                timeout_s=timeout_s,
             )
             called = True
-            response = self._client.generate(request, cancel=pending.cancel)
+            response = self._client.generate(request, cancel=cancel)
         except Exception as exc:
             return _Generation(
                 error=_reason_for_error(str(exc)),
@@ -881,7 +1215,11 @@ def _resolve_mode(mode: AgentMode | None, llm: LLMConfig, client: LLMClient | No
 
 
 def build_communicator(
-    agent: AgentConfig, llm: LLMConfig, *, mode: AgentMode | None = None
+    agent: AgentConfig,
+    llm: LLMConfig,
+    *,
+    mode: AgentMode | None = None,
+    pilot: PilotConfig | None = None,
 ) -> AgentCommunicator:
     """Compone el comunicador real respetando ``llm.enabled`` y el modo offline."""
     if mode == "recorded":
@@ -895,8 +1233,9 @@ def build_communicator(
         llm,
         client=client,
         builder=DefaultContextBuilder(agent),
-        validator=DefaultResponseValidator(agent),
+        validator=DefaultResponseValidator(agent, pilot=pilot),
         mode=mode,
+        pilot=pilot,
     )
 
 

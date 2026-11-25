@@ -16,6 +16,7 @@ from ..config import AgentConfig, AppConfig
 from ..events.types import AgentAlert, EventsSnapshot
 from ..metrics.engine import MetricsSnapshot
 from ..metrics.types import Quality
+from ..pilot.types import PilotAnswer, ToolFact
 from ..race_state import RaceStateSnapshot
 from ..strategy.types import StrategySnapshot
 from .types import AgentMessage, ContextKind, ContextPayload
@@ -210,6 +211,40 @@ def _recent_texts(recent: Sequence[AgentMessage | str], limit: int) -> list[str]
     return texts[-limit:]
 
 
+def _tool_facts_block(facts: Sequence[ToolFact]) -> list[dict[str, Any]]:
+    return [
+        {
+            "name": fact.name,
+            "value": _sanitize_value(fact.value),
+            "unit": fact.unit or "",
+            "kind": fact.kind.value,
+            "quality": fact.quality.value,
+        }
+        for fact in facts
+    ]
+
+
+def _tool_uncertainties(facts: Sequence[ToolFact]) -> list[str]:
+    uncertainties: list[str] = []
+    for fact in facts:
+        if fact.value is None:
+            uncertainties.append(f"missing:{fact.name}")
+        elif fact.quality is not Quality.OK:
+            uncertainties.append(f"{fact.quality.value}:{fact.name}")
+    return uncertainties
+
+
+def _previous_answer_block(answer: PilotAnswer | None) -> dict[str, Any] | None:
+    if answer is None:
+        return None
+    return {
+        "text": _sanitize(answer.text, _MAX_MESSAGE_CHARS),
+        "kind": answer.kind.value,
+        "intent": answer.intent.value,
+        "message_key": answer.message_key,
+    }
+
+
 class ContextBuilder:
     """Compone el ``ContextPayload`` de una alerta o de una pregunta del piloto."""
 
@@ -267,8 +302,10 @@ class ContextBuilder:
         strategy: StrategySnapshot | None = None,
         events: EventsSnapshot | None = None,
         recent: Sequence[AgentMessage | str] = (),
+        tool_facts: Sequence[ToolFact] = (),
+        previous_answer: PilotAnswer | None = None,
     ) -> ContextPayload:
-        """Contexto de una pregunta del piloto (contrato reservado a la Fase 7)."""
+        """Contexto de una pregunta del piloto, con los hechos de las herramientas."""
         lap = _lap(state, None)
         situation = _situation(state, lap)
         strategy_block, strategy_uncertainties = _strategy_block(strategy)
@@ -278,6 +315,7 @@ class ContextBuilder:
             *strategy_uncertainties,
             *metric_uncertainties,
             *_stale_uncertainties(None, events),
+            *_tool_uncertainties(tool_facts),
         ]
         constraints = {**self._constraints(), "question": _sanitize(question, _MAX_MESSAGE_CHARS)}
         return self._fit(
@@ -289,6 +327,8 @@ class ContextBuilder:
             uncertainties=uncertainties,
             recent=_recent_texts(recent, self._config.recent_messages),
             constraints=constraints,
+            tool_facts=_tool_facts_block(tool_facts),
+            previous_answer=_previous_answer_block(previous_answer),
         )
 
     def _constraints(self) -> dict[str, Any]:
@@ -309,6 +349,8 @@ class ContextBuilder:
         uncertainties: list[str],
         recent: list[str],
         constraints: dict[str, Any],
+        tool_facts: list[dict[str, Any]] | None = None,
+        previous_answer: dict[str, Any] | None = None,
     ) -> ContextPayload:
         """Recorta métricas (de menor a mayor relevancia) y luego mensajes viejos."""
         metric_items = list(metrics.items())
@@ -325,6 +367,8 @@ class ContextBuilder:
                 uncertainties=ordered_uncertainties,
                 recent_messages=tuple(recent_items),
                 constraints=constraints,
+                tool_facts=tuple(tool_facts or ()),
+                previous_answer=previous_answer,
             )
             if _estimate_tokens(payload) <= self._config.context_token_budget:
                 return payload
