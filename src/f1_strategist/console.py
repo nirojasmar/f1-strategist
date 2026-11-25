@@ -272,6 +272,7 @@ class _PilotConsole:
         self._future: Future[PilotAnswer] | None = None
         self._pending: str | None = None
         self._error: str | None = None
+        self._busy_fresh = False
 
     @property
     def pending_text(self) -> str | None:
@@ -286,16 +287,22 @@ class _PilotConsole:
             return
         if self._pending is not None:
             self._error = PILOT_INPUT_BUSY
+            self._busy_fresh = True
             return
         self._pending = text
         self._error = None
+        self._busy_fresh = False
         if self._executor is None:
             self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="pilot")
         self._future = self._executor.submit(self._session.ask_pilot, text)
 
     def poll(self) -> None:
         future = self._future
-        if future is None or not future.done():
+        if future is None:
+            if not self._busy_fresh:
+                self._error = None
+            return
+        if not future.done():
             return
         self._future = None
         self._pending = None
@@ -304,7 +311,14 @@ class _PilotConsole:
         except Exception:  # la consola no debe caerse por un módulo opcional
             self._error = PILOT_INPUT_ERROR
         else:
-            self._error = None
+            # El rechazo debe sobrevivir al menos a un render aunque la pregunta
+            # anterior termine justo después de enviar la segunda.
+            if not (self._error == PILOT_INPUT_BUSY and self._busy_fresh):
+                self._error = None
+
+    def mark_rendered(self) -> None:
+        """Confirma que el aviso de ocupado ya se mostró y puede caducar."""
+        self._busy_fresh = False
 
     def close(self) -> None:
         if self._executor is not None:
@@ -483,7 +497,7 @@ def run_console(
 
     def build() -> Group:
         pilot.poll()
-        return render(
+        view = render(
             cfg,
             session,
             pilot_pending=pilot.pending_text,
@@ -491,6 +505,8 @@ def run_console(
             pilot_input_warning=warning,
             pilot_error=pilot.error_text,
         )
+        pilot.mark_rendered()
+        return view
 
     try:
         with Live(build(), console=console, refresh_per_second=4) as live:

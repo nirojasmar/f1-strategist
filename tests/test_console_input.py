@@ -248,6 +248,10 @@ def test_pilot_console_shows_ack_while_ask_is_in_flight() -> None:
         pilot._future.result(timeout=5)
         pilot.poll()
         assert pilot.pending_text is None
+        assert pilot.error_text == PILOT_INPUT_BUSY
+
+        pilot.mark_rendered()
+        pilot.poll()
         assert pilot.error_text is None
     finally:
         pilot.close()

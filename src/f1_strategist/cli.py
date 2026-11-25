@@ -774,7 +774,7 @@ def _run_playback_console(
 
     def build() -> Group:
         pilot.poll()
-        return _render_playback(
+        view = _render_playback(
             cfg,
             session,
             pilot_pending=pilot.pending_text,
@@ -783,6 +783,8 @@ def _run_playback_console(
             pilot_error=pilot.error_text,
             pilot_help=PILOT_PLAY_HELP if keys.enabled else PILOT_PLAY_HELP_DISABLED,
         )
+        pilot.mark_rendered()
+        return view
 
     try:
         with Live(build(), console=console, refresh_per_second=4) as live:

@@ -163,7 +163,10 @@ class OfflineEventPipeline:
         )
 
     def _note_pilot_interaction(self, now: float) -> None:
-        self._event_engine.note_pilot_interaction(now)
+        self._event_engine.note_pilot_interaction(
+            now,
+            session_uid=self.race_snapshot().session.uid,
+        )
 
 
 @dataclass(frozen=True, slots=True)

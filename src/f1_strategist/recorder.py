@@ -7,6 +7,7 @@ import math
 import queue
 import threading
 import time
+from collections import Counter
 from collections.abc import Iterable, Mapping
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, replace
@@ -1666,27 +1667,61 @@ def ingest_capture(
     return _result_from_session(store, session, skipped=False, offline=offline)
 
 
+def _pilot_query_identity(row: StoredPilotQuery) -> tuple[object, ...]:
+    """Identidad estable de una pregunta almacenada, sin secuencia ni latencia."""
+    return (
+        row.t_sim_s,
+        row.query_id,
+        row.text,
+        row.language,
+        row.intent,
+        row.confidence,
+        row.entities_json,
+        row.clarification_json,
+        row.facts_json,
+        row.missing_json,
+        row.answer_text,
+        row.answer_kind,
+        row.message_key,
+        row.followup_status,
+        row.followup_message,
+    )
+
+
 def _append_pilot_queries(
     store: SessionStore,
     session: SessionInfo,
     exchanges: tuple[tuple[float, PilotExchange], ...],
     config: AppConfig,
 ) -> None:
-    """Añade preguntas de un guion a una sesión ya ingerida sin duplicarlas."""
-    if not exchanges or session.id is None or next(store.iter_pilot_queries(session.id), None):
+    """Añade a una sesión ya ingerida las preguntas que aún no estén guardadas."""
+    if not exchanges or session.id is None:
         return
-    rows = [
-        _stored_pilot_query(
+    existing = tuple(store.iter_pilot_queries(session.id))
+    remaining = Counter(_pilot_query_identity(row) for row in existing)
+    next_seq = max((row.seq for row in existing), default=0) + 1
+    rows: list[StoredPilotQuery] = []
+    for index, (observed_at, exchange) in enumerate(exchanges, start=1):
+        row = _stored_pilot_query(
             index,
             observed_at,
             exchange,
             record_text=config.pilot.record_text,
         )
-        for index, (observed_at, exchange) in enumerate(exchanges, start=1)
-    ]
+        identity = _pilot_query_identity(row)
+        if remaining[identity] > 0:
+            remaining[identity] -= 1
+            continue
+        rows.append(replace(row, seq=next_seq + len(rows)))
+    if not rows:
+        return
+    store.add_pilot_queries(session.id, rows)
+    if existing:
+        # La huella antigua no se puede reconstruir desde las filas guardadas;
+        # se conserva la existente en lugar de publicar una huella incompleta.
+        return
     fingerprint = PilotFingerprintAccumulator()
     fingerprint.add(exchange for _, exchange in exchanges)
-    store.add_pilot_queries(session.id, rows)
     store.update_session(
         session.id,
         replace(session, pilot_fingerprint=fingerprint.fingerprint),

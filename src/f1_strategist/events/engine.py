@@ -138,22 +138,23 @@ class EventEngine:
         self._evaluated_strategy_token: tuple[float, int | None, str | None] | None = None
         self._seen_state_events: set[RaceEvent] = set()
         self._pilot_lock = threading.Lock()
-        self._pending_pilot_interaction: float | None = None
+        self._pending_pilot_interaction: tuple[float, int | None] | None = None
 
     @property
     def config(self) -> EventsConfig:
         return self._config
 
-    def note_pilot_interaction(self, now: float) -> None:
+    def note_pilot_interaction(self, now: float, *, session_uid: int | None = None) -> None:
         """Registra una interacción sin tocar la compuerta desde otro hilo.
 
-        Solo conserva el instante más reciente; el consumidor lo aplica en
-        ``apply`` antes de evaluar, de modo que la compuerta sigue teniendo un
-        único escritor.
+        Solo conserva la interacción más reciente; el consumidor la aplica en
+        ``apply`` después de un posible reinicio, de modo que la compuerta sigue
+        teniendo un único escritor. La sesión permite descartar avisos de una
+        sesión anterior tras un cambio de ``session_uid``.
         """
         _validate_observed_at(now)
         with self._pilot_lock:
-            self._pending_pilot_interaction = now
+            self._pending_pilot_interaction = (now, session_uid)
 
     def apply(
         self,
@@ -175,15 +176,19 @@ class EventEngine:
         decisions: tuple[GateDecision, ...] = ()
         try:
             _validate_observed_at(observed_at)
+            lap = state.current_lap or 0
+            uid = state.session.uid
+            reset = self._needs_reset(uid, state.current_lap)
+            if reset:
+                self._reset(state, uid, state.current_lap, observed_at)
             with self._pilot_lock:
                 pending_interaction = self._pending_pilot_interaction
                 self._pending_pilot_interaction = None
             if pending_interaction is not None:
-                self._gate.note_pilot_interaction(pending_interaction)
-            lap = state.current_lap or 0
-            uid = state.session.uid
-            if self._needs_reset(uid, state.current_lap):
-                self._reset(state, uid, state.current_lap, observed_at)
+                interaction_at, interaction_uid = pending_interaction
+                # Un aviso de otra sesión no debe silenciar la sesión actual.
+                if interaction_uid is None or interaction_uid == uid:
+                    self._gate.note_pilot_interaction(interaction_at)
 
             new_events = self._consume_state_events(state.events)
             metrics_token = (
