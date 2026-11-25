@@ -223,6 +223,7 @@ class DefaultScriptResponder:
             drivers=drivers,
             dialogue=self._dialogue,
             cfg=pilot_cfg,
+            now=inputs.now,
         )
         normalized_query = PilotQuery(
             query_id=query_id,
@@ -400,8 +401,10 @@ class _ScriptCollector:
         strategy = self._strategy.snapshot()
 
         current_lap = _current_lap(state)
-        while self.pending and _step_matches(self.pending[0], current_lap, observed_at):
-            step = self.pending.popleft()
+        for step in tuple(self.pending):
+            if not _step_matches(step, current_lap, observed_at):
+                continue
+            self.pending.remove(step)
             inputs = ToolInputs(
                 state=state,
                 metrics=metrics,
@@ -410,6 +413,8 @@ class _ScriptCollector:
                 config=self._config.pilot,
                 now=observed_at,
                 profile=profile,
+                metrics_config=self._config.metrics,
+                strategy_config=self._config.strategy,
             )
             answer = self._responder.ask(step.text, inputs=inputs, source=self._source)
             answer = replace(answer, latency_s=None, followup_pending=False)

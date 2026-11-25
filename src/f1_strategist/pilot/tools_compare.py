@@ -22,14 +22,36 @@ _GAP_FACTS = (
 
 
 def _metric_inputs(inputs: ToolInputs) -> MetricInputs:
-    # shortcut: ToolInputs no trae MetricsConfig; se usan los umbrales por defecto.
     return MetricInputs(
         inputs.state,
         inputs.history,
-        MetricsConfig(),
+        inputs.metrics_config or MetricsConfig(),
         inputs.now,
         inputs.state.player_car_index or 0,
     )
+
+
+_UNRESOLVED_NOTES = {
+    "driver_retired": "pilot.driver_retired",
+    "driver_not_found": "pilot.driver_unknown",
+    "empty_reference": "pilot.driver_unknown",
+    "no_teammate": "pilot.driver_unknown",
+    "no_player": "pilot.driver_unknown",
+    "clarification_no_match": "pilot.driver_unknown",
+    "clarification_ambiguous": "pilot.driver_unknown",
+    "no_car_ahead": "pilot.no_car_ahead",
+    "no_car_behind": "pilot.no_car_behind",
+    "no_leader": "pilot.driver_unknown",
+    "no_last": "pilot.driver_unknown",
+}
+
+
+def unresolved_reference_note(routed: RoutedQuery) -> str | None:
+    """Traduce una referencia no resuelta a la plantilla que debe responder."""
+    for entity in routed.entities:
+        if entity.car_index is None and entity.reason is not None:
+            return _UNRESOLVED_NOTES.get(entity.reason, "pilot.driver_unknown")
+    return None
 
 
 def _rival_index(routed: RoutedQuery, player_index: int) -> int | None:
@@ -94,6 +116,15 @@ def compare_driver(routed: RoutedQuery, inputs: ToolInputs) -> ToolResult:
     """Compara al piloto con el rival indicado mediante la métrica de Fase 2."""
     metric_inputs = _metric_inputs(inputs)
     data_lap = inputs.state.current_lap
+    note = unresolved_reference_note(routed)
+    if note is not None:
+        return ToolResult(
+            Intent.COMPARE_DRIVER,
+            Quality.INSUFFICIENT,
+            missing=("compare.rival",),
+            data_lap=data_lap,
+            notes=(note,),
+        )
     rival_index = _rival_index(routed, metric_inputs.car_index)
     if rival_index is None:
         return ToolResult(
@@ -181,6 +212,15 @@ def compare_driver(routed: RoutedQuery, inputs: ToolInputs) -> ToolResult:
 
 def gap_status(routed: RoutedQuery, inputs: ToolInputs) -> ToolResult:
     """Publica los intervalos del piloto a partir de las métricas ya calculadas."""
+    note = unresolved_reference_note(routed)
+    if note is not None:
+        return ToolResult(
+            Intent.GAP_STATUS,
+            Quality.INSUFFICIENT,
+            missing=("gap.rival",),
+            data_lap=inputs.state.current_lap,
+            notes=(note,),
+        )
     facts: list[ToolFact] = []
     missing: list[str] = []
     stale = False

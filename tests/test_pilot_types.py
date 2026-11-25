@@ -166,7 +166,8 @@ def test_capture_session_pilot_without_collaborators_is_unavailable() -> None:
     )
     answer = session.ask_pilot("¿Cuánto combustible queda?")
     assert answer.kind is AnswerKind.UNAVAILABLE
-    assert answer.message_key == "pilot_unavailable"
+    assert answer.message_key == "pilot.answer.fuel_status.no_data"
+    assert answer.text.startswith("No tengo datos de")
     snapshot = session.pilot_snapshot()
     assert len(snapshot.recent) == 1
     assert snapshot.counters == {"unavailable": 1}

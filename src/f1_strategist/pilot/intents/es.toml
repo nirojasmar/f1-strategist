@@ -6,73 +6,140 @@
 
 [intents.general_race_state]
 negative = [
-    "respecto a",
+    "respecto",
+    "frente",
     "contra",
+    "comparame",
+    "comparativa",
+    "comparacion",
+    "diferencia",
+    "hueco",
+    "distancia",
+    "intervalo",
+    "gap",
     "perdiendo",
+    "perdemos",
+    "lento",
     "combustible",
+    "gasolina",
     "neumatico",
+    "neumaticos",
     "rueda",
+    "ruedas",
+    "goma",
+    "gomas",
     "estrategia",
     "undercut",
     "danos",
+    "dano",
+    "aleron",
+    "lluvia",
     "llover",
+    "clima",
     "delante",
-    "detras",
     "atras",
+    "detras",
     "coche",
+    "ritmo",
+    "parada",
+    "boxes",
+    "sector",
+    "compuesto",
+    "aguantan",
+    "desgaste",
+    "degradacion",
+    "trafico",
 ]
 
 [intents.general_race_state.phrases]
-"como voy" = 1.0
-"como vamos" = 0.95
+"como voy" = 0.95
+"como vamos" = 0.9
 "que tal voy" = 0.9
 "como esta la carrera" = 0.9
-"como va la carrera" = 0.85
-"en que posicion estoy" = 0.95
-"cual es mi posicion" = 0.9
-"mi situacion" = 0.8
+"como va la carrera" = 0.9
+"en que posicion estoy" = 1.0
+"cual es mi posicion" = 0.95
+"mi situacion" = 0.85
+"situacion actual" = 0.9
+"resumen de la carrera" = 0.95
+"resumen general" = 0.95
+"estado general" = 0.95
+"en que vuelta estamos" = 0.95
+"vueltas quedan para el final" = 0.95
 
 [intents.general_race_state.keywords]
-"posicion" = 0.5
+"posicion" = 0.45
 "situacion" = 0.4
 "carrera" = 0.35
-"voy" = 0.4
+"voy" = 0.35
 
 [intents.ask_strategy]
-negative = ["neumatico", "combustible"]
+negative = [
+    "neumatico",
+    "neumaticos",
+    "combustible",
+    "gasolina",
+]
 
 [intents.ask_strategy.phrases]
 "cambiamos de estrategia" = 1.0
 "cambio de estrategia" = 1.0
 "cambiar de estrategia" = 0.95
 "que estrategia" = 0.9
+"que hacemos con la estrategia" = 0.95
 "cuando paro" = 0.95
+"cuando paramos" = 0.95
 "cuando entro a boxes" = 0.95
-"paro ahora" = 0.9
-"parar ahora" = 0.9
-"y si paro" = 0.9
-"podemos parar" = 0.85
-"estrategia para" = 0.9
+"entramos a boxes" = 0.95
+"entramos ahora" = 0.9
+"paro ahora" = 0.95
+"parar ahora" = 0.95
+"y si paro" = 0.95
+"podemos parar" = 0.9
+"plan de paradas" = 0.95
+"merece la pena parar" = 0.95
+"seguimos fuera" = 0.95
+"box esta vuelta" = 0.95
+"que compuesto ponemos" = 0.95
 
 [intents.ask_strategy.keywords]
 "estrategia" = 0.7
 "parada" = 0.5
+"paradas" = 0.5
 "boxes" = 0.5
 "parar" = 0.45
+"paro" = 0.45
+"entramos" = 0.45
+"hacemos" = 0.45
 "plan" = 0.3
 
 [intents.fuel_status]
-negative = ["estrategia", "neumatico"]
+negative = [
+    "estrategia",
+    "precio",
+    "gasolinera",
+    "euros",
+    "coste",
+    "cuesta",
+]
 
 [intents.fuel_status.phrases]
 "cuanto combustible queda" = 1.0
 "combustible queda" = 0.95
 "combustible me queda" = 0.95
 "cuanto combustible" = 0.9
-"nivel de combustible" = 0.9
+"combustible nos falta" = 0.9
+"combustible por vuelta" = 0.9
+"nivel de combustible" = 0.95
 "combustible para" = 0.85
 "cuanta gasolina" = 0.95
 "gasolina queda" = 0.95
+"vamos de gasolina" = 0.95
+"consumo de combustible" = 0.95
+"ahorrar combustible" = 0.95
+"margen de combustible" = 0.95
+"datos de gasolina" = 0.95
+"combustible restante" = 0.95
 
 [intents.fuel_status.keywords]
 "combustible" = 0.8
@@ -81,41 +148,79 @@ negative = ["estrategia", "neumatico"]
 "deposito" = 0.6
 
 [intents.tyre_life]
-negative = ["combustible", "estrategia"]
+negative = [
+    "combustible",
+    "gasolina",
+    "estrategia",
+    "precio",
+    "coche de calle",
+    "de calle",
+    "taller",
+    "presion",
+]
 
 [intents.tyre_life.phrases]
 "cuanto aguantan" = 1.0
-"cuanto duran" = 1.0
+"cuanto duran" = 0.95
 "vida de los neumaticos" = 1.0
+"vida util" = 0.9
+"vida de las gomas" = 0.95
 "estos neumaticos" = 0.9
 "los neumaticos" = 0.8
 "las ruedas" = 0.8
 "del neumatico" = 0.7
 "del compuesto" = 0.6
+"desgaste" = 0.9
+"degradacion" = 0.85
+"degradacion de neumaticos" = 0.95
+"cuantas vueltas le quedan" = 0.95
+"que compuesto llevo" = 0.9
+"aguantan estas gomas" = 0.95
+"estan muy gastados" = 0.9
+"desgaste de ruedas" = 0.9
 
 [intents.tyre_life.keywords]
-"neumatico" = 0.8
 "neumaticos" = 0.8
-"rueda" = 0.75
 "ruedas" = 0.75
-"goma" = 0.5
+"gomas" = 0.6
 "degradacion" = 0.6
 "compuesto" = 0.5
 "duran" = 0.5
 "aguantan" = 0.6
 
 [intents.pace_diagnosis]
-negative = ["combustible", "neumatico", "estrategia", "undercut"]
+negative = [
+    "combustible",
+    "gasolina",
+    "neumatico",
+    "neumaticos",
+    "estrategia",
+    "undercut",
+    "curva",
+    "microsector",
+    "coche de calle",
+    "precio",
+]
 
 [intents.pace_diagnosis.phrases]
 "por que estamos perdiendo" = 1.0
 "por que perdemos tiempo" = 1.0
 "perdiendo tiempo" = 0.95
 "donde perdemos" = 0.9
-"donde estamos perdiendo" = 1.0
-"por que vamos lento" = 0.95
+"donde estoy perdiendo" = 0.95
+"por que voy lento" = 0.95
 "por que soy lento" = 0.95
 "estamos perdiendo" = 0.9
+"diagnostico de ritmo" = 0.95
+"que esta pasando con el ritmo" = 0.95
+"pierdo decimas" = 0.9
+"en que sector" = 0.9
+"bajamos tanto el ritmo" = 0.9
+"analiza por que" = 0.9
+"caida de ritmo" = 0.95
+"pierdo tiempo" = 0.9
+"por que pierdo" = 0.9
+"empeoraron los tiempos" = 0.9
 
 [intents.pace_diagnosis.keywords]
 "perdiendo" = 0.7
@@ -124,29 +229,53 @@ negative = ["combustible", "neumatico", "estrategia", "undercut"]
 "ritmo" = 0.5
 "sector" = 0.45
 "tiempo" = 0.35
+"trafico" = 0.5
 
 [intents.compare_driver]
-negative = ["combustible"]
+negative = [
+    "combustible",
+    "gasolina",
+    "estrategia",
+    "precio",
+]
 
 [intents.compare_driver.phrases]
 "como voy respecto a" = 1.0
+"como voy respecto al" = 0.95
+"como voy frente a" = 0.95
+"como voy frente al" = 0.95
+"como voy contra" = 0.9
 "diferencia respecto a" = 0.95
 "comparado con" = 0.95
 "comparacion con" = 0.95
+"comparame con" = 0.95
+"comparame" = 0.95
+"comparativa con" = 0.95
 "respecto a" = 0.9
 "diferencia con" = 0.9
-"como voy contra" = 0.9
 "voy mejor que" = 0.9
 "voy peor que" = 0.9
+"ritmo frente a" = 0.9
+"soy mas rapido" = 0.9
+"que neumaticos lleva" = 0.95
+"cuantas paradas lleva" = 0.95
+"que ritmo lleva" = 0.95
+"como va mi ritmo" = 0.95
 
 [intents.compare_driver.keywords]
 "rival" = 0.7
-"comparar" = 0.7
+"comparar" = 0.6
 "comparacion" = 0.7
 "diferencia" = 0.5
+"companero" = 0.5
 
 [intents.pit_undercut]
-negative = ["combustible", "neumatico"]
+negative = [
+    "combustible",
+    "gasolina",
+    "neumatico",
+    "neumaticos",
+]
 
 [intents.pit_undercut.phrases]
 "podemos hacer undercut" = 1.0
@@ -155,6 +284,15 @@ negative = ["combustible", "neumatico"]
 "undercut" = 0.9
 "overcut" = 0.9
 "podemos adelantar" = 0.75
+"funciona el undercut" = 0.95
+"intentar un undercut" = 0.95
+"hay undercut" = 0.95
+"nos da para hacer undercut" = 0.95
+"es viable el undercut" = 0.95
+"sale el undercut" = 0.95
+"cuanto ganariamos con undercut" = 0.95
+"undercut a" = 0.8
+"undercut al" = 0.8
 
 [intents.pit_undercut.keywords]
 "undercut" = 0.7
@@ -163,7 +301,18 @@ negative = ["combustible", "neumatico"]
 "adelantamiento" = 0.5
 
 [intents.gap_status]
-negative = ["combustible", "neumatico", "estrategia", "undercut", "danos"]
+negative = [
+    "combustible",
+    "gasolina",
+    "neumatico",
+    "neumaticos",
+    "estrategia",
+    "undercut",
+    "danos",
+    "carretera",
+    "coche de calle",
+    "precio",
+]
 
 [intents.gap_status.phrases]
 "cuanto esta el de delante" = 0.95
@@ -175,6 +324,11 @@ negative = ["combustible", "neumatico", "estrategia", "undercut", "danos"]
 "intervalo con" = 0.85
 "el gap" = 0.85
 "hay hueco" = 0.8
+"hueco con" = 0.9
+"a cuantos segundos" = 0.9
+"diferencia tengo con" = 0.95
+"me recorta" = 0.7
+"se esta acercando" = 0.7
 
 [intents.gap_status.keywords]
 "distancia" = 0.6
@@ -183,9 +337,18 @@ negative = ["combustible", "neumatico", "estrategia", "undercut", "danos"]
 "delante" = 0.5
 "atras" = 0.5
 "detras" = 0.5
+"hueco" = 0.6
+"recorta" = 0.6
+"acercando" = 0.6
 
 [intents.damage_status]
-negative = ["estrategia", "delante", "combustible"]
+negative = [
+    "estrategia",
+    "delante",
+    "atras",
+    "combustible",
+    "gasolina",
+]
 
 [intents.damage_status.phrases]
 "como esta el coche" = 1.0
@@ -195,6 +358,16 @@ negative = ["estrategia", "delante", "combustible"]
 "tengo danos" = 0.95
 "cuantos danos" = 0.9
 "el coche esta bien" = 0.95
+"estado de danos" = 0.95
+"hay algun dano" = 0.95
+"esta danado" = 0.95
+"danado el suelo" = 0.9
+"parte de danos" = 0.95
+"revisa danos" = 0.95
+"sufrio danos" = 0.95
+"aleron delantero" = 0.8
+"averia" = 0.8
+"fallo de drs" = 0.7
 
 [intents.damage_status.keywords]
 "danos" = 0.65
@@ -203,9 +376,15 @@ negative = ["estrategia", "delante", "combustible"]
 "aleta" = 0.5
 "aleron" = 0.5
 "coche" = 0.35
+"drs" = 0.4
 
 [intents.weather_forecast]
-negative = ["combustible", "estrategia"]
+negative = [
+    "combustible",
+    "gasolina",
+    "estrategia",
+    "precio",
+]
 
 [intents.weather_forecast.phrases]
 "va a llover" = 1.0
@@ -214,6 +393,12 @@ negative = ["combustible", "estrategia"]
 "el tiempo" = 0.8
 "prevision" = 0.85
 "llueve" = 0.85
+"probabilidad de lluvia" = 0.95
+"temperatura de pista" = 0.95
+"pista y aire" = 0.95
+"intermedios" = 0.7
+"pronostico" = 0.9
+"meteorologico" = 0.9
 
 [intents.weather_forecast.keywords]
 "llover" = 0.8
@@ -223,3 +408,6 @@ negative = ["combustible", "estrategia"]
 "clima" = 0.7
 "seco" = 0.5
 "agua" = 0.5
+"temperatura" = 0.55
+"meteorologico" = 0.7
+"pronostico" = 0.7

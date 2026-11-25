@@ -38,7 +38,7 @@ class RouterCallable(Protocol):
 class DriverDirectoryFactory(Protocol):
     """Contrato del directorio de pilotos (Q4)."""
 
-    def from_state(self, state: RaceStateSnapshot) -> Any: ...
+    from_state: Callable[..., Any]
 
 
 class DialogueProtocol(Protocol):
@@ -262,8 +262,10 @@ def run_pilot_evaluation(
     active_router, active_dir_factory, active_dlg_factory = _resolve_components(
         router, directory_factory, dialogue_factory
     )
-    default_drivers = active_dir_factory.from_state(
-        build_race_state_from_grid(dataset.default_grid)
+    default_drivers = _build_directory(
+        active_dir_factory,
+        build_race_state_from_grid(dataset.default_grid),
+        dataset.default_grid,
     )
 
     failures: list[dict[str, Any]] = []
@@ -481,12 +483,14 @@ def _eval_ambiguous(
     for case in cases:
         drivers = _drivers_for_case(case.grid, default_drivers, dir_factory)
         dialogue = dialogue_factory(cfg)
-        routed = router(
+        routed = _call_router(
+            router,
             case.text,
             language=cfg.language,
             drivers=drivers,
             dialogue=dialogue,
             cfg=cfg,
+            now=10.0,
         )
         reasons: list[str] = []
         if case.expected_intent is not None and routed.intent is not case.expected_intent:
@@ -508,6 +512,13 @@ def _eval_ambiguous(
             elif case.resolution_text is not None:
                 now = 10.0
                 query = replace(routed.query, received_at=now)
+                start = getattr(dialogue, "start_clarification", None)
+                if callable(start):
+                    start(
+                        routed.clarification.options,
+                        now,
+                        message_key=routed.clarification.message_key,
+                    )
                 answer = PilotAnswer(
                     query_id=query.query_id,
                     intent=routed.intent,
@@ -608,6 +619,14 @@ def _eval_dialogues(
                     cfg=cfg,
                     now=turn.t_s,
                 )
+                if routed.clarification is not None:
+                    start = getattr(dialogue, "start_clarification", None)
+                    if callable(start):
+                        start(
+                            routed.clarification.options,
+                            turn.t_s,
+                            message_key=routed.clarification.message_key,
+                        )
                 actual_intent = routed.intent
                 actual_clarification = routed.clarification is not None
                 actual_candidates = (
@@ -738,7 +757,26 @@ def _drivers_for_case(
 ) -> Any:
     if grid is None:
         return default_drivers
-    return dir_factory.from_state(build_race_state_from_grid(grid))
+    return _build_directory(
+        dir_factory,
+        build_race_state_from_grid(grid),
+        grid,
+    )
+
+
+def _build_directory(
+    dir_factory: DriverDirectoryFactory,
+    state: Any,
+    grid: Sequence[GridCarSpec],
+) -> Any:
+    numbers = {car.car_index: car.race_number for car in grid if car.race_number is not None}
+    if not numbers:
+        return dir_factory.from_state(state)
+    try:
+        return dir_factory.from_state(state, race_numbers=numbers)
+    except TypeError:
+        # Un doble de prueba puede no aceptar números; el evaluador sigue siendo válido.
+        return dir_factory.from_state(state)
 
 
 def _extract_car_index(resolved: Any) -> int | None:
@@ -747,6 +785,10 @@ def _extract_car_index(resolved: Any) -> int | None:
     if isinstance(resolved, int) and not isinstance(resolved, bool):
         return resolved
     car_index = getattr(resolved, "car_index", None)
+    if isinstance(car_index, int) and not isinstance(car_index, bool):
+        return car_index
+    driver = getattr(resolved, "driver", None)
+    car_index = getattr(driver, "car_index", None)
     if isinstance(car_index, int) and not isinstance(car_index, bool):
         return car_index
     return None

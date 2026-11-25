@@ -10,7 +10,7 @@ from enum import StrEnum
 
 from ..config import PilotConfig
 from ..race_state import CarSnapshot, RaceStateSnapshot
-from .types import Clarification, DriverCandidate, PilotExchange
+from .types import Clarification, DriverCandidate, Intent, PilotExchange
 
 AMBIGUOUS_DRIVER_MESSAGE_KEY = "pilot_ambiguous_driver"
 
@@ -290,6 +290,14 @@ class DialogueState:
         self._exchanges.append(exchange)
         self._exchanges = list(self.exchanges(now))
 
+    def last_intent(self, now: float) -> Intent | None:
+        """Intención del último intercambio vigente; ``None`` si era desconocida."""
+        recent = self.exchanges(now)
+        if not recent:
+            return None
+        intent = recent[-1].answer.intent
+        return None if intent is Intent.UNKNOWN else intent
+
     def exchanges(self, now: float) -> tuple[PilotExchange, ...]:
         ttl = self._config.dialogue_ttl_s
         kept = [item for item in self._exchanges if now - item.query.received_at <= ttl]
@@ -320,6 +328,15 @@ class DialogueState:
             self._pending = None
             return None
         return pending
+
+    def cancel_clarification(self) -> None:
+        """Descarta la aclaración pendiente tras una pregunta nueva."""
+        self._pending = None
+
+    def reset(self) -> None:
+        """Olvida diálogo y aclaración (reinicio de sesión)."""
+        self._exchanges.clear()
+        self._pending = None
 
     def resolve_clarification(self, text: str, now: float) -> Resolved | Unknown | None:
         """Resuelve la pendiente con nombre, número u ordinal; None si no hay o caducó."""

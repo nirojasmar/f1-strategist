@@ -15,7 +15,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from typing import Any, Protocol, cast
 
-from ..config import PilotConfig
+from ..config import MetricsConfig, PilotConfig, StrategyConfig
 from ..events.types import EventsSnapshot
 from ..metrics.engine import MetricsSnapshot
 from ..metrics.history import LapHistorySnapshot
@@ -26,6 +26,7 @@ from . import TOOLS
 from .types import (
     AnswerKind,
     Clarification,
+    EntityRef,
     Intent,
     PilotAnswer,
     PilotExchange,
@@ -63,6 +64,8 @@ class PilotInputs:
     history: LapHistorySnapshot
     events: EventsSnapshot
     profile: WeekendProfile | None = None
+    metrics_config: MetricsConfig | None = None
+    strategy_config: StrategyConfig | None = None
 
 
 def _lazy(module_name: str, attribute: str) -> Any | None:
@@ -102,6 +105,8 @@ class PilotEngine:
         note_interaction: Callable[[float], None] | None = None,
         publish: Callable[[PilotAnswer], None] | None = None,
         clock: Callable[[], float] = time.monotonic,
+        metrics_config: MetricsConfig | None = None,
+        strategy_config: StrategyConfig | None = None,
     ) -> None:
         self._config = config or PilotConfig()
         self._snapshots = snapshots
@@ -112,12 +117,18 @@ class PilotEngine:
             if directory_cls is not None:
                 self._directory = directory_cls.from_state
         self._dialogue = dialogue
+        if self._dialogue is None:
+            dialogue_cls = _lazy("entities", "DialogueState")
+            if dialogue_cls is not None:
+                self._dialogue = dialogue_cls(self._config)
         self._tools = TOOLS if tools is None else tools
         self._compose = cast(ComposeFn | None, compose or _lazy("answers", "compose_answer"))
         self._followup = followup
         self._note_interaction = note_interaction
         self._publish = publish
         self._clock = clock
+        self._metrics_config = metrics_config
+        self._strategy_config = strategy_config
         self._recent: list[PilotExchange] = []
         self._counters: dict[str, int] = {}
         self._pending: Clarification | None = None
@@ -181,16 +192,60 @@ class PilotEngine:
     def _route_query(self, query: PilotQuery, inputs: PilotInputs) -> RoutedQuery:
         if self._route is None or self._directory is None:
             return RoutedQuery(query=query, intent=Intent.UNKNOWN, confidence=0.0)
+        resolved = self._resolve_pending(query)
+        if resolved is not None:
+            intent = self._last_intent(query.received_at) or Intent.UNKNOWN
+            return RoutedQuery(
+                query=query,
+                intent=intent,
+                confidence=1.0,
+                entities=(EntityRef(resolved.raw, resolved.driver.car_index),),
+            )
         routed = self._route(
             query.text,
             language=query.language,
             drivers=self._directory(inputs.state),
             dialogue=self._dialogue,
             cfg=self._config,
+            now=query.received_at,
         )
-        # El contrato de Q3 no recibe el instante ni el origen: el motor es la
-        # fuente autorizada de la pregunta para la trazabilidad.
-        return replace(routed, query=query)
+        # El motor es la fuente autorizada de la pregunta para la trazabilidad.
+        routed = replace(routed, query=query)
+        if routed.clarification is not None:
+            start = getattr(self._dialogue, "start_clarification", None)
+            if callable(start):
+                start(
+                    routed.clarification.options,
+                    query.received_at,
+                    message_key=routed.clarification.message_key,
+                )
+        return routed
+
+    def _resolve_pending(self, query: PilotQuery) -> Any | None:
+        """Resuelve la aclaración pendiente antes de enrutar el texto nuevo."""
+        dialogue = self._dialogue
+        pending = getattr(dialogue, "pending_clarification", None)
+        resolver = getattr(dialogue, "resolve_clarification", None)
+        if not callable(pending) or not callable(resolver):
+            return None
+        if pending(query.received_at) is None:
+            return None
+        from .entities import Resolved
+
+        outcome = resolver(query.text, query.received_at)
+        if isinstance(outcome, Resolved):
+            return outcome
+        cancel = getattr(dialogue, "cancel_clarification", None)
+        if callable(cancel):
+            cancel()
+        return None
+
+    def _last_intent(self, now: float) -> Intent | None:
+        getter = getattr(self._dialogue, "last_intent", None)
+        if not callable(getter):
+            return None
+        intent = getter(now)
+        return None if intent is None or intent is Intent.UNKNOWN else Intent(intent)
 
     def _build_answer(self, routed: RoutedQuery, inputs: PilotInputs, now: float) -> PilotAnswer:
         if self._compose is None:
@@ -213,6 +268,8 @@ class PilotEngine:
                     config=self._config,
                     now=now,
                     profile=inputs.profile,
+                    metrics_config=inputs.metrics_config or self._metrics_config,
+                    strategy_config=inputs.strategy_config or self._strategy_config,
                 ),
             )
         except Exception:

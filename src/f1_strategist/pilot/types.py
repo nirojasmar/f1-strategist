@@ -15,7 +15,7 @@ from enum import StrEnum
 from types import MappingProxyType
 from typing import Any
 
-from ..config import PilotConfig
+from ..config import MetricsConfig, PilotConfig, StrategyConfig
 from ..metrics.engine import MetricsSnapshot
 from ..metrics.history import LapHistorySnapshot
 from ..metrics.types import Quality
@@ -145,6 +145,7 @@ class EntityRef:
     raw: str
     car_index: int | None = None
     candidates: tuple[DriverCandidate, ...] = ()
+    reason: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "candidates", tuple(self.candidates))
@@ -154,6 +155,7 @@ class EntityRef:
             "raw": self.raw,
             "car_index": self.car_index,
             "candidates": [item.to_dict() for item in self.candidates],
+            "reason": self.reason,
         }
 
     def to_json(self) -> str:
@@ -167,6 +169,7 @@ class EntityRef:
             candidates=tuple(
                 DriverCandidate.from_dict(item) for item in _json_list(data.get("candidates", []))
             ),
+            reason=_opt_str(data, "reason"),
         )
 
     @classmethod
@@ -373,6 +376,8 @@ class ToolInputs:
     config: PilotConfig
     now: float
     profile: WeekendProfile | None = None
+    metrics_config: MetricsConfig | None = None
+    strategy_config: StrategyConfig | None = None
 
     def __post_init__(self) -> None:
         _check_finite("now", self.now)

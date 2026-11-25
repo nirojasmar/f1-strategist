@@ -28,6 +28,7 @@ from ..strategy.pace_model import (
 )
 from ..strategy.pit_model import RejoinEstimate, estimate_pit_loss, estimate_rejoin
 from ..strategy.types import ASSUMPTION_RIVALS_DO_NOT_PIT, StrategySnapshot
+from .tools_compare import unresolved_reference_note
 from .types import FactKind, Intent, RoutedQuery, ToolFact, ToolInputs, ToolResult
 
 MISSING_PILOT_LEADS = "pilot_leads"
@@ -41,6 +42,8 @@ MISSING_RIVAL_TYRE_AGE = "rival_tyre_age"
 MISSING_GAP = "gap_unavailable"
 MISSING_PIT_LOSS = "pit_loss"
 MISSING_RIVAL_NOT_AHEAD = "rival_not_ahead"
+
+NOTE_PILOT_LEADS = "pilot.leader"
 
 ASSUMPTION_PLAYER_PITS_NOW = "player_pits_now"
 ASSUMPTION_RIVAL_PITS_AFTER_K = "rival_pits_after_k_laps"
@@ -137,6 +140,7 @@ def evaluate_undercut(
             rival_car_index=rival_index if rival is not None else None,
             quality=Quality.INSUFFICIENT,
             missing=(MISSING_PILOT_LEADS,),
+            notes=(NOTE_PILOT_LEADS,),
         )
     if rival is None:
         missing.append(MISSING_RIVAL_UNAVAILABLE)
@@ -289,6 +293,16 @@ def pit_undercut(routed: RoutedQuery, inputs: ToolInputs) -> ToolResult:
             intent=Intent.PIT_UNDERCUT,
             quality=Quality.INSUFFICIENT,
             missing=(MISSING_PILOT_LEADS,),
+            notes=(NOTE_PILOT_LEADS,),
+            data_lap=state.current_lap,
+        )
+    note = unresolved_reference_note(routed)
+    if note is not None:
+        return ToolResult(
+            intent=Intent.PIT_UNDERCUT,
+            quality=Quality.INSUFFICIENT,
+            missing=(MISSING_RIVAL_UNAVAILABLE,),
+            notes=(note,),
             data_lap=state.current_lap,
         )
 
@@ -403,6 +417,7 @@ __all__ = [
     "ASSUMPTION_PLAYER_PITS_NOW",
     "ASSUMPTION_RIVAL_PITS_AFTER_K",
     "ASSUMPTION_SAME_PIT_LOSS",
+    "NOTE_PILOT_LEADS",
     "UndercutEstimate",
     "evaluate_undercut",
     "pit_undercut",

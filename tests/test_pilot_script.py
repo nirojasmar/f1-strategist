@@ -185,6 +185,26 @@ def test_run_pilot_script_reports_untriggered_steps_beyond_capture_end(
     assert result.untriggered[0].at_lap == 99
 
 
+def test_script_fires_due_steps_behind_a_future_step(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    capture = _synthetic_capture(tmp_path, monkeypatch)
+    script = tmp_path / "guion.jsonl"
+    script.write_text(
+        '{"at_lap": 99, "text": "¿Y ahora?"}\n{"at_lap": 2, "text": "¿Cómo voy?"}\n',
+        encoding="utf-8",
+    )
+
+    result = run_pilot_script(capture, script, responder=_FakeResponder())
+
+    assert len(result.exchanges) == 1
+    assert result.exchanges[0].line == 2
+    assert result.exchanges[0].lap == 2
+    assert len(result.untriggered) == 1
+    assert result.untriggered[0].line == 1
+
+
 def test_ask_capture_at_lap_answers_at_target_lap_and_rejects_missing_lap(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -300,3 +320,55 @@ def test_cli_ask_and_ask_script_json_and_error_handling(
 
     assert main(["ask"]) == 2
     assert "Uso: f1-strategist ask" in capsys.readouterr().err
+
+
+def test_default_responder_keeps_pending_clarification_between_script_questions() -> None:
+    from dataclasses import replace
+
+    from f1_strategist.config import MetricsConfig, StrategyConfig
+    from f1_strategist.metrics.engine import MetricsSnapshot
+    from f1_strategist.metrics.history import LapHistorySnapshot
+    from f1_strategist.pilot.evaluation import build_race_state_from_grid, load_pilot_dataset
+    from f1_strategist.pilot.script import DefaultScriptResponder
+    from f1_strategist.race_state import PacketFreshness
+    from f1_strategist.strategy.types import StrategySnapshot
+
+    dataset = load_pilot_dataset(Path(__file__).parent / "fixtures" / "pilot_questions")
+    state = replace(
+        build_race_state_from_grid(dataset.default_grid),
+        freshness=(PacketFreshness("lap_data", 9.8, 1.5),),
+    )
+    config = AppConfig()
+    responder = DefaultScriptResponder(config)
+
+    first = responder.ask(
+        "¿Cómo voy respecto a Schumacher?",
+        inputs=ToolInputs(
+            state=state,
+            metrics=MetricsSnapshot(),
+            strategy=StrategySnapshot(),
+            history=LapHistorySnapshot(),
+            config=config.pilot,
+            now=10.0,
+            metrics_config=MetricsConfig(),
+            strategy_config=StrategyConfig(),
+        ),
+    )
+    second = responder.ask(
+        "Mick",
+        inputs=ToolInputs(
+            state=state,
+            metrics=MetricsSnapshot(),
+            strategy=StrategySnapshot(),
+            history=LapHistorySnapshot(),
+            config=config.pilot,
+            now=11.0,
+            metrics_config=MetricsConfig(),
+            strategy_config=StrategyConfig(),
+        ),
+    )
+
+    assert first.kind is AnswerKind.CLARIFICATION
+    assert second.kind is not AnswerKind.CLARIFICATION
+    assert second.intent is Intent.COMPARE_DRIVER
+    assert "comparación" in second.text or "comparacion" in second.text

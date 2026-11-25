@@ -514,3 +514,18 @@ def test_cli_pilot_eval_rejects_overwriting_dataset(tmp_path: Path) -> None:
         == 2
     )
     assert main(["pilot", "eval", "--dataset", str(tmp_path / "missing")]) == 2
+
+
+def test_holdout_dataset_is_separate_and_evaluable() -> None:
+    holdout = load_pilot_dataset(Path(__file__).parent / "fixtures" / "pilot_questions_holdout")
+    training = load_pilot_dataset(DEFAULT_PILOT_DATASET)
+
+    assert len(holdout.in_scope) >= 30
+    assert len(holdout.out_of_scope) >= 10
+    assert len(holdout.ambiguous) >= 5
+    assert len(holdout.dialogue_sequences) >= 3
+    assert not {case.text for case in holdout.in_scope} & {case.text for case in training.in_scope}
+
+    report = run_pilot_evaluation(holdout)
+    assert report["dataset"].endswith("pilot_questions_holdout")
+    assert report["counts"]["in_scope"] == len(holdout.in_scope)
