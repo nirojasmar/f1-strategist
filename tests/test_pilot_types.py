@@ -160,23 +160,27 @@ def test_tool_fact_rejects_invalid_values() -> None:
         )
 
 
-def test_capture_session_pilot_stub_is_unavailable() -> None:
+def test_capture_session_pilot_without_collaborators_is_unavailable() -> None:
     session = CaptureSession(
         AppConfig(telemetry=TelemetryConfig(listen_port=0), capture=CaptureConfig(enabled=False))
     )
     answer = session.ask_pilot("¿Cuánto combustible queda?")
     assert answer.kind is AnswerKind.UNAVAILABLE
     assert answer.message_key == "pilot_unavailable"
-    assert session.pilot_snapshot() == PilotSnapshot()
+    snapshot = session.pilot_snapshot()
+    assert len(snapshot.recent) == 1
+    assert snapshot.counters == {"unavailable": 1}
 
 
-def test_playback_session_pilot_stub_is_unavailable(tmp_path: Path) -> None:
+def test_playback_session_pilot_without_collaborators_is_unavailable(tmp_path: Path) -> None:
     path = tmp_path / "empty.f1cap"
     with CaptureWriter(path, include_created_utc=False):
         pass
     session = PlaybackSession(path)
     assert session.ask_pilot("¿Cómo voy?").kind is AnswerKind.UNAVAILABLE
-    assert session.pilot_snapshot() == PilotSnapshot()
+    snapshot = session.pilot_snapshot()
+    assert len(snapshot.recent) == 1
+    assert snapshot.counters == {"unavailable": 1}
 
 
 def test_agent_message_serialization_is_unchanged_without_query_fields() -> None:
