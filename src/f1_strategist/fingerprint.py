@@ -18,6 +18,7 @@ from .metrics.engine import MetricsEngine, MetricsSnapshot
 from .metrics.history import LapHistory, LapHistorySnapshot
 from .offline import OfflineResult, run_capture_offline
 from .parser import PARSER_VERSION, ParsedPacket
+from .pilot.types import PilotExchange
 from .race_state import RaceEvent, RaceState, RaceStateSnapshot
 from .strategy.types import STRATEGY_SCHEMA_VERSION
 from .weekend_profile import WeekendProfile
@@ -25,6 +26,7 @@ from .weekend_profile import WeekendProfile
 FINGERPRINT_SCHEMA_VERSION = 1
 GATE_FINGERPRINT_SCHEMA_VERSION = 1
 AGENT_FINGERPRINT_SCHEMA_VERSION = 1
+PILOT_FINGERPRINT_SCHEMA_VERSION = 1
 
 _IGNORED_KEYS = frozenset({"capture_path"})
 
@@ -115,6 +117,13 @@ def compute_agent_fingerprint(records: Iterable[object]) -> str:
     return accumulator.fingerprint
 
 
+def compute_pilot_fingerprint(exchanges: Iterable[object]) -> str:
+    """Huella determinista de las preguntas y respuestas, sin relojes ni latencias."""
+    accumulator = PilotFingerprintAccumulator()
+    accumulator.add(exchanges)
+    return accumulator.fingerprint
+
+
 class _RecordFingerprintAccumulator:
     """Bounded-memory, order-independent accumulator for persisted records."""
 
@@ -160,6 +169,57 @@ class GateFingerprintAccumulator(_RecordFingerprintAccumulator):
 class AgentFingerprintAccumulator(_RecordFingerprintAccumulator):
     __slots__ = ()
     _schema_version = AGENT_FINGERPRINT_SCHEMA_VERSION
+
+
+class PilotFingerprintAccumulator:
+    """Huella encadenada de intercambios; ignora identificadores y tiempos."""
+
+    __slots__ = ("_count", "_digest")
+
+    def __init__(self) -> None:
+        self._count = 0
+        self._digest = hashlib.sha256()
+
+    def copy(self) -> PilotFingerprintAccumulator:
+        result = type(self)()
+        result._count = self._count
+        result._digest = self._digest.copy()
+        return result
+
+    def add(self, exchanges: Iterable[object]) -> None:
+        for exchange in exchanges:
+            encoded = _canonical_json(_pilot_exchange_value(exchange)).encode("utf-8")
+            self._digest.update(encoded)
+            self._count += 1
+
+    @property
+    def fingerprint(self) -> str:
+        payload = {
+            "schema_version": PILOT_FINGERPRINT_SCHEMA_VERSION,
+            "count": self._count,
+            "digest": self._digest.hexdigest(),
+        }
+        return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()
+
+
+def _pilot_exchange_value(exchange: object) -> Any:
+    if not isinstance(exchange, PilotExchange):
+        return _gate_value(exchange)
+    answer = exchange.answer
+    return {
+        "text": exchange.query.text,
+        "language": exchange.query.language,
+        "source": exchange.query.source,
+        "answer": {
+            "intent": answer.intent.value,
+            "kind": answer.kind.value,
+            "text": answer.text,
+            "message_key": answer.message_key,
+            "params": _gate_value(dict(answer.params)),
+            "tool_result": _gate_value(answer.tool_result),
+            "followup_pending": answer.followup_pending,
+        },
+    }
 
 
 def _gate_value(value: object) -> Any:

@@ -70,6 +70,7 @@ _SESSION_COLUMNS: tuple[str, ...] = (
     "strategy_fingerprint",
     "gate_fingerprint",
     "agent_fingerprint",
+    "pilot_fingerprint",
 )
 
 _WEEKEND_COLUMNS: tuple[str, ...] = (
@@ -133,6 +134,7 @@ class SessionInfo:
     strategy_fingerprint: str | None = None
     gate_fingerprint: str | None = None
     agent_fingerprint: str | None = None
+    pilot_fingerprint: str | None = None
 
     def __post_init__(self) -> None:
         if self.session_uid < 0 or self.session_uid > 2**64 - 1:
@@ -386,6 +388,8 @@ class StoredAgentMessage:
     lap: int | None = None
     llm_call_id: str | None = None
     interrupt: bool = False
+    query_id: str | None = None
+    kind: str | None = None
 
     def __post_init__(self) -> None:
         if self.seq < 1 or not math.isfinite(self.t_sim_s):
@@ -393,6 +397,61 @@ class StoredAgentMessage:
         for name in ("message_id", "priority", "language", "source"):
             if not getattr(self, name):
                 raise ValueError(f"{name} no puede estar vacío")
+
+
+@dataclass(frozen=True, slots=True)
+class StoredPilotQuery:
+    """Consulta del piloto registrada con su respuesta y su seguimiento."""
+
+    seq: int
+    t_sim_s: float
+    query_id: str
+    language: str
+    intent: str
+    answer_text: str
+    answer_kind: str
+    message_key: str
+    text: str | None = None
+    confidence: float | None = None
+    entities_json: str = "[]"
+    clarification_json: str | None = None
+    facts_json: str = "[]"
+    missing_json: str = "[]"
+    latency_s: float | None = None
+    followup_status: str = "none"
+    followup_message: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.seq < 1 or not math.isfinite(self.t_sim_s):
+            raise ValueError("seq debe ser positivo y t_sim_s finito")
+        for name in ("query_id", "language", "intent", "answer_kind", "message_key"):
+            if not getattr(self, name):
+                raise ValueError(f"{name} no puede estar vacío")
+        if self.confidence is not None and not 0.0 <= self.confidence <= 1.0:
+            raise ValueError("confidence debe estar entre 0 y 1")
+        if self.latency_s is not None and not math.isfinite(self.latency_s):
+            raise ValueError("latency_s debe ser finito")
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "seq": self.seq,
+            "t_sim_s": self.t_sim_s,
+            "query_id": self.query_id,
+            "text": self.text,
+            "language": self.language,
+            "intent": self.intent,
+            "confidence": self.confidence,
+            "entities_json": self.entities_json,
+            "clarification_json": self.clarification_json,
+            "facts_json": self.facts_json,
+            "missing_json": self.missing_json,
+            "answer_text": self.answer_text,
+            "answer_kind": self.answer_kind,
+            "message_key": self.message_key,
+            "latency_s": self.latency_s,
+            "followup_status": self.followup_status,
+            "followup_message": self.followup_message,
+        }
 
 
 class SessionStore:
@@ -500,6 +559,7 @@ class SessionStore:
             info.strategy_fingerprint,
             info.gate_fingerprint,
             info.agent_fingerprint,
+            info.pilot_fingerprint,
         ]
         columns = _SESSION_COLUMNS[1:]
         weekend_index = _SESSION_COLUMNS.index("weekend_id") - 1
@@ -591,7 +651,8 @@ class SessionStore:
                 "profile_hash = COALESCE(?, profile_hash), "
                 "strategy_fingerprint = COALESCE(?, strategy_fingerprint), "
                 "gate_fingerprint = COALESCE(?, gate_fingerprint), "
-                "agent_fingerprint = COALESCE(?, agent_fingerprint) "
+                "agent_fingerprint = COALESCE(?, agent_fingerprint), "
+                "pilot_fingerprint = COALESCE(?, pilot_fingerprint) "
                 "WHERE id = ?",
                 (
                     info.game_format,
@@ -616,6 +677,7 @@ class SessionStore:
                     info.strategy_fingerprint,
                     info.gate_fingerprint,
                     info.agent_fingerprint,
+                    info.pilot_fingerprint,
                     session_id,
                 ),
             )
@@ -1139,6 +1201,8 @@ class SessionStore:
                 item.lap,
                 item.llm_call_id,
                 int(item.interrupt),
+                item.query_id,
+                item.kind,
             )
             for item in messages
         ]
@@ -1148,20 +1212,22 @@ class SessionStore:
             connection.executemany(
                 "INSERT INTO agent_messages (session_id, seq, t_sim_s, message_id, alert_id, "
                 "event_id, priority, language, text, source, used_facts_json, lap, llm_call_id, "
-                "interrupt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "interrupt, query_id, kind) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(session_id, seq) DO UPDATE SET t_sim_s=excluded.t_sim_s, "
                 "message_id=excluded.message_id, alert_id=excluded.alert_id, "
                 "event_id=excluded.event_id, priority=excluded.priority, "
                 "language=excluded.language, text=excluded.text, source=excluded.source, "
                 "used_facts_json=excluded.used_facts_json, lap=excluded.lap, "
-                "llm_call_id=excluded.llm_call_id, interrupt=excluded.interrupt",
+                "llm_call_id=excluded.llm_call_id, interrupt=excluded.interrupt, "
+                "query_id=excluded.query_id, kind=excluded.kind",
                 rows,
             )
 
     def iter_agent_messages(self, session_id: int) -> Iterator[StoredAgentMessage]:
         cursor = self._connection.execute(
             "SELECT seq,t_sim_s,message_id,alert_id,event_id,priority,language,text,source,"
-            "used_facts_json,lap,llm_call_id,interrupt FROM agent_messages "
+            "used_facts_json,lap,llm_call_id,interrupt,query_id,kind FROM agent_messages "
             "WHERE session_id=? ORDER BY seq",
             (session_id,),
         )
@@ -1180,6 +1246,87 @@ class SessionStore:
                 _optional_int(row["lap"]),
                 _optional_str(row["llm_call_id"]),
                 bool(row["interrupt"]),
+                _optional_str(row["query_id"]),
+                _optional_str(row["kind"]),
+            )
+
+    def add_pilot_queries(self, session_id: int, queries: Iterable[StoredPilotQuery]) -> None:
+        rows = [
+            (
+                session_id,
+                item.seq,
+                item.t_sim_s,
+                item.query_id,
+                item.text,
+                item.language,
+                item.intent,
+                item.confidence,
+                item.entities_json,
+                item.clarification_json,
+                item.facts_json,
+                item.missing_json,
+                item.answer_text,
+                item.answer_kind,
+                item.message_key,
+                item.latency_s,
+                item.followup_status,
+                item.followup_message,
+            )
+            for item in queries
+        ]
+        if not rows:
+            return
+        with self.transaction() as connection:
+            connection.executemany(
+                "INSERT INTO pilot_queries (session_id, seq, t_sim_s, query_id, text, language, "
+                "intent, confidence, entities_json, clarification_json, facts_json, missing_json, "
+                "answer_text, answer_kind, message_key, latency_s, followup_status, "
+                "followup_message) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(session_id, seq) DO UPDATE SET t_sim_s=excluded.t_sim_s, "
+                "query_id=excluded.query_id, text=excluded.text, language=excluded.language, "
+                "intent=excluded.intent, confidence=excluded.confidence, "
+                "entities_json=excluded.entities_json, "
+                "clarification_json=excluded.clarification_json, "
+                "facts_json=excluded.facts_json, missing_json=excluded.missing_json, "
+                "answer_text=excluded.answer_text, answer_kind=excluded.answer_kind, "
+                "message_key=excluded.message_key, latency_s=excluded.latency_s, "
+                "followup_status=excluded.followup_status, "
+                "followup_message=excluded.followup_message",
+                rows,
+            )
+
+    def iter_pilot_queries(
+        self, session_id: int, *, intent: str | None = None
+    ) -> Iterator[StoredPilotQuery]:
+        sql = (
+            "SELECT seq,t_sim_s,query_id,text,language,intent,confidence,entities_json,"
+            "clarification_json,facts_json,missing_json,answer_text,answer_kind,message_key,"
+            "latency_s,followup_status,followup_message FROM pilot_queries WHERE session_id=?"
+        )
+        parameters: tuple[object, ...] = (session_id,)
+        if intent is not None:
+            sql += " AND intent=?"
+            parameters += (intent,)
+        cursor = self._connection.execute(sql + " ORDER BY seq", parameters)
+        for row in cursor:
+            yield StoredPilotQuery(
+                int(row["seq"]),
+                float(row["t_sim_s"]),
+                str(row["query_id"]),
+                str(row["language"]),
+                str(row["intent"]),
+                str(row["answer_text"]),
+                str(row["answer_kind"]),
+                str(row["message_key"]),
+                _optional_str(row["text"]),
+                _optional_float(row["confidence"]),
+                str(row["entities_json"]),
+                _optional_str(row["clarification_json"]),
+                str(row["facts_json"]),
+                str(row["missing_json"]),
+                _optional_float(row["latency_s"]),
+                str(row["followup_status"]),
+                _optional_str(row["followup_message"]),
             )
 
     # ------------------------------------------------------------------
@@ -1633,6 +1780,7 @@ def _session_from_row(row: sqlite3.Row) -> SessionInfo:
         strategy_fingerprint=_optional_str(row["strategy_fingerprint"]),
         gate_fingerprint=(_optional_str(row_values.get("gate_fingerprint"))),
         agent_fingerprint=_optional_str(row_values.get("agent_fingerprint")),
+        pilot_fingerprint=_optional_str(row_values.get("pilot_fingerprint")),
     )
 
 

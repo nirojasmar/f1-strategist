@@ -773,6 +773,9 @@ class _MemoryStore:
     def add_agent_messages(self, session_id: int, messages: Any) -> None:
         return None
 
+    def add_pilot_queries(self, session_id: int, queries: Any) -> None:
+        return None
+
 
 def _benchmark_inputs(count: int) -> list[tuple[RaceStateSnapshot, MetricsSnapshot]]:
     session = RaceSessionSnapshot(

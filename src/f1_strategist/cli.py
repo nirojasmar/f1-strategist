@@ -88,7 +88,7 @@ from .receiver import ReceiverError
 from .recorder import ingest_capture
 from .replay import replay_capture
 from .session import CaptureSession
-from .store import SessionInfo, SessionStore, StoreError
+from .store import SessionInfo, SessionStore, StoredPilotQuery, StoreError
 from .store.queries import (
     held_metric_values,
     list_session_summaries,
@@ -562,7 +562,24 @@ def _build_parser() -> argparse.ArgumentParser:
     llm_eval.add_argument("--endpoint", help="URL base compatible con OpenAI")
 
     sub.add_parser("ask", help="preguntas del piloto por texto")
-    sub.add_parser("queries", help="consulta las preguntas registradas en la base de datos")
+
+    queries = sub.add_parser(
+        "queries", help="consulta las preguntas registradas en la base de datos"
+    )
+    queries_sub = queries.add_subparsers(dest="queries_command")
+    queries_show = queries_sub.add_parser("show", help="muestra las consultas guardadas")
+    queries_show.add_argument("--session", type=_positive_int, required=True, metavar="ID")
+    queries_show.add_argument("--intent", help="filtra por intención")
+    queries_show.add_argument("--db", type=Path, help="base SQLite (por defecto, configuración)")
+    queries_summary = queries_sub.add_parser("summary", help="resume las consultas guardadas")
+    queries_summary.add_argument("--session", type=_positive_int, required=True, metavar="ID")
+    queries_summary.add_argument("--db", type=Path, help="base SQLite (por defecto, configuración)")
+    queries_export = queries_sub.add_parser("export", help="exporta las consultas guardadas")
+    queries_export.add_argument("--session", type=_positive_int, required=True, metavar="ID")
+    queries_export.add_argument(
+        "--format", choices=("json", "jsonl", "csv"), default="json", help="formato de salida"
+    )
+    queries_export.add_argument("--db", type=Path, help="base SQLite (por defecto, configuración)")
     return parser
 
 
@@ -2064,6 +2081,157 @@ def _cmd_events_simulate(args: argparse.Namespace, console: Console, err: Consol
     return 0
 
 
+_QUERIES_SCHEMA_VERSION = 10
+_QUERIES_TITLE = "Consultas del piloto · sesión {session_id}"
+_QUERIES_COLUMNS = (
+    "Tiempo",
+    "Intención",
+    "Tipo",
+    "Confianza",
+    "Pregunta",
+    "Respuesta",
+    "Seguimiento",
+)
+_QUERIES_EMPTY = "La sesión {session_id} no tiene consultas registradas."
+_QUERIES_SCHEMA_ERROR = (
+    "Los comandos queries requieren esquema v{required}; la base actual es v{actual}."
+)
+_QUERIES_SUMMARY_TITLE = "Resumen de consultas · sesión {session_id}"
+_QUERIES_SUMMARY_INTENTS_TITLE = "Consultas por intención"
+_QUERIES_SUMMARY_KINDS_TITLE = "Consultas por tipo de respuesta"
+_QUERIES_SUMMARY_RATES_TITLE = "Tasas"
+_QUERIES_SUMMARY_INTENT_COLUMN = "Intención"
+_QUERIES_SUMMARY_KIND_COLUMN = "Tipo"
+_QUERIES_SUMMARY_METRIC_COLUMN = "Métrica"
+_QUERIES_SUMMARY_RATE_COLUMN = "Porcentaje"
+_QUERIES_SUMMARY_LATENCY_TITLE = "Latencia de respuesta"
+_QUERIES_SUMMARY_PERCENTILE_COLUMN = "Percentil"
+_QUERIES_SUMMARY_SECONDS_COLUMN = "Segundos"
+_QUERIES_EXPORT_SCHEMA_VERSION = 1
+
+
+def _cmd_queries(args: argparse.Namespace, console: Console, err: Console) -> int:
+    if args.queries_command is None:
+        return _cmd_pending_group(args, console, err)
+    db = _sessions_database(args)
+    with SessionStore.open(db, readonly=True) as store:
+        require_session(store, args.session)
+        version_row = store.connection.execute("PRAGMA user_version").fetchone()
+        schema_version = 0 if version_row is None else int(version_row[0])
+        if schema_version < _QUERIES_SCHEMA_VERSION:
+            raise StoreError(
+                _QUERIES_SCHEMA_ERROR.format(
+                    required=_QUERIES_SCHEMA_VERSION, actual=schema_version
+                )
+            )
+        intent = getattr(args, "intent", None)
+        queries = tuple(store.iter_pilot_queries(args.session, intent=intent))
+    if args.queries_command == "show":
+        return _queries_show(args.session, queries, console)
+    if args.queries_command == "summary":
+        return _queries_summary(args.session, queries, console)
+    _write_stdout(_render_queries_export(args.session, queries, args.format))
+    return 0
+
+
+def _queries_show(session_id: int, queries: tuple[StoredPilotQuery, ...], console: Console) -> int:
+    if not queries:
+        console.print(_QUERIES_EMPTY.format(session_id=session_id))
+        return 0
+    table = Table(title=_QUERIES_TITLE.format(session_id=session_id), expand=False)
+    table.add_column(_QUERIES_COLUMNS[0], min_width=8, no_wrap=True)
+    table.add_column(_QUERIES_COLUMNS[1], min_width=12, no_wrap=True)
+    table.add_column(_QUERIES_COLUMNS[2], min_width=10, no_wrap=True)
+    table.add_column(_QUERIES_COLUMNS[3], min_width=8, no_wrap=True)
+    table.add_column(_QUERIES_COLUMNS[4], overflow="fold", ratio=2)
+    table.add_column(_QUERIES_COLUMNS[5], overflow="fold", ratio=2)
+    table.add_column(_QUERIES_COLUMNS[6], min_width=10, overflow="fold")
+    for query in queries:
+        followup = query.followup_status
+        if query.followup_message is not None:
+            followup = f"{followup}: {query.followup_message}"
+        table.add_row(
+            f"{query.t_sim_s:.1f} s",
+            query.intent,
+            query.answer_kind,
+            "—" if query.confidence is None else f"{query.confidence:.2f}",
+            Text("—" if query.text is None else query.text),
+            Text(query.answer_text),
+            followup,
+        )
+    console.print(table)
+    return 0
+
+
+def _queries_summary(
+    session_id: int, queries: tuple[StoredPilotQuery, ...], console: Console
+) -> int:
+    console.print(_QUERIES_SUMMARY_TITLE.format(session_id=session_id))
+    _print_counter_table(
+        console,
+        _QUERIES_SUMMARY_INTENTS_TITLE,
+        _QUERIES_SUMMARY_INTENT_COLUMN,
+        Counter(query.intent for query in queries),
+    )
+    _print_counter_table(
+        console,
+        _QUERIES_SUMMARY_KINDS_TITLE,
+        _QUERIES_SUMMARY_KIND_COLUMN,
+        Counter(query.answer_kind for query in queries),
+    )
+    rates = Table(title=_QUERIES_SUMMARY_RATES_TITLE, expand=False)
+    rates.add_column(_QUERIES_SUMMARY_METRIC_COLUMN)
+    rates.add_column(_QUERIES_SUMMARY_RATE_COLUMN, justify="right")
+    total = len(queries)
+    unknown = sum(1 for query in queries if query.intent == "unknown")
+    clarifications = sum(
+        1
+        for query in queries
+        if query.answer_kind == "clarification" or query.clarification_json is not None
+    )
+    rates.add_row("Desconocidas", _percent_text(unknown, total))
+    rates.add_row("Aclaraciones", _percent_text(clarifications, total))
+    console.print(rates)
+
+    latencies = sorted(query.latency_s for query in queries if query.latency_s is not None)
+    latency_table = Table(title=_QUERIES_SUMMARY_LATENCY_TITLE, expand=False)
+    latency_table.add_column(_QUERIES_SUMMARY_PERCENTILE_COLUMN)
+    latency_table.add_column(_QUERIES_SUMMARY_SECONDS_COLUMN, justify="right")
+    if latencies:
+        latency_table.add_row("p50", f"{_percentile(latencies, 0.50):.3f}")
+        latency_table.add_row("p95", f"{_percentile(latencies, 0.95):.3f}")
+    else:
+        latency_table.add_row("p50 / p95", "—")
+    console.print(latency_table)
+    return 0
+
+
+def _percent_text(count: int, total: int) -> str:
+    return "—" if total == 0 else f"{100.0 * count / total:.1f} %"
+
+
+def _render_queries_export(
+    session_id: int, queries: tuple[StoredPilotQuery, ...], export_format: str
+) -> str:
+    rows = [query.to_dict() for query in queries]
+    if export_format == "json":
+        payload = {
+            "schema_version": _QUERIES_EXPORT_SCHEMA_VERSION,
+            "session_id": session_id,
+            "pilot_queries": rows,
+        }
+        return json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    if export_format == "jsonl":
+        return "".join(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n" for row in rows)
+    output = io.StringIO(newline="")
+    fieldnames = sorted({key for row in rows for key in row})
+    writer = csv.DictWriter(output, fieldnames=fieldnames, lineterminator="\n")
+    writer.writeheader()
+    for row in rows:
+        writer.writerow({key: "" if value is None else str(value) for key, value in row.items()})
+    return output.getvalue()
+
+
 def _cmd_pending_group(args: argparse.Namespace, console: Console, err: Console) -> int:
     """Grupo de L1 sin subcomandos; L9 y L10 los añaden."""
     err.print(f"El grupo «{args.command}» todavía no tiene subcomandos.")
@@ -2479,7 +2647,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "agent": lambda args, console, _err: _cmd_agent(args, console),
         "llm": lambda args, console, _err: _cmd_llm(args, console),
         "ask": _cmd_pending_group,
-        "queries": _cmd_pending_group,
+        "queries": _cmd_queries,
     }
     try:
         return handlers[args.command](args, console, err)
