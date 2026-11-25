@@ -490,7 +490,10 @@ def test_play_and_verify_load_the_profile_registered_for_the_capture(
     monkeypatch.setattr("f1_strategist.cli.PlaybackSession", create_playback)
     monkeypatch.setattr(
         "f1_strategist.cli._run_playback_console",
-        lambda _cfg, session, _console: (session.play(), session.wait(timeout=10)),
+        lambda _cfg, session, _console, **_kwargs: (
+            session.play(),
+            session.wait(timeout=10),
+        ),
     )
     monkeypatch.setattr("f1_strategist.cli._install_signal_handlers", lambda: None)
 

@@ -7,7 +7,6 @@ import csv
 import io
 import json
 import os
-import select
 import signal
 import sqlite3
 import sys
@@ -31,7 +30,7 @@ from .agent.llm_client import OpenAICompatibleClient
 from .agent.types import CallOutcome, MessageSource
 from .capture import CaptureError
 from .config import AppConfig, ConfigError, LLMConfig, MetricsConfig, apply_overrides, load_config
-from .console import format_bytes, render, run_console
+from .console import _PilotConsole, format_bytes, render, run_console
 from .console_messages import (
     AGENT_EMPTY_MESSAGES,
     AGENT_EXPORT_OVERWRITES_CAPTURE,
@@ -58,6 +57,10 @@ from .console_messages import (
     LLM_EVAL_OVERWRITES_DATASET,
     LLM_EVAL_OVERWRITES_DB,
     LLM_EVAL_SKIPPED_CALLS,
+    PILOT_INPUT_DISABLED,
+    PILOT_INPUT_NO_TERMINAL,
+    PILOT_PLAY_HELP,
+    PILOT_PLAY_HELP_DISABLED,
     render_agent_priority,
     render_agent_source,
     render_event_message,
@@ -78,6 +81,7 @@ from .metrics.history import MetricInputs
 from .offline import OfflineResult, run_capture_offline
 from .packets import packet_name
 from .parser import ParsedPacket
+from .pilot.console_input import LineEditor, TerminalKeyReader
 from .playback import PlaybackSession
 from .race_state import RaceState
 from .receiver import ReceiverError
@@ -183,6 +187,11 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="detectar y registrar eventos sin emitir avisos",
     )
+    run.add_argument(
+        "--no-input",
+        action="store_true",
+        help="desactiva la entrada de preguntas",
+    )
 
     replay = sub.add_parser("replay", help="reenvía una captura por UDP (sin abrir el juego)")
     replay.add_argument("file", type=Path)
@@ -199,6 +208,11 @@ def _build_parser() -> argparse.ArgumentParser:
     play.add_argument("--loop", action="store_true", help="repetir hasta Ctrl+C")
     play.add_argument("--start-lap", type=int, help="empezar en esta vuelta (avance rápido)")
     play.add_argument("--config", type=Path, help="archivo TOML de configuración")
+    play.add_argument(
+        "--no-input",
+        action="store_true",
+        help="desactiva la entrada de preguntas",
+    )
 
     inspect = sub.add_parser("inspect", help="resume el contenido de una captura")
     inspect.add_argument("file", type=Path)
@@ -583,7 +597,7 @@ def _cmd_run(args: argparse.Namespace, console: Console, err: Console) -> int:
         err.print(f"[red]Error:[/] {exc}")
         return 2
     try:
-        run_console(cfg, session, console)
+        run_console(cfg, session, console, input_enabled=not args.no_input)
     finally:
         session.stop()
     snap = session.snapshot()
@@ -607,63 +621,6 @@ def _cmd_replay(args: argparse.Namespace, console: Console, err: Console) -> int
     return 0
 
 
-class _KeyReader:
-    """Lectura de teclas sin bloquear; se desactiva si stdin no es un terminal."""
-
-    def __init__(self) -> None:
-        self._enabled = bool(getattr(sys.stdin, "isatty", lambda: False)())
-        self._windows = os.name == "nt"
-        self._saved_attributes: Any | None = None
-        self._fd: int | None = None
-        if not self._enabled:
-            return
-        if not self._windows:
-            import termios  # noqa: PLC0415
-            import tty  # noqa: PLC0415
-
-            self._fd = sys.stdin.fileno()
-            self._saved_attributes = termios.tcgetattr(self._fd)  # type: ignore[reportAttributeAccessIssue]
-            tty.setcbreak(self._fd)  # type: ignore[reportAttributeAccessIssue]
-
-    def read(self) -> str | None:
-        if not self._enabled:
-            return None
-        if self._windows:
-            import msvcrt  # noqa: PLC0415
-
-            # Las stubs de msvcrt en plataformas no Windows no declaran estas
-            # funciones, aunque solo se usan cuando os.name == "nt".
-            kbhit = getattr(msvcrt, "kbhit", None)
-            getwch = getattr(msvcrt, "getwch", None)
-            if kbhit is None or getwch is None or not kbhit():
-                return None
-            key = getwch()
-            return key if key != "\x03" else "q"
-        fd = self._fd
-        if fd is None:
-            return None
-        ready, _, _ = select.select([fd], [], [], 0)
-        if not ready:
-            return None
-        data = os.read(fd, 1)
-        if not data:
-            return None
-        return data.decode("utf-8", errors="ignore") or None
-
-    def close(self) -> None:
-        if self._saved_attributes is None or self._fd is None:
-            return
-        import termios  # noqa: PLC0415
-
-        termios.tcsetattr(  # type: ignore[reportAttributeAccessIssue]
-            self._fd,
-            termios.TCSADRAIN,  # type: ignore[reportAttributeAccessIssue]
-            self._saved_attributes,
-        )
-        self._saved_attributes = None
-        self._fd = None
-
-
 def _next_speed(current: float, direction: int) -> float:
     if current <= 0:
         return _SPEED_STEPS[0] if direction > 0 else 0.0
@@ -678,11 +635,59 @@ def _next_speed(current: float, direction: int) -> float:
     )
 
 
-def _render_playback(cfg: AppConfig, session: PlaybackSession) -> Group:
-    help_text = "espacio: pausa · +/-: velocidad · q: salir"
-    return Group(
-        render(cfg, session, time.monotonic(), race_now=session.observed_at),
-        Text(help_text, style="dim"),
+def _apply_play_key(
+    key: str,
+    session: PlaybackSession,
+    editor: LineEditor,
+    pilot: _PilotConsole,
+    editing: bool,
+) -> tuple[bool, bool]:
+    """Handle one key in playback; returns (editing, quit)."""
+    if editing:
+        if key == "\x1b":
+            editor.reset()
+            return False, False
+        question = editor.feed(key)
+        if question is not None:
+            pilot.submit(question)
+            return False, False
+        return True, False
+    if key == "/":
+        return True, False
+    if key == " ":
+        if session.paused:
+            session.resume()
+        else:
+            session.pause()
+    elif key in {"+", "="}:
+        session.set_speed(_next_speed(session.speed, 1))
+    elif key == "-":
+        session.set_speed(_next_speed(session.speed, -1))
+    elif key in {"q", "Q"}:
+        return False, True
+    return False, False
+
+
+def _render_playback(
+    cfg: AppConfig,
+    session: PlaybackSession,
+    *,
+    pilot_pending: str | None = None,
+    pilot_draft: str | None = None,
+    pilot_input_warning: str | None = None,
+    pilot_error: str | None = None,
+    pilot_help: str | None = None,
+) -> Group:
+    return render(
+        cfg,
+        session,
+        time.monotonic(),
+        race_now=session.observed_at,
+        pilot_pending=pilot_pending,
+        pilot_draft=pilot_draft,
+        pilot_input_warning=pilot_input_warning,
+        pilot_error=pilot_error,
+        pilot_help=pilot_help,
     )
 
 
@@ -690,29 +695,49 @@ def _run_playback_console(
     cfg: AppConfig,
     session: PlaybackSession,
     console: Console,
+    *,
+    input_enabled: bool | None = None,
 ) -> None:
-    keys = _KeyReader()
+    keys = TerminalKeyReader(enabled=input_enabled)
+    editor = LineEditor(max_chars=cfg.pilot.max_question_chars)
+    pilot = _PilotConsole(session)
+    warning = (
+        PILOT_INPUT_DISABLED
+        if input_enabled is False
+        else PILOT_INPUT_NO_TERMINAL
+        if not keys.enabled
+        else None
+    )
+    editing = False
+
+    def build() -> Group:
+        pilot.poll()
+        return _render_playback(
+            cfg,
+            session,
+            pilot_pending=pilot.pending_text,
+            pilot_draft=editor.text if keys.enabled and editing else None,
+            pilot_input_warning=warning,
+            pilot_error=pilot.error_text,
+            pilot_help=PILOT_PLAY_HELP if keys.enabled else PILOT_PLAY_HELP_DISABLED,
+        )
+
     try:
-        with Live(_render_playback(cfg, session), console=console, refresh_per_second=4) as live:
+        with Live(build(), console=console, refresh_per_second=4) as live:
             try:
                 while not session.finished and session.error is None:
                     key = keys.read()
-                    if key == " ":
-                        if session.paused:
-                            session.resume()
-                        else:
-                            session.pause()
-                    elif key in {"+", "="}:
-                        session.set_speed(_next_speed(session.speed, 1))
-                    elif key == "-":
-                        session.set_speed(_next_speed(session.speed, -1))
-                    elif key in {"q", "Q"}:
-                        break
+                    if key is not None:
+                        editing, quit_ = _apply_play_key(key, session, editor, pilot, editing)
+                        if quit_:
+                            break
+                        live.update(build())
                     time.sleep(0.05)
-                    live.update(_render_playback(cfg, session))
+                    live.update(build())
             except KeyboardInterrupt:
                 pass
     finally:
+        pilot.close()
         keys.close()
 
 
@@ -733,7 +758,7 @@ def _cmd_play(args: argparse.Namespace, console: Console, err: Console) -> int:
     _install_signal_handlers()
     try:
         session.play()
-        _run_playback_console(cfg, session, console)
+        _run_playback_console(cfg, session, console, input_enabled=not args.no_input)
     finally:
         session.stop()
     if session.error is not None:
