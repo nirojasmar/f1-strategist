@@ -12,6 +12,7 @@ import math
 import threading
 import time
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 
 from .agent.communicator import AgentCommunicator, AlertSources, build_communicator
@@ -46,6 +47,14 @@ _EOF = "eof"
 _POLL_INTERVAL_S = 0.1
 
 
+@dataclass(frozen=True, slots=True)
+class _PilotBundle:
+    """Entradas del piloto y su instante, publicadas juntas tras cada paquete."""
+
+    observed_at: float
+    inputs: PilotInputs
+
+
 class PlaybackSession:
     """Reproduce una captura con pausa, velocidad, bucle y salto a una vuelta."""
 
@@ -76,12 +85,12 @@ class PlaybackSession:
         self._events_config = events_config or EventsConfig()
         self._gate_config = gate_config or GateConfig()
         agent_config = agent_config or AgentConfig()
-        effective_pilot = pilot_config or PilotConfig()
+        self._pilot_config = pilot_config or PilotConfig()
         self._agent = agent_communicator or build_communicator(
             agent_config,
             llm_config or LLMConfig(),
             mode=agent_config.offline_mode,
-            pilot=effective_pilot,
+            pilot=self._pilot_config,
         )
         self._loop = loop
         self._speed = _validate_speed(speed)
@@ -108,14 +117,9 @@ class PlaybackSession:
             gate=self._gate_config,
             evaluation_min_interval_s=self._strategy_config.evaluation_min_interval_s,
         )
-        self._pilot = PilotEngine(
-            effective_pilot,
-            snapshots=self._pilot_inputs,
-            followup=getattr(self._agent, "submit_followup", None),
-            note_interaction=self._note_pilot_interaction,
-            metrics_config=config or MetricsConfig(),
-            strategy_config=self._strategy_config,
-        )
+        self._pilot_local = threading.local()
+        self._pilot = self._build_pilot()
+        self._pilot_bundle = self._build_pilot_bundle(self._observed_at)
         self._stats = Stats()
         # Valida cabecera y metadatos ahora para que los errores sean inmediatos.
         CaptureReader(self.path)
@@ -280,13 +284,39 @@ class PlaybackSession:
 
     def ask_pilot(self, text: str) -> PilotAnswer:
         """Responde con la última telemetría reproducida."""
-        return self._pilot.ask(text, now=self._observed_at)
+        with self._condition:
+            pilot = self._pilot
+            bundle = self._pilot_bundle
+        self._pilot_local.bundle = bundle
+        try:
+            return pilot.ask(text, now=bundle.observed_at)
+        finally:
+            self._pilot_local.bundle = None
 
     def pilot_snapshot(self) -> PilotSnapshot:
         """Intercambios recientes y aclaración pendiente."""
         return self._pilot.snapshot()
 
+    def _build_pilot(self) -> PilotEngine:
+        return PilotEngine(
+            self._pilot_config,
+            snapshots=self._pilot_inputs,
+            followup=getattr(self._agent, "submit_followup", None),
+            note_interaction=self._note_pilot_interaction,
+            metrics_config=self._config or MetricsConfig(),
+            strategy_config=self._strategy_config,
+        )
+
+    def _build_pilot_bundle(self, observed_at: float) -> _PilotBundle:
+        return _PilotBundle(observed_at, self._build_pilot_inputs())
+
     def _pilot_inputs(self) -> PilotInputs:
+        bundle = getattr(self._pilot_local, "bundle", None)
+        if bundle is not None:
+            return bundle.inputs
+        return self._build_pilot_inputs()
+
+    def _build_pilot_inputs(self) -> PilotInputs:
         return PilotInputs(
             state=self.race_snapshot(),
             metrics=self.metrics_snapshot(),
@@ -344,11 +374,16 @@ class PlaybackSession:
             evaluation_min_interval_s=self._strategy_config.evaluation_min_interval_s,
         )
         self._agent.reset()
-        self._pilot.reset()
         self._stats = Stats()
+        self._weekend_profile = None
+        # Se reemplaza el motor: una petición en vuelo conserva el antiguo y no
+        # puede escribir en la sesión nueva al terminar.
+        pilot = self._build_pilot()
+        bundle = self._build_pilot_bundle(0.0)
         with self._condition:
+            self._pilot = pilot
+            self._pilot_bundle = bundle
             self._observed_at = 0.0
-            self._weekend_profile = None
             self._packets_parsed = 0
 
     def _play_once(self, seek_lap: int | None) -> str:
@@ -428,6 +463,10 @@ class PlaybackSession:
                 ),
             )
             self._agent.drain_records()
+            bundle = _PilotBundle(observed_at, self._build_pilot_inputs())
+            with self._condition:
+                self._observed_at = observed_at
+                self._pilot_bundle = bundle
             last_state = state
             last_observed_at = observed_at
             if seeking and state.current_lap is not None and state.current_lap >= (seek_lap or 1):

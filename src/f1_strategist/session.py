@@ -23,7 +23,7 @@ from .metrics.engine import MetricsEngine, MetricsSnapshot
 from .packets import PacketHeader, parse_header
 from .parser import PacketParseError, is_ignored_by_design, parse_packet
 from .pilot.engine import PilotEngine, PilotInputs
-from .pilot.types import PilotAnswer, PilotSnapshot
+from .pilot.types import PilotAnswer, PilotExchange, PilotQuery, PilotSnapshot, RoutedQuery
 from .race_state import RaceState, RaceStateSnapshot
 from .receiver import Stats, StatsSnapshot, UdpReceiver
 from .recorder import _RACE_SESSION_TYPES, SessionRecorder, serialize_config
@@ -35,6 +35,18 @@ from .weekend_provider import resolve_weekend_profile
 
 _LOGGER = logging.getLogger(__name__)
 _PROFILE_WRITER_BARRIER_TIMEOUT_S = 5.0
+
+
+class _CompletionRecordingPilot(PilotEngine):
+    """Conserva el intercambio al completarse, antes de que un reset lo borre."""
+
+    completed: PilotExchange | None = None
+
+    def _remember(
+        self, query: PilotQuery, answer: PilotAnswer, routed: RoutedQuery, now: float
+    ) -> None:
+        super()._remember(query, answer, routed, now)
+        self.completed = self._recent[-1]
 
 
 class CaptureSession:
@@ -56,14 +68,7 @@ class CaptureSession:
         self._agent = agent_communicator or build_communicator(
             config.agent, config.llm, pilot=config.pilot
         )
-        self._pilot = PilotEngine(
-            config.pilot,
-            snapshots=self._pilot_inputs,
-            followup=getattr(self._agent, "submit_followup", None),
-            note_interaction=self._note_pilot_interaction,
-            metrics_config=config.metrics,
-            strategy_config=config.strategy,
-        )
+        self._pilot = self._build_pilot()
         self._queue: queue.Queue[CapturedPacket] = queue.Queue(maxsize=queue_size)
         self._receiver = UdpReceiver(config.telemetry, self._queue, self.stats)
         self._writer: CaptureWriter | None = None
@@ -336,19 +341,26 @@ class CaptureSession:
 
     def ask_pilot(self, text: str) -> PilotAnswer:
         """Responde con la última telemetría sin esperar al LLM."""
-        answer = self._pilot.ask(text, now=time.monotonic())
+        # Se conserva el motor de este intercambio: un cambio de sesión puede
+        # reemplazarlo mientras la respuesta está en vuelo.
+        pilot = self._pilot
+        answer = pilot.ask(text, now=time.monotonic())
         recorder = self._recorder
         observed_at = self._last_observed_at
         if recorder is not None and observed_at is not None:
-            exchange = next(
-                (
-                    exchange
-                    for exchange in reversed(self._pilot.snapshot().recent)
-                    if exchange.answer.query_id == answer.query_id
-                ),
-                None,
+            exchange = (
+                pilot.completed
+                if isinstance(pilot, _CompletionRecordingPilot)
+                else next(
+                    (
+                        item
+                        for item in reversed(pilot.snapshot().recent)
+                        if item.answer.query_id == answer.query_id
+                    ),
+                    None,
+                )
             )
-            if exchange is not None:
+            if exchange is not None and exchange.answer.query_id == answer.query_id:
                 recorder.record_pilot((exchange,), observed_at)
         return answer
 
@@ -364,6 +376,16 @@ class CaptureSession:
             history=self._metrics_engine.history.snapshot(),
             events=self.events_snapshot(),
             profile=self._weekend_profile,
+        )
+
+    def _build_pilot(self) -> _CompletionRecordingPilot:
+        return _CompletionRecordingPilot(
+            self.config.pilot,
+            snapshots=self._pilot_inputs,
+            followup=getattr(self._agent, "submit_followup", None),
+            note_interaction=self._note_pilot_interaction,
+            metrics_config=self.config.metrics,
+            strategy_config=self.config.strategy,
         )
 
     def _note_pilot_interaction(self, now: float) -> None:
@@ -443,7 +465,7 @@ class CaptureSession:
                                     )
                             # La sesión anterior termina aquí: no debe publicar más allá.
                             self._agent.reset()
-                            self._pilot.reset()
+                            self._pilot = self._build_pilot()
                             self._weekend_profile = None
                             self._metrics_engine.set_profile(None)
                             self._strategy_engine.set_profile(None)

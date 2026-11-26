@@ -70,6 +70,7 @@ class OfflineEventPipeline:
         )
         self._observed_at = 0.0
         self._weekend_profile: WeekendProfile | None = None
+        self._session_uid: int | None = None
         self._pilot = PilotEngine(
             config.pilot,
             snapshots=self._pilot_inputs,
@@ -84,6 +85,11 @@ class OfflineEventPipeline:
         self._race_state.apply(packet, observed_at)
         state = self._race_state.snapshot()
         session = state.session
+        if session.uid != self._session_uid:
+            # La conversación es de una sesión: al cambiar de UID se descarta,
+            # igual que en vivo y en reproducción.
+            self._pilot.reset()
+            self._session_uid = session.uid
         profile = (
             self._profiles_by_uid.get(session.uid)
             if session.uid is not None

@@ -871,3 +871,48 @@ def test_second_queued_followup_replaces_the_first() -> None:
     snapshot = communicator.snapshot()
     assert [message.query_id for message in snapshot.messages] == ["q1", "q3"]
     assert snapshot.counters["followup:skipped"] == 1
+
+
+def test_followup_built_before_a_reset_is_discarded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    communicator = _communicator()
+    original = communicator._build_followup_context
+
+    def build(answer: PilotAnswer, sources: AlertSources) -> ContextPayload | None:
+        communicator.reset()
+        return original(answer, sources)
+
+    monkeypatch.setattr(communicator, "_build_followup_context", build)
+
+    communicator.submit_followup(_answer(), _sources(lap=3))
+
+    snapshot = communicator.snapshot()
+    assert not snapshot.messages
+    assert snapshot.counters["followup:expired"] == 1
+
+
+def test_queued_critical_beats_a_followup() -> None:
+    client = FakeClient(blocking=True)
+    communicator = _communicator(client, critical_uses_llm=True)
+    communicator.start()
+    try:
+        communicator.submit(_alert("a1"), _sources())
+        assert client.started.wait(timeout=5.0)
+        communicator.submit(
+            _alert("critical1", priority=EventPriority.CRITICAL),
+            _sources(observed_at=11.0),
+        )
+        communicator.submit_followup(_answer("q1"), _sources(lap=3))
+        client.release.set()
+        assert communicator.wait_idle(timeout=5.0)
+    finally:
+        client.release.set()
+        communicator.stop()
+
+    snapshot = communicator.snapshot()
+    assert [message.alert_id or message.query_id for message in snapshot.messages] == [
+        "a1",
+        "critical1",
+        "q1",
+    ]

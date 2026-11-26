@@ -399,6 +399,10 @@ class AgentCommunicator:
             with self._condition:
                 self._count_locked("followup:skipped")
             return
+        # El epoch se fija antes de construir el contexto: si un reset ocurre
+        # mientras se construye, el seguimiento debe caducar al admitirse.
+        with self._condition:
+            epoch = self._epoch
         context = self._build_followup_context(answer, sources)
         if context is None:
             with self._condition:
@@ -409,7 +413,7 @@ class AgentCommunicator:
             sources=sources,
             context=context,
             cancel=threading.Event(),
-            epoch=self._epoch,
+            epoch=epoch,
             lap=sources.state.current_lap,
             submitted_at=self._clock(),
         )
@@ -574,7 +578,17 @@ class AgentCommunicator:
                     return
                 followup = self._followup
                 pending: _Pending | None = None
-                if followup is not None:
+                critical = next(
+                    (item for item in self._queue if item.alert.priority is EventPriority.CRITICAL),
+                    None,
+                )
+                if critical is not None:
+                    # Una alerta crítica en cola va antes que cualquier seguimiento.
+                    followup = None
+                    self._queue.remove(critical)
+                    pending = critical
+                    self._in_flight = pending
+                elif followup is not None:
                     # Un seguimiento va antes que cualquier alerta no crítica.
                     self._followup = None
                     self._followup_in_flight = followup

@@ -42,6 +42,7 @@ from f1_strategist.race_state import (
     RaceStateSnapshot,
 )
 from f1_strategist.strategy.types import StrategySnapshot
+from tests.scenarios import ScenarioCar, build_weekend_timed
 
 
 class _Clock:
@@ -467,6 +468,46 @@ def test_offline_pipeline_answers_without_packets() -> None:
         snapshot = pipeline.pilot_snapshot()
         assert len(snapshot.recent) == 1
         assert snapshot.counters == {"unavailable": 1}
+    finally:
+        pipeline.stop()
+
+
+def test_offline_pipeline_resets_the_pilot_on_a_session_change() -> None:
+    pipeline = OfflineEventPipeline(
+        AppConfig(
+            telemetry=TelemetryConfig(listen_port=0),
+            capture=CaptureConfig(enabled=False),
+        )
+    )
+    cars = (
+        ScenarioCar(0, "Driver A", 1, 90.0, 40.0, 2.0, 2.5),
+        ScenarioCar(1, "Driver B", 2, 90.5, 40.0, 2.0, 2.3),
+    )
+    packets = list(build_weekend_timed(cars, total_laps=1, samples_per_lap=1))
+    practice_packet, practice_at = packets[0]
+    next_practice_packet, next_practice_at = packets[1]
+    qualifying_packet, qualifying_at = next(
+        (packet, at) for packet, at in packets if packet.header.session_uid == 0xF12502
+    )
+    try:
+        pipeline.apply(practice_packet, practice_at)
+        pipeline.ask_pilot("¿Cómo voy?")
+        assert len(pipeline.pilot_snapshot().recent) == 1
+
+        pending = Clarification(
+            message_key="pilot_clarification_driver", options=(), expires_at=99.0
+        )
+        pipeline._pilot._pending = pending
+
+        pipeline.apply(next_practice_packet, next_practice_at)
+        snapshot = pipeline.pilot_snapshot()
+        assert len(snapshot.recent) == 1
+        assert snapshot.pending_clarification is pending
+
+        pipeline.apply(qualifying_packet, qualifying_at)
+        snapshot = pipeline.pilot_snapshot()
+        assert snapshot.recent == ()
+        assert snapshot.pending_clarification is None
     finally:
         pipeline.stop()
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import struct
+import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -529,3 +530,65 @@ def test_play_command_fails_when_requested_lap_is_missing(
 
     assert main(["play", str(path), "--speed", "0", "--start-lap", "99"]) == 1
     assert "No se encontró la vuelta solicitada 99" in capsys.readouterr().err
+
+
+def test_ask_pilot_uses_the_published_bundle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "empty.f1cap"
+    with CaptureWriter(path, include_created_utc=False):
+        pass
+    session = PlaybackSession(path)
+    bundle = session._build_pilot_bundle(12.5)
+    session._pilot_bundle = bundle
+
+    def fail() -> None:
+        raise AssertionError("las entradas deben venir del bundle publicado")
+
+    monkeypatch.setattr(session, "_build_pilot_inputs", fail)
+
+    session.ask_pilot("¿Cómo voy?")
+
+    exchange = session.pilot_snapshot().recent[0]
+    assert exchange.query.received_at == 12.5
+
+
+def test_reset_during_ask_discards_the_exchange(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "empty.f1cap"
+    with CaptureWriter(path, include_created_utc=False):
+        pass
+    session = PlaybackSession(path)
+    pilot = session._pilot
+    entered = threading.Event()
+    release = threading.Event()
+    original = pilot._remember
+
+    def remember(query: Any, answer: Any, routed: Any, now: float) -> None:
+        entered.set()
+        assert release.wait(timeout=5.0)
+        original(query, answer, routed, now)
+
+    monkeypatch.setattr(pilot, "_remember", remember)
+    errors: list[BaseException] = []
+
+    def ask() -> None:
+        try:
+            session.ask_pilot("¿Cómo voy?")
+        except BaseException as exc:
+            errors.append(exc)
+
+    thread = threading.Thread(target=ask)
+    thread.start()
+    assert entered.wait(timeout=5.0)
+    session._reset_pipeline()
+    release.set()
+    thread.join(timeout=5.0)
+
+    assert not thread.is_alive()
+    assert not errors
+    assert session.pilot_snapshot().recent == ()
+    assert len(pilot.snapshot().recent) == 1
