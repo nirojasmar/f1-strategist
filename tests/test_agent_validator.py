@@ -225,6 +225,56 @@ def test_imperative_phrase_rejected_with_high_uncertainty() -> None:
     assert _validate(_reply(message="Box esta vuelta."), _context()).valid
 
 
+def test_question_followup_rejects_instructions_without_uncertainty() -> None:
+    context = _context(
+        kind=ContextKind.QUESTION,
+        alert={"facts": []},
+        situation={"lap": 3},
+        strategy={"action": "stay_out"},
+        metrics={},
+        uncertainties=(),
+    )
+    text = _reply(
+        message="Entra a boxes aproximadamente en la vuelta 3.",
+        used_facts=["action"],
+    )
+
+    result = ResponseValidator(AppConfig()).validate(text, context, _alert(facts=()))
+
+    assert ValidationIssue.IMPERATIVE_PHRASE in result.errors
+    commentary = _reply(
+        message="Puedes mantener el plan aproximadamente 3 vueltas.",
+        used_facts=["action"],
+    )
+    assert ResponseValidator(AppConfig()).validate(commentary, context, _alert(facts=())).valid
+
+
+def test_estimate_caution_uses_the_supporting_fact() -> None:
+    context = _context(
+        kind=ContextKind.QUESTION,
+        alert={"facts": []},
+        situation={},
+        strategy={},
+        metrics={},
+        tool_facts=(
+            {
+                "name": "tyre_life_laps",
+                "value": 8,
+                "unit": "lap",
+                "kind": "estimated",
+                "quality": "ok",
+            },
+        ),
+    )
+    unhedged = _reply(message="Quedan 8 vueltas.", used_facts=[])
+
+    result = ResponseValidator(AppConfig()).validate(unhedged, context, _alert(facts=()))
+
+    assert ValidationIssue.ESTIMATE_WITHOUT_CAUTION in result.errors
+    hedged = _reply(message="Quedan aproximadamente 8 vueltas.", used_facts=[])
+    assert ResponseValidator(AppConfig()).validate(hedged, context, _alert(facts=())).valid
+
+
 def test_repeated_recent_message_rejected() -> None:
     context = _context(recent_messages=("Box esta vuelta: ganamos 2,4 s, con confianza 0,7.",))
     result = _validate(_reply(), context)

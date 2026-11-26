@@ -200,13 +200,13 @@ class ResponseValidator:
         for code in _number_errors(message, _numbers(context, alert)):
             errors.append(code)
 
-        if _caution_facts(context, reply.used_facts) and not _has_hedge(
+        if _caution_facts(context, reply.used_facts, message) and not _has_hedge(
             message, self._pilot.hedge_words
         ):
             # Una estimación o recomendación sin cautela se lee como dato medido.
             errors.append(ValidationIssue.ESTIMATE_WITHOUT_CAUTION)
 
-        if _has_high_uncertainty(context.uncertainties):
+        if context.kind is ContextKind.QUESTION or _has_high_uncertainty(context.uncertainties):
             folded = _collapse(message)
             if any(_collapse(phrase) in folded for phrase in self._config.imperative_phrases):
                 errors.append(ValidationIssue.IMPERATIVE_PHRASE)
@@ -486,15 +486,35 @@ def _has_high_uncertainty(uncertainties: tuple[str, ...]) -> bool:
     return False
 
 
-def _caution_facts(context: ContextPayload, used: tuple[str, ...]) -> set[str]:
-    """Hechos usados que son estimación o recomendación y exigen cautela."""
+def _caution_facts(context: ContextPayload, used: tuple[str, ...], message: str) -> set[str]:
+    """Hechos usados que son estimación o recomendación y exigen cautela.
+
+    Además de los declarados por el modelo, cuenta la procedencia: una cifra del
+    texto que coincide con un hecho estimado o recomendado exige cautela aunque
+    ``used_facts`` lo omita.
+    """
     kinds = {
         str(item.get("name")): str(item.get("kind"))
         for item in context.tool_facts
         if isinstance(item, Mapping) and item.get("name") is not None
     }
     cautious = {FactKind.ESTIMATED.value, FactKind.RECOMMENDED.value}
-    return {name for name in used if kinds.get(name) in cautious}
+    referenced = {name for name in used if kinds.get(name) in cautious}
+    if referenced:
+        return referenced
+    tokens = _numeric_tokens(message)
+    for item in context.tool_facts:
+        if not isinstance(item, Mapping) or item.get("name") is None:
+            continue
+        name = str(item["name"])
+        if kinds.get(name) not in cautious:
+            continue
+        value = _as_number(item.get("value"))
+        if value is None:
+            continue
+        if any(_rounds_to(token, value, decimals) for token, decimals, _ in tokens):
+            referenced.add(name)
+    return referenced
 
 
 def _has_hedge(message: str, hedge_words: tuple[str, ...]) -> bool:

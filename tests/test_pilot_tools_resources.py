@@ -327,6 +327,40 @@ def test_damage_status_without_data() -> None:
     assert "damage_aero_max_pct" in result.missing
 
 
+def test_empty_fault_list_is_a_measured_zero() -> None:
+    metrics = MetricsSnapshot(
+        metrics={"damage.faults": _metric("damage.faults", (), unit="faults")}
+    )
+
+    result = damage_status(_query(), _inputs(metrics=metrics))
+
+    assert _facts(result)["damage_fault_count"] == 0
+    assert "damage_faults" not in result.missing
+
+
+def test_stale_metric_quality_is_preserved_when_converting_to_facts() -> None:
+    metrics = MetricsSnapshot(
+        metrics={
+            "fuel.in_tank_kg": _metric("fuel.in_tank_kg", 42.5, unit="kg", quality=Quality.STALE),
+            "tyres.game_lifespan_laps": _metric(
+                "tyres.game_lifespan_laps", 12.0, unit="lap", quality=Quality.STALE
+            ),
+            "pace.trend_s_per_lap": _metric(
+                "pace.trend_s_per_lap", 0.1, unit="s/lap", quality=Quality.STALE
+            ),
+        }
+    )
+    inputs = _inputs(metrics=metrics)
+
+    fuel = estimate_fuel_margin(_query(), inputs)
+    tyre = estimate_tyre_life(_query(), inputs)
+    pace = get_recent_pace_trend(_query(), inputs)
+
+    assert _fact(fuel, "fuel_in_tank_kg").quality is Quality.STALE
+    assert _fact(tyre, "tyre_life_laps").quality is Quality.STALE
+    assert _fact(pace, "pace_trend_s_per_lap").quality is Quality.STALE
+
+
 def test_weather_forecast_complete() -> None:
     forecast = (
         WeatherForecastSnapshot(

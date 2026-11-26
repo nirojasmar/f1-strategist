@@ -117,14 +117,13 @@ def ask_strategy(query: RoutedQuery, inputs: ToolInputs) -> ToolResult:
             quality,
         )
 
-    facts.append(
-        _fact(
-            "strategy_safety_car",
-            _safety_car_active(inputs),
-            None,
-            FactKind.MEASURED,
-            Quality.OK,
-        )
+    _append(
+        facts,
+        "strategy_safety_car",
+        _safety_car_active(inputs),
+        None,
+        FactKind.MEASURED,
+        Quality.OK,
     )
 
     return ToolResult(
@@ -152,9 +151,32 @@ def simulate_strategy(query: RoutedQuery, inputs: ToolInputs) -> ToolResult:
     text = query.normalized_text or query.query.text
     pit_in_laps = _pit_in_laps(text)
     compound = _requested_compound(text)
+    stale_lap = inputs.state.current_lap is not None and evaluation.lap != inputs.state.current_lap
+    if stale_lap:
+        # Las alternativas relativas ("en N vueltas") solo valen para la vuelta evaluada.
+        if inputs.metrics_config is None or inputs.strategy_config is None:
+            return ToolResult(
+                intent=Intent.ASK_STRATEGY,
+                quality=Quality.UNAVAILABLE,
+                missing=("strategy_configuration",),
+                stale=_is_stale(evaluation, inputs),
+                data_lap=evaluation.lap,
+                notes=(*_context_notes(evaluation), NOTE_CONFIG_MISSING),
+            )
+        recomputed = _evaluate_on_demand(inputs, pit_in_laps)
+        if recomputed is None:
+            return ToolResult(
+                intent=Intent.ASK_STRATEGY,
+                quality=Quality.UNAVAILABLE,
+                missing=("strategy_evaluation",),
+                stale=_is_stale(evaluation, inputs),
+                data_lap=evaluation.lap,
+                notes=(*_context_notes(evaluation), NOTE_EVALUATION_FAILED),
+            )
+        evaluation = recomputed
     alternatives = evaluation.alternatives
     candidates = tuple(item for item in alternatives if _matches(item, pit_in_laps, compound))
-    if not candidates and _needs_recompute(alternatives, pit_in_laps):
+    if not candidates and not stale_lap and _needs_recompute(alternatives, pit_in_laps):
         # La evaluación publicada no cubre la ventana pedida; se evalúa bajo demanda.
         if inputs.metrics_config is None or inputs.strategy_config is None:
             return ToolResult(
@@ -277,8 +299,8 @@ def _needs_recompute(alternatives: tuple[StrategyAlternative, ...], pit_in_laps:
         if not item.key.startswith("pit_in_"):
             continue
         try:
-            published = max(published, int(item.key.split("_", 2)[1].split(":", 1)[0]))
-        except (IndexError, ValueError):
+            published = max(published, int(item.key.removeprefix("pit_in_").split(":", 1)[0]))
+        except ValueError:
             continue
     return pit_in_laps > published
 
@@ -376,8 +398,11 @@ def _is_stale(evaluation: StrategyEvaluation, inputs: ToolInputs) -> bool:
     return evaluation.session_uid != (str(uid) if uid is not None else "unknown")
 
 
-def _safety_car_active(inputs: ToolInputs) -> bool:
-    return inputs.state.session.safety_car_status in _SAFETY_CAR_STATUSES
+def _safety_car_active(inputs: ToolInputs) -> bool | None:
+    status = inputs.state.session.safety_car_status
+    if status is None:
+        return None
+    return status in _SAFETY_CAR_STATUSES
 
 
 __all__ = [

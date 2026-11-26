@@ -15,6 +15,17 @@ from ..metrics.types import Metric, Quality
 from .types import FactKind, Intent, RoutedQuery, Tool, ToolFact, ToolInputs, ToolResult
 
 _ABSENT_QUALITIES = (Quality.INSUFFICIENT, Quality.UNAVAILABLE)
+_QUALITY_RANK = {
+    Quality.OK: 0,
+    Quality.LOW: 1,
+    Quality.STALE: 2,
+    Quality.INSUFFICIENT: 3,
+    Quality.UNAVAILABLE: 4,
+}
+
+
+def _worst_quality(*qualities: Quality) -> Quality:
+    return max(qualities, key=_QUALITY_RANK.__getitem__)
 
 
 def _number(metric: Metric | None) -> float | int | None:
@@ -144,9 +155,13 @@ def estimate_fuel_margin(query: RoutedQuery, inputs: ToolInputs) -> ToolResult:
     facts: list[ToolFact] = []
     missing: list[str] = []
 
-    fuel_kg = None if restricted else _number(metrics.get("fuel.in_tank_kg"))
+    fuel_metric = None if restricted else metrics.get("fuel.in_tank_kg")
+    fuel_kg = _number(fuel_metric)
+    fuel_quality = Quality.OK
     if fuel_kg is None and not restricted and car is not None:
         fuel_kg = car.fuel_kg
+    elif fuel_metric is not None:
+        fuel_quality = fuel_metric.quality
     if isinstance(fuel_kg, (int, float)) and fuel_kg <= 0:
         fuel_kg = None
     if fuel_kg is None:
@@ -158,7 +173,7 @@ def estimate_fuel_margin(query: RoutedQuery, inputs: ToolInputs) -> ToolResult:
                 value=fuel_kg,
                 unit="kg",
                 kind=FactKind.MEASURED,
-                quality=Quality.STALE if stale else Quality.OK,
+                quality=Quality.STALE if stale else fuel_quality,
             )
         )
 
@@ -206,19 +221,30 @@ def estimate_tyre_life(query: RoutedQuery, inputs: ToolInputs) -> ToolResult:
         facts, missing, "tyre_wear_mean_pct", metrics.get("tyres.wear_mean_pct"), FactKind.MEASURED
     )
 
-    game_laps = _number(metrics.get("tyres.game_lifespan_laps"))
-    wear_limit_laps = _number(metrics.get("tyres.laps_to_wear_limit"))
-    wear_rate = _number(metrics.get("tyres.wear_rate_pct_per_lap"))
-    wear_mean = _number(metrics.get("tyres.wear_mean_pct"))
+    game_metric = metrics.get("tyres.game_lifespan_laps")
+    wear_limit_metric = metrics.get("tyres.laps_to_wear_limit")
+    wear_rate_metric = metrics.get("tyres.wear_rate_pct_per_lap")
+    wear_mean_metric = metrics.get("tyres.wear_mean_pct")
+    game_laps = _number(game_metric)
+    wear_limit_laps = _number(wear_limit_metric)
+    wear_rate = _number(wear_rate_metric)
+    wear_mean = _number(wear_mean_metric)
 
     if game_laps is not None:
         life_laps, source, kind = game_laps, "game", FactKind.MEASURED
+        life_quality = game_metric.quality if game_metric is not None else Quality.OK
     elif wear_limit_laps is not None:
         life_laps, source, kind = wear_limit_laps, "wear_limit", FactKind.ESTIMATED
+        life_quality = wear_limit_metric.quality if wear_limit_metric is not None else Quality.OK
     elif wear_rate is not None and wear_rate > 0 and wear_mean is not None:
         life_laps, source, kind = (100.0 - wear_mean) / wear_rate, "model", FactKind.ESTIMATED
+        life_quality = _worst_quality(
+            wear_rate_metric.quality if wear_rate_metric is not None else Quality.OK,
+            wear_mean_metric.quality if wear_mean_metric is not None else Quality.OK,
+        )
     else:
         life_laps, source, kind = None, None, FactKind.ESTIMATED
+        life_quality = Quality.OK
 
     if life_laps is None or source is None:
         missing.append("tyre_life_laps")
@@ -229,7 +255,7 @@ def estimate_tyre_life(query: RoutedQuery, inputs: ToolInputs) -> ToolResult:
                 value=life_laps,
                 unit="lap",
                 kind=kind,
-                quality=Quality.STALE if stale else Quality.OK,
+                quality=Quality.STALE if stale else life_quality,
             )
         )
         facts.append(
@@ -238,7 +264,7 @@ def estimate_tyre_life(query: RoutedQuery, inputs: ToolInputs) -> ToolResult:
                 value=source,
                 unit=None,
                 kind=kind,
-                quality=Quality.STALE if stale else Quality.OK,
+                quality=Quality.STALE if stale else life_quality,
             )
         )
     return _result(Intent.TYRE_LIFE, inputs, facts, missing, stale)
@@ -251,7 +277,8 @@ def get_recent_pace_trend(query: RoutedQuery, inputs: ToolInputs) -> ToolResult:
     facts: list[ToolFact] = []
     missing: list[str] = []
 
-    trend = _number(metrics.get("pace.trend_s_per_lap"))
+    trend_metric = metrics.get("pace.trend_s_per_lap")
+    trend = _number(trend_metric)
     if trend is None:
         missing.append("pace_trend_s_per_lap")
     else:
@@ -261,7 +288,11 @@ def get_recent_pace_trend(query: RoutedQuery, inputs: ToolInputs) -> ToolResult:
             label = "worsening"
         else:
             label = "improving"
-        quality = Quality.STALE if stale else Quality.OK
+        quality = (
+            Quality.STALE
+            if stale
+            else (trend_metric.quality if trend_metric is not None else Quality.OK)
+        )
         facts.append(ToolFact("pace_trend_s_per_lap", trend, "s/lap", FactKind.ESTIMATED, quality))
         facts.append(ToolFact("pace_trend_label", label, None, FactKind.ESTIMATED, quality))
 
@@ -289,7 +320,7 @@ def damage_status(query: RoutedQuery, inputs: ToolInputs) -> ToolResult:
         _add_metric(facts, missing, name, metrics.get(key), FactKind.MEASURED)
 
     faults = metrics.get("damage.faults")
-    if faults is not None and faults.value and faults.quality not in _ABSENT_QUALITIES:
+    if faults is not None and faults.value is not None and faults.quality not in _ABSENT_QUALITIES:
         fault_names = tuple(str(item) for item in faults.value)  # type: ignore[union-attr]
         quality = Quality.STALE if stale else faults.quality
         facts.append(

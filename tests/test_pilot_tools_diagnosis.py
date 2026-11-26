@@ -48,19 +48,30 @@ def _record(
     )
 
 
-def _tool_inputs(records: tuple[LapRecord, ...]) -> ToolInputs:
+def _tool_inputs(
+    records: tuple[LapRecord, ...],
+    *,
+    metrics_config: MetricsConfig | None = None,
+) -> ToolInputs:
+    config = MetricsConfig() if metrics_config is None else metrics_config
     state = replace(RaceState().snapshot(), player_car_index=0)
     history = LapHistorySnapshot(records={0: records})
     metrics = MetricsSnapshot(
         metrics={
             metric.key: metric
-            for metric in PaceMetrics().compute(
-                MetricInputs(state, history, MetricsConfig(), 10.0, 0)
-            )
+            for metric in PaceMetrics().compute(MetricInputs(state, history, config, 10.0, 0))
         },
         computed_at_monotonic=10.0,
     )
-    return ToolInputs(state, metrics, StrategySnapshot(), history, PilotConfig(), 10.0)
+    return ToolInputs(
+        state,
+        metrics,
+        StrategySnapshot(),
+        history,
+        PilotConfig(),
+        10.0,
+        metrics_config=config,
+    )
 
 
 def _routed() -> RoutedQuery:
@@ -229,3 +240,37 @@ def test_loss_without_evidence_does_not_assert_a_cause() -> None:
     assert facts["pace.stable"] is False
     assert _cause_codes(result) == []
     assert "pace_possible_causes" not in result.notes
+
+
+def test_cause_flags_use_the_supplied_metrics_config() -> None:
+    records = tuple(_record(lap, 90.0) for lap in range(1, 6)) + tuple(
+        _record(lap, 90.8, traffic=0.6) for lap in range(6, 8)
+    )
+
+    default = diagnose_pace(_routed(), _tool_inputs(records))
+    configured = diagnose_pace(
+        _routed(),
+        _tool_inputs(records, metrics_config=MetricsConfig(traffic_lap_fraction=0.9)),
+    )
+
+    assert "traffic" in _cause_codes(default)
+    assert "traffic" not in _cause_codes(configured)
+
+
+def test_stale_reference_metric_propagates_to_the_diagnosis() -> None:
+    records = tuple(_record(lap, 90.0) for lap in range(1, 6)) + tuple(
+        _record(lap, 90.6) for lap in range(6, 9)
+    )
+    inputs = _tool_inputs(records)
+    metrics = inputs.metrics
+    stale_best = replace(metrics["pace.best_lap_s"], quality=Quality.STALE)
+    stale_snapshot = MetricsSnapshot(
+        metrics={**metrics.metrics, "pace.best_lap_s": stale_best},
+        computed_at_monotonic=10.0,
+    )
+
+    result = diagnose_pace(_routed(), replace(inputs, metrics=stale_snapshot))
+
+    assert result.quality is Quality.STALE
+    assert result.stale is True
+    assert all(fact.quality is Quality.STALE for fact in result.facts)

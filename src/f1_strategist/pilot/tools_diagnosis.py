@@ -34,7 +34,7 @@ _DEFAULT_WINDOW = 5
 def diagnose_pace(routed: RoutedQuery, inputs: ToolInputs) -> ToolResult:
     """Descompone la pérdida de ritmo en posibles causas con su evidencia."""
     del routed  # La consulta ya está enrutada; el diagnóstico depende solo de las instantáneas.
-    config = MetricsConfig()
+    config = inputs.metrics_config or MetricsConfig()
     car_index = inputs.state.player_car_index
     if car_index is None:
         return _insufficient("player_car")
@@ -57,6 +57,11 @@ def diagnose_pace(routed: RoutedQuery, inputs: ToolInputs) -> ToolResult:
         Quality.UNAVAILABLE,
     }:
         return _insufficient("clean_laps", data_lap=data_lap, low_sample=True)
+    if best_metric is None or best_metric.quality in {
+        Quality.INSUFFICIENT,
+        Quality.UNAVAILABLE,
+    }:
+        return _insufficient("reference_lap", data_lap=data_lap)
     reference = _metric_number(best_metric)
     if reference is None:
         return _insufficient("reference_lap", data_lap=data_lap)
@@ -67,7 +72,7 @@ def diagnose_pace(routed: RoutedQuery, inputs: ToolInputs) -> ToolResult:
     if not times:
         return _insufficient("clean_laps", data_lap=data_lap, low_sample=True)
 
-    quality = clean_metric.quality
+    quality = _worst_quality(clean_metric.quality, best_metric.quality)
     threshold = max(0.0, inputs.config.pace_trend_stable_s)
     current = fmean(times)
     loss = max(0.0, current - reference)
@@ -124,6 +129,10 @@ def _metric_number(metric: Metric | None) -> float | None:
     if isinstance(metric.value, int | float):
         return float(metric.value)
     return None
+
+
+def _worst_quality(*qualities: Quality) -> Quality:
+    return max(qualities, key=lambda quality: tuple(Quality).index(quality))
 
 
 def _cause_fact(

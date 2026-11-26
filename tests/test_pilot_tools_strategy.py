@@ -50,11 +50,12 @@ def _evaluation(
     data_quality: Quality = Quality.OK,
     session_uid: str = "123",
     forecast_compound: str | None = "soft",
+    lap: int = 13,
 ) -> StrategyEvaluation:
     return StrategyEvaluation(
         revision=1,
         session_uid=session_uid,
-        lap=13,
+        lap=lap,
         laps_remaining=7.0,
         baseline="stay_out",
         recommendation=StrategyRecommendation(
@@ -479,3 +480,79 @@ def test_simulate_extends_window_for_requested_lap(monkeypatch) -> None:
     assert len(calls) == 1
     assert calls[0][1].max_pit_in_laps == 5
     assert _facts(result)["strategy_pit_lap"].value == 18
+
+
+def test_relative_alternative_is_not_reused_after_the_lap_moves(monkeypatch) -> None:
+    published = _evaluation(
+        lap=10,
+        alternatives=(
+            StrategyAlternative(
+                key="pit_in_2:medium:set1", remaining_time_s=990.0, gain_vs_baseline_s=1.0
+            ),
+        ),
+    )
+    inputs = replace(
+        _inputs(published),
+        state=replace(_inputs(published).state, current_lap=12, player_car_index=0),
+        metrics_config=MetricsConfig(),
+        strategy_config=StrategyConfig(),
+    )
+    on_demand = _evaluation(
+        lap=12,
+        alternatives=(
+            StrategyAlternative(
+                key="pit_in_2:medium:set1", remaining_time_s=980.0, gain_vs_baseline_s=2.0
+            ),
+        ),
+    )
+    calls = []
+
+    def fake_evaluate_once(metric_inputs, cfg, *, revision=0):
+        calls.append((metric_inputs, cfg))
+        return on_demand
+
+    monkeypatch.setattr("f1_strategist.pilot.tools_strategy.evaluate_once", fake_evaluate_once)
+
+    result = simulate_strategy(_query("¿Y si paro en 2 vueltas?"), inputs)
+
+    assert len(calls) == 1
+    assert _facts(result)["strategy_pit_lap"].value == 14
+
+    def fail(*args, **kwargs):
+        raise AssertionError("no debe recalcular una evaluación de la vuelta actual")
+
+    monkeypatch.setattr("f1_strategist.pilot.tools_strategy.evaluate_once", fail)
+    current = _evaluation(lap=12, alternatives=on_demand.alternatives)
+    reused = simulate_strategy(
+        _query("¿Y si paro en 2 vueltas?"), replace(inputs, strategy=StrategySnapshot(current))
+    )
+    assert _facts(reused)["strategy_pit_lap"].value == 14
+
+
+def test_missing_compound_inside_the_published_window_reports_unavailable() -> None:
+    evaluation = _evaluation(
+        alternatives=(
+            StrategyAlternative(
+                key="pit_in_2:medium:set1", remaining_time_s=990.0, gain_vs_baseline_s=1.0
+            ),
+        ),
+        forecast_compound="hard",
+    )
+    inputs = _inputs(evaluation)
+
+    inside = simulate_strategy(_query("¿Y si paro en 2 vueltas con blandos?"), inputs)
+    outside = simulate_strategy(_query("¿Y si paro en 4 vueltas con blandos?"), inputs)
+
+    assert NOTE_COMPOUND_UNAVAILABLE in inside.notes
+    assert NOTE_CONFIG_MISSING not in inside.notes
+    assert NOTE_CONFIG_MISSING in outside.notes
+
+
+def test_unknown_safety_car_status_is_not_published_as_false() -> None:
+    evaluation = _evaluation()
+
+    unknown = ask_strategy(_query("estrategia"), _inputs(evaluation, safety_car_status=None))
+    clear = ask_strategy(_query("estrategia"), _inputs(evaluation, safety_car_status="none"))
+
+    assert "strategy_safety_car" not in _facts(unknown)
+    assert _facts(clear)["strategy_safety_car"].value is False

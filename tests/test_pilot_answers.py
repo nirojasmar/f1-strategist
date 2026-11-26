@@ -8,8 +8,12 @@ import pytest
 
 from f1_strategist.agent.templates import fact_unit, format_fact
 from f1_strategist.config import PilotConfig
-from f1_strategist.metrics.types import Quality
+from f1_strategist.console_messages import pilot_fact_label
+from f1_strategist.metrics.engine import MetricsSnapshot
+from f1_strategist.metrics.history import LapHistorySnapshot
+from f1_strategist.metrics.types import Metric, Quality, Window
 from f1_strategist.pilot.answers import compose_answer
+from f1_strategist.pilot.tools_resources import estimate_fuel_margin
 from f1_strategist.pilot.types import (
     AnswerKind,
     Clarification,
@@ -19,8 +23,11 @@ from f1_strategist.pilot.types import (
     PilotQuery,
     RoutedQuery,
     ToolFact,
+    ToolInputs,
     ToolResult,
 )
+from f1_strategist.race_state import RaceState
+from f1_strategist.strategy.types import StrategySnapshot
 
 ANSWER_INTENTS = tuple(intent for intent in Intent if intent is not Intent.UNKNOWN)
 _NUMBER = re.compile(r"\d+(?:\.\d+)?")
@@ -277,3 +284,63 @@ def test_followup_pending_only_for_explanatory_intents() -> None:
     assert strategy.followup_pending is True
     assert fuel.followup_pending is False
     assert disabled.followup_pending is False
+
+
+def test_stale_note_answer_keeps_the_stale_warning() -> None:
+    result = _result(
+        Intent.PIT_UNDERCUT,
+        facts=(),
+        quality=Quality.STALE,
+        stale=True,
+        notes=("pilot.leader",),
+    )
+
+    answer = compose_answer(_routed(Intent.PIT_UNDERCUT), result, language="es", cfg=PilotConfig())
+
+    assert answer.message_key == "pilot.leader"
+    assert answer.text == "Vas primero: no hay nadie delante. Los datos están desactualizados."
+
+
+def test_real_fuel_tool_result_uses_labels_not_raw_fact_names() -> None:
+    metric = Metric(
+        key="fuel.in_tank_kg",
+        value=42.5,
+        unit="kg",
+        window=Window("instant"),
+        quality=Quality.OK,
+        sample_count=1,
+        computed_at_monotonic=10.0,
+    )
+    inputs = ToolInputs(
+        state=RaceState().snapshot(),
+        metrics=MetricsSnapshot(metrics={"fuel.in_tank_kg": metric}),
+        strategy=StrategySnapshot(),
+        history=LapHistorySnapshot(),
+        config=PilotConfig(),
+        now=10.0,
+    )
+    result = estimate_fuel_margin(_routed(), inputs)
+
+    answer = compose_answer(_routed(), result, language="es", cfg=PilotConfig())
+
+    assert "combustible restante" in answer.text
+    assert "fuel_in_tank_kg" not in answer.text
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "compare.rival.name",
+        "compare.interval_s",
+        "compare.pace_delta_s",
+        "pace.reference_s",
+        "pace.loss_s",
+        "pace.evidence.sector_loss_s",
+        "strategy_action",
+        "strategy_pit_lap",
+        "strategy_gain_s",
+        "fuel_in_tank_kg",
+    ],
+)
+def test_published_fact_schemas_have_spanish_labels(name: str) -> None:
+    assert pilot_fact_label(name) != name
