@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
@@ -584,3 +585,59 @@ def test_independent_dataset_is_unseen_and_meets_phase_thresholds() -> None:
     assert metrics["out_of_scope_false_positive_rate"] <= 0.05
     assert metrics["clarification_accuracy"] >= 0.95
     assert metrics["dialogue_turn_accuracy"] >= 0.95
+
+
+def test_load_dataset_rejects_duplicate_car_index(tmp_path: Path) -> None:
+    dataset_dir = tmp_path / "dataset"
+    shutil.copytree(DEFAULT_PILOT_DATASET, dataset_dir)
+    grid_path = dataset_dir / "grid.json"
+    grid = json.loads(grid_path.read_text(encoding="utf-8"))
+    grid["cars"][1]["car_index"] = grid["cars"][0]["car_index"]
+    grid_path.write_text(json.dumps(grid), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="car_index duplicado"):
+        load_pilot_dataset(dataset_dir)
+
+
+def test_load_dataset_rejects_non_boolean_flags(tmp_path: Path) -> None:
+    mutators = {
+        "grid.json": lambda data: data["cars"][0].update(is_player="false"),
+        "in_scope.json": lambda data: data[0].update(expect_no_entity="false"),
+        "dialogue_sequences.json": lambda data: data[0]["turns"][0].update(
+            expect_clarification="false"
+        ),
+    }
+    for filename, mutate in mutators.items():
+        dataset_dir = tmp_path / filename.removesuffix(".json")
+        shutil.copytree(DEFAULT_PILOT_DATASET, dataset_dir)
+        path = dataset_dir / filename
+        data = json.loads(path.read_text(encoding="utf-8"))
+        mutate(data)
+        path.write_text(json.dumps(data), encoding="utf-8")
+
+        with pytest.raises(ValueError, match="booleano"):
+            load_pilot_dataset(dataset_dir)
+
+
+def test_ambiguous_case_requires_resolution_text_for_expected_target(tmp_path: Path) -> None:
+    dataset_dir = tmp_path / "missing_text"
+    shutil.copytree(DEFAULT_PILOT_DATASET, dataset_dir)
+    ambiguous_path = dataset_dir / "ambiguous.json"
+    ambiguous = json.loads(ambiguous_path.read_text(encoding="utf-8"))
+    ambiguous[0].pop("resolution_text")
+    ambiguous_path.write_text(json.dumps(ambiguous), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="resolution_text"):
+        load_pilot_dataset(dataset_dir)
+
+    candidate_only = tmp_path / "candidate_only"
+    shutil.copytree(DEFAULT_PILOT_DATASET, candidate_only)
+    ambiguous_path = candidate_only / "ambiguous.json"
+    ambiguous = json.loads(ambiguous_path.read_text(encoding="utf-8"))
+    ambiguous[0].pop("resolution_text")
+    ambiguous[0].pop("expected_resolved_car_index")
+    ambiguous_path.write_text(json.dumps(ambiguous), encoding="utf-8")
+
+    dataset = load_pilot_dataset(candidate_only)
+    case = next(item for item in dataset.ambiguous if item.case_id == ambiguous[0]["id"])
+    assert case.expected_resolved_car_index is None

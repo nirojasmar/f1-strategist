@@ -877,10 +877,20 @@ def _str_tuple(value: object, key: str, source: str) -> tuple[str, ...]:
     return tuple(value)
 
 
+def _bool_field(item: Mapping[str, Any], key: str, source: str) -> bool:
+    if key not in item:
+        return False
+    value = item[key]
+    if not isinstance(value, bool):
+        raise ValueError(f"{source}: '{key}' debe ser booleano")
+    return value
+
+
 def _parse_grid(raw: object, source: str) -> tuple[GridCarSpec, ...]:
     if not isinstance(raw, list) or not raw:
         raise ValueError(f"{source}: 'cars' debe ser una lista no vacía")
     cars: list[GridCarSpec] = []
+    seen: set[int] = set()
     for item in raw:
         if not isinstance(item, Mapping):
             raise ValueError(f"{source}: cada coche debe ser un objeto JSON")
@@ -888,6 +898,9 @@ def _parse_grid(raw: object, source: str) -> tuple[GridCarSpec, ...]:
         position = _opt_int(item.get("position"), "position", source)
         if car_index is None or position is None:
             raise ValueError(f"{source}: cada coche requiere 'car_index' y 'position'")
+        if car_index in seen:
+            raise ValueError(f"{source}: car_index duplicado '{car_index}'")
+        seen.add(car_index)
         cars.append(
             GridCarSpec(
                 car_index=car_index,
@@ -896,7 +909,7 @@ def _parse_grid(raw: object, source: str) -> tuple[GridCarSpec, ...]:
                 position=position,
                 race_number=_opt_int(item.get("race_number"), "race_number", source),
                 result_status=str(item.get("result_status") or "active"),
-                is_player=bool(item.get("is_player", False)),
+                is_player=_bool_field(item, "is_player", source),
             )
         )
     return tuple(cars)
@@ -924,7 +937,7 @@ def _parse_in_scope(raw: object) -> tuple[InScopeCase, ...]:
                 expected_car_index=_opt_int(
                     item.get("expected_car_index"), "expected_car_index", "in_scope.json"
                 ),
-                expect_no_entity=bool(item.get("expect_no_entity", False)),
+                expect_no_entity=_bool_field(item, "expect_no_entity", "in_scope.json"),
                 grid=None if grid_raw is None else _parse_grid(grid_raw, "in_scope.json"),
                 tags=_str_tuple(item.get("tags"), "tags", "in_scope.json"),
             )
@@ -973,6 +986,16 @@ def _parse_ambiguous(raw: object) -> tuple[AmbiguousCase, ...]:
         res_raw = item.get("resolution_text")
         if res_raw is not None and (not isinstance(res_raw, str) or not res_raw.strip()):
             raise ValueError(f"ambiguous.json: resolution_text inválido en {case_id}")
+        resolved_car_index = _opt_int(
+            item.get("expected_resolved_car_index"),
+            "expected_resolved_car_index",
+            "ambiguous.json",
+        )
+        if resolved_car_index is not None and res_raw is None:
+            raise ValueError(
+                f"ambiguous.json: '{case_id}' requiere resolution_text "
+                "para expected_resolved_car_index"
+            )
         grid_raw = item.get("grid")
         cases.append(
             AmbiguousCase(
@@ -985,11 +1008,7 @@ def _parse_ambiguous(raw: object) -> tuple[AmbiguousCase, ...]:
                 ),
                 expected_intent=intent,
                 resolution_text=res_raw,
-                expected_resolved_car_index=_opt_int(
-                    item.get("expected_resolved_car_index"),
-                    "expected_resolved_car_index",
-                    "ambiguous.json",
-                ),
+                expected_resolved_car_index=resolved_car_index,
                 grid=None if grid_raw is None else _parse_grid(grid_raw, "ambiguous.json"),
             )
         )
@@ -1031,7 +1050,9 @@ def _parse_dialogues(raw: object) -> tuple[DialogueSequenceCase, ...]:
                         "expected_car_index",
                         "dialogue_sequences.json",
                     ),
-                    expect_clarification=bool(turn.get("expect_clarification", False)),
+                    expect_clarification=_bool_field(
+                        turn, "expect_clarification", "dialogue_sequences.json"
+                    ),
                     expected_candidate_indices=(
                         None
                         if cand_raw is None

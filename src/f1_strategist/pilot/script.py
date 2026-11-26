@@ -215,6 +215,10 @@ class DefaultScriptResponder:
         self._seq = 0
         self.last_routed = None
 
+    def cancel_pending_clarification(self) -> None:
+        """Invalida la aclaración pendiente sin perder el identificador de consulta."""
+        self._dialogue.cancel_clarification()
+
     def ask(self, text: str, *, inputs: ToolInputs, source: str = "script") -> PilotAnswer:
         self._seq += 1
         query_id = f"{source}-{self._seq}"
@@ -351,6 +355,7 @@ def ask_capture_at_lap(
         active_responder,
         profiles_by_uid=profiles_by_uid,
         source="ask",
+        exact_lap=True,
     )
     offline = run_capture_offline(capture_path, [collector], stop_when=collector.all_triggered)
     if not collector.exchanges:
@@ -369,11 +374,13 @@ class _ScriptCollector:
         *,
         profiles_by_uid: Mapping[int, WeekendProfile] | None = None,
         source: str = "script",
+        exact_lap: bool = False,
     ) -> None:
         self._config = config
         self._profiles_by_uid = dict(profiles_by_uid or {})
         self._responder = responder
         self._source = source
+        self._exact_lap = exact_lap
         self._race = RaceState()
         self._metrics = MetricsEngine(config.metrics)
         self._strategy = StrategyEngine(config.strategy, config.metrics)
@@ -389,6 +396,10 @@ class _ScriptCollector:
         state = self._race.snapshot()
         session = state.session
         if session.uid != self._last_session_uid:
+            if self._last_session_uid is not None:
+                cancel = getattr(self._responder, "cancel_pending_clarification", None)
+                if cancel is not None:
+                    cancel()
             self._last_session_uid = session.uid
         profile = (
             self._profiles_by_uid.get(session.uid)
@@ -406,7 +417,12 @@ class _ScriptCollector:
 
         current_lap = _current_lap(state)
         for step in tuple(self.pending):
-            if not _step_matches(step, current_lap, observed_at):
+            if not _step_matches(
+                step,
+                current_lap,
+                session_time=packet.header.session_time,
+                exact_lap=self._exact_lap,
+            ):
                 continue
             self.pending.remove(step)
             inputs = ToolInputs(
@@ -442,11 +458,19 @@ def _current_lap(state: RaceStateSnapshot) -> int | None:
     return state.current_lap
 
 
-def _step_matches(step: ScriptStep, current_lap: int | None, observed_at: float) -> bool:
+def _step_matches(
+    step: ScriptStep,
+    current_lap: int | None,
+    *,
+    session_time: float,
+    exact_lap: bool = False,
+) -> bool:
     if step.at_lap is not None:
-        return current_lap is not None and current_lap >= step.at_lap
+        if current_lap is None:
+            return False
+        return current_lap == step.at_lap if exact_lap else current_lap >= step.at_lap
     assert step.at_session_time_s is not None
-    return observed_at >= step.at_session_time_s
+    return session_time >= step.at_session_time_s
 
 
 def _canonical_answer(answer: PilotAnswer) -> dict[str, Any]:

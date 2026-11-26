@@ -4,6 +4,7 @@ import json
 import sqlite3
 import struct
 from collections.abc import Sequence
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -88,13 +89,38 @@ class _FakeResponder:
         )
 
 
+class _TrackingResponder(_FakeResponder):
+    """Registra invalidaciones de aclaración y reinicios sin perder la secuencia."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.cancellations = 0
+        self.resets = 0
+
+    def reset(self) -> None:
+        super().reset()
+        self.resets += 1
+
+    def cancel_pending_clarification(self) -> None:
+        self.cancellations += 1
+
+
 def _expected_fingerprint(rows: Sequence[StoredPilotQuery]) -> str:
     accumulator = PilotFingerprintAccumulator()
     accumulator.add(json.loads(row.exchange_json) for row in rows if row.exchange_json is not None)
     return accumulator.fingerprint
 
 
-def _synthetic_capture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+def _synthetic_capture(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    total_laps: int = 6,
+    session_time_offset_s: float = 0.0,
+    session_uid_offset_from_s: float | None = None,
+    min_observed_s: float | None = None,
+    max_observed_s: float | None = None,
+) -> Path:
     cars = (
         ScenarioCar(
             index=0,
@@ -115,8 +141,29 @@ def _synthetic_capture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
             tyre_wear_per_lap_pct=3.0,
         ),
     )
-    packets = list(build_race_timed(cars, total_laps=6, samples_per_lap=2))
-    parsed = tuple(packet for packet, _ in packets)
+    packets = [
+        (packet, observed_at)
+        for packet, observed_at in build_race_timed(cars, total_laps=total_laps, samples_per_lap=2)
+        if (min_observed_s is None or observed_at >= min_observed_s)
+        and (max_observed_s is None or observed_at <= max_observed_s)
+    ]
+    parsed = tuple(
+        replace(
+            packet,
+            header=replace(
+                packet.header,
+                session_time=packet.header.session_time + session_time_offset_s,
+                session_uid=packet.header.session_uid
+                + (
+                    1
+                    if session_uid_offset_from_s is not None
+                    and observed_at >= session_uid_offset_from_s
+                    else 0
+                ),
+            ),
+        )
+        for packet, observed_at in packets
+    )
     path = tmp_path / "race.f1cap"
     with CaptureWriter(path, include_created_utc=False) as writer:
         for index, (_, observed_at) in enumerate(packets):
@@ -488,3 +535,73 @@ def test_default_responder_keeps_pending_clarification_between_script_questions(
     assert responder.last_routed is not None
     assert [entity.car_index for entity in responder.last_routed.entities] == [12]
     assert "comparación" in second.text or "comparacion" in second.text
+
+
+def test_session_time_step_uses_game_clock_not_capture_relative_time(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    capture = _synthetic_capture(
+        tmp_path,
+        monkeypatch,
+        session_time_offset_s=200.0,
+        max_observed_s=100.0,
+    )
+    script = tmp_path / "guion.jsonl"
+    script.write_text(
+        '{"at_session_time_s": 250.0, "text": "¿Cómo voy?"}\n',
+        encoding="utf-8",
+    )
+
+    result = run_pilot_script(capture, script, responder=_FakeResponder())
+
+    assert len(result.exchanges) == 1
+    exchange = result.exchanges[0]
+    assert exchange.trigger == "session_time_s:250.0"
+    assert exchange.t_sim_s < 250.0
+    assert exchange.t_sim_s <= 100.0
+
+
+def test_ask_capture_at_lap_requires_exact_lap_in_late_capture(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    capture = _synthetic_capture(
+        tmp_path,
+        monkeypatch,
+        total_laps=12,
+        min_observed_s=720.0,
+    )
+    guided = tmp_path / "guiado.jsonl"
+    guided.write_text('{"at_lap": 3, "text": "¿Cómo voy?"}\n', encoding="utf-8")
+    guided_result = run_pilot_script(capture, guided, responder=_FakeResponder())
+    assert len(guided_result.exchanges) == 1
+    assert guided_result.exchanges[0].lap is not None
+    assert guided_result.exchanges[0].lap >= 3
+
+    with pytest.raises(ValueError, match="vuelta 3"):
+        ask_capture_at_lap(capture, 3, "¿Cómo voy?", responder=_FakeResponder())
+
+
+def test_session_change_invalidates_clarification_without_resetting_responder(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    capture = _synthetic_capture(
+        tmp_path,
+        monkeypatch,
+        session_uid_offset_from_s=90.0,
+    )
+    script = tmp_path / "guion.jsonl"
+    script.write_text(
+        '{"at_lap": 1, "text": "¿Cómo voy?"}\n{"at_lap": 3, "text": "¿Y ahora?"}\n',
+        encoding="utf-8",
+    )
+    responder = _TrackingResponder()
+
+    result = run_pilot_script(capture, script, responder=responder)
+
+    assert len(result.exchanges) == 2
+    assert responder.cancellations == 1
+    assert responder.resets == 1
+    assert [item.answer.query_id for item in result.exchanges] == ["script-1", "script-2"]
