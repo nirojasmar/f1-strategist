@@ -1,15 +1,15 @@
 [
   {
     "id": "h-amb-01",
-    "text": "¿Cómo voy frente a Schumacher?",
+    "text": "¿Cómo voy frente a Halden?",
     "expected_intent": "compare_driver",
     "expected_candidate_indices": [12, 13],
-    "resolution_text": "Ralf",
+    "resolution_text": "Rolf",
     "expected_resolved_car_index": 13
   },
   {
     "id": "h-amb-02",
-    "text": "¿A cuánto está Carlos?",
+    "text": "¿A cuánto está Dario?",
     "expected_intent": "gap_status",
     "expected_candidate_indices": [1, 14],
     "resolution_text": "el 55",
@@ -20,7 +20,7 @@
     "text": "¿Podemos pasar al de Ferrari con undercut?",
     "expected_intent": "pit_undercut",
     "expected_candidate_indices": [4, 5],
-    "resolution_text": "Leclerc",
+    "resolution_text": "Dubois",
     "expected_resolved_car_index": 5
   },
   {

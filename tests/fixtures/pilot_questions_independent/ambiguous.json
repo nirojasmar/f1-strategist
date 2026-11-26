@@ -12,12 +12,12 @@
     "text": "¿Cuánto me saca el de Red Bull?",
     "expected_intent": "gap_status",
     "expected_candidate_indices": [2, 9],
-    "resolution_text": "Max",
+    "resolution_text": "Bruno",
     "expected_resolved_car_index": 2
   },
   {
     "id": "i-amb-03",
-    "text": "¿Hacemos undercut a Carlos?",
+    "text": "¿Hacemos undercut a Dario?",
     "expected_intent": "pit_undercut",
     "expected_candidate_indices": [1, 14],
     "resolution_text": "el 55",
@@ -28,7 +28,7 @@
     "text": "¿Voy por delante del de Red Bull?",
     "expected_intent": "compare_driver",
     "expected_candidate_indices": [2, 9],
-    "resolution_text": "Sergio",
+    "resolution_text": "Sandro",
     "expected_resolved_car_index": 9
   },
   {
@@ -36,7 +36,7 @@
     "text": "¿Cómo va mi ritmo frente al de McLaren?",
     "expected_intent": "compare_driver",
     "expected_candidate_indices": [3, 7],
-    "resolution_text": "Lando",
+    "resolution_text": "Leo",
     "expected_resolved_car_index": 3
   }
 ]

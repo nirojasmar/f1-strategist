@@ -24,15 +24,15 @@
   {"id": "i-pac-03", "text": "¿Por qué somos tan lentos en el sector 2?", "expected_intent": "pace_diagnosis", "expect_no_entity": true},
   {"id": "i-pac-04", "text": "¿Estamos cediendo décimas?", "expected_intent": "pace_diagnosis", "expect_no_entity": true},
 
-  {"id": "i-cmp-01", "text": "¿Cómo voy frente a Norris?", "expected_intent": "compare_driver", "expected_car_index": 3},
-  {"id": "i-cmp-02", "text": "¿Voy mejor que Leclerc?", "expected_intent": "compare_driver", "expected_car_index": 5},
-  {"id": "i-cmp-03", "text": "¿Quién tiene mejor ritmo, yo o Alonso?", "expected_intent": "compare_driver", "expected_car_index": 8},
-  {"id": "i-cmp-04", "text": "¿Qué diferencia hay con Russell?", "expected_intent": "compare_driver", "expected_car_index": 6},
+  {"id": "i-cmp-01", "text": "¿Cómo voy frente a Marchetti?", "expected_intent": "compare_driver", "expected_car_index": 3},
+  {"id": "i-cmp-02", "text": "¿Voy mejor que Dubois?", "expected_intent": "compare_driver", "expected_car_index": 5},
+  {"id": "i-cmp-03", "text": "¿Quién tiene mejor ritmo, yo o Sardena?", "expected_intent": "compare_driver", "expected_car_index": 8},
+  {"id": "i-cmp-04", "text": "¿Qué diferencia hay con Reyne?", "expected_intent": "compare_driver", "expected_car_index": 6},
 
   {"id": "i-gap-01", "text": "¿Qué ventaja tiene el de delante?", "expected_intent": "gap_status", "expected_car_index": 4},
-  {"id": "i-gap-02", "text": "¿A cuántos segundos está Verstappen?", "expected_intent": "gap_status", "expected_car_index": 2},
+  {"id": "i-gap-02", "text": "¿A cuántos segundos está Verano?", "expected_intent": "gap_status", "expected_car_index": 2},
   {"id": "i-gap-03", "text": "¿El de atrás nos recorta?", "expected_intent": "gap_status", "expected_car_index": 5},
-  {"id": "i-gap-04", "text": "¿Hay hueco con Sainz?", "expected_intent": "gap_status", "expected_car_index": 1},
+  {"id": "i-gap-04", "text": "¿Hay hueco con Vela?", "expected_intent": "gap_status", "expected_car_index": 1},
 
   {"id": "i-dmg-01", "text": "¿El coche está intacto?", "expected_intent": "damage_status", "expect_no_entity": true},
   {"id": "i-dmg-02", "text": "¿Tenemos algún daño en el suelo?", "expected_intent": "damage_status", "expect_no_entity": true},
@@ -44,8 +44,8 @@
   {"id": "i-wth-03", "text": "¿Cómo está el tiempo?", "expected_intent": "weather_forecast", "expect_no_entity": true},
   {"id": "i-wth-04", "text": "¿Va a llover en las próximas vueltas?", "expected_intent": "weather_forecast", "expect_no_entity": true},
 
-  {"id": "i-und-01", "text": "¿Cubrimos el undercut de Norris?", "expected_intent": "pit_undercut", "expected_car_index": 3},
-  {"id": "i-und-02", "text": "¿Podemos adelantar a Hamilton con el undercut?", "expected_intent": "pit_undercut", "expected_car_index": 4},
+  {"id": "i-und-01", "text": "¿Cubrimos el undercut de Marchetti?", "expected_intent": "pit_undercut", "expected_car_index": 3},
+  {"id": "i-und-02", "text": "¿Podemos adelantar a Sterling con el undercut?", "expected_intent": "pit_undercut", "expected_car_index": 4},
   {"id": "i-und-03", "text": "¿Nos lanzamos al overcut?", "expected_intent": "pit_undercut", "expect_no_entity": true},
-  {"id": "i-und-04", "text": "¿Funciona el overcut contra Russell?", "expected_intent": "pit_undercut", "expected_car_index": 6}
+  {"id": "i-und-04", "text": "¿Funciona el overcut contra Reyne?", "expected_intent": "pit_undercut", "expected_car_index": 6}
 ]

@@ -437,14 +437,14 @@ def test_real_pipeline_resolves_clarification_end_to_end() -> None:
         tools={Intent.COMPARE_DRIVER: tool},
     )
 
-    first = engine.ask("¿Cómo voy respecto a Schumacher?", now=10.0)
+    first = engine.ask("¿Cómo voy respecto a Halden?", now=10.0)
 
     assert first.kind is AnswerKind.CLARIFICATION
     pending = engine.snapshot().pending_clarification
     assert pending is not None
     assert tuple(option.car_index for option in pending.options) == (12, 13)
 
-    second = engine.ask("Mick", now=11.0)
+    second = engine.ask("Timo", now=11.0)
 
     assert second.kind is AnswerKind.ANSWER
     assert second.intent is Intent.COMPARE_DRIVER
@@ -486,7 +486,7 @@ def _engine_with_real_tools(state: RaceStateSnapshot) -> PilotEngine:
 def test_real_flow_retired_and_unknown_rivals_do_not_use_a_substitute() -> None:
     engine = _engine_with_real_tools(_grid_state())
 
-    retired = engine.ask("¿Cómo voy respecto a Lawson?", now=10.0)
+    retired = engine.ask("¿Cómo voy respecto a Shaw?", now=10.0)
     unknown = engine.ask("¿Cómo voy respecto a Senna?", now=10.0)
 
     assert retired.intent is Intent.COMPARE_DRIVER
@@ -498,7 +498,7 @@ def test_real_flow_retired_and_unknown_rivals_do_not_use_a_substitute() -> None:
 def test_real_flow_undercut_retired_rival_is_not_replaced() -> None:
     engine = _engine_with_real_tools(_grid_state())
 
-    answer = engine.ask("¿Podemos hacer undercut a Lawson?", now=10.0)
+    answer = engine.ask("¿Podemos hacer undercut a Shaw?", now=10.0)
 
     assert answer.intent is Intent.PIT_UNDERCUT
     assert answer.text == "El piloto que pides está retirado y no tengo datos suyos."

@@ -3,7 +3,7 @@
     "id": "i-dlg-01",
     "description": "Combustible y continuación por desgaste",
     "turns": [
-      {"text": "¿Cuánto combustible queda?", "t_s": 0.0, "expected_intent": "fuel_status", "expect_no_entity": true},
+      {"text": "¿Nos alcanza la gasolina para terminar?", "t_s": 0.0, "expected_intent": "fuel_status", "expect_no_entity": true},
       {"text": "¿Y el desgaste?", "t_s": 4.0, "expected_intent": "tyre_life", "expect_no_entity": true}
     ]
   },
@@ -11,8 +11,8 @@
     "id": "i-dlg-02",
     "description": "Distancia con un rival y continuación con otro",
     "turns": [
-      {"text": "¿A cuánto está Norris?", "t_s": 0.0, "expected_intent": "gap_status", "expected_car_index": 3},
-      {"text": "¿Y Piastri?", "t_s": 4.0, "expected_intent": "gap_status", "expected_car_index": 7}
+      {"text": "¿Cuánto hueco hay hasta Marchetti?", "t_s": 0.0, "expected_intent": "gap_status", "expected_car_index": 3},
+      {"text": "¿Y Kessler?", "t_s": 4.0, "expected_intent": "gap_status", "expected_car_index": 7}
     ]
   },
   {
@@ -20,13 +20,13 @@
     "description": "Aclaración de piloto y distancia",
     "turns": [
       {
-        "text": "¿Cuánto me saca Schumacher?",
+        "text": "¿Cuánto hueco hay con Halden?",
         "t_s": 0.0,
         "expected_intent": "gap_status",
         "expect_clarification": true,
         "expected_candidate_indices": [12, 13]
       },
-      {"text": "Ralf", "t_s": 3.0, "expected_intent": "gap_status", "expected_car_index": 13}
+      {"text": "Rolf Halden", "t_s": 3.0, "expected_intent": "gap_status", "expected_car_index": 13}
     ]
   }
 ]

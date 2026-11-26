@@ -1,7 +1,7 @@
 [
   {
     "id": "v-amb-01",
-    "text": "¿Cómo voy con Schumacher?",
+    "text": "¿Cómo voy con Halden?",
     "expected_intent": "compare_driver",
     "expected_candidate_indices": [12, 13],
     "resolution_text": "el 5",
@@ -9,10 +9,10 @@
   },
   {
     "id": "v-amb-02",
-    "text": "¿A cuánto está Carlos?",
+    "text": "¿A cuánto está Dario?",
     "expected_intent": "gap_status",
     "expected_candidate_indices": [1, 14],
-    "resolution_text": "Carlos Sainz",
+    "resolution_text": "Dario Vela",
     "expected_resolved_car_index": 1
   },
   {
@@ -20,7 +20,7 @@
     "text": "¿Podemos hacer undercut al de Mercedes?",
     "expected_intent": "pit_undercut",
     "expected_candidate_indices": [6, 11],
-    "resolution_text": "George",
+    "resolution_text": "Gustav",
     "expected_resolved_car_index": 6
   },
   {
@@ -36,7 +36,7 @@
     "text": "¿A cuánto está el de McLaren?",
     "expected_intent": "gap_status",
     "expected_candidate_indices": [3, 7],
-    "resolution_text": "Oscar",
+    "resolution_text": "Otto",
     "expected_resolved_car_index": 7
   }
 ]

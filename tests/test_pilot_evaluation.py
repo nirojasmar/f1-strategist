@@ -12,8 +12,10 @@ import pytest
 import f1_strategist.pilot.evaluation as eval_module
 from f1_strategist.cli import main
 from f1_strategist.config import PilotConfig
+from f1_strategist.pilot.entities import normalize_text
 from f1_strategist.pilot.evaluation import (
     DEFAULT_PILOT_DATASET,
+    PilotEvalDataset,
     build_race_state_from_grid,
     load_pilot_dataset,
     run_pilot_evaluation,
@@ -35,6 +37,14 @@ def _normalize(text: str) -> str:
     without_marks = "".join(ch for ch in decomposed if not unicodedata.combining(ch))
     cleaned = re.sub(r"[^a-z0-9\s]", " ", without_marks)
     return " ".join(cleaned.split())
+
+
+def _dataset_texts(dataset: PilotEvalDataset) -> set[str]:
+    texts = [case.text for case in dataset.in_scope]
+    texts.extend(case.text for case in dataset.out_of_scope)
+    texts.extend(case.text for case in dataset.ambiguous)
+    texts.extend(turn.text for sequence in dataset.dialogue_sequences for turn in sequence.turns)
+    return {normalize_text(text) for text in texts}
 
 
 @dataclass(frozen=True, slots=True)
@@ -244,7 +254,7 @@ def _fake_router(
         dialogue.set_pending(clarification)
 
     if _OOS_PATTERN.search(norm) or (
-        "combustible le queda a hamilton" in norm or "danos tiene el coche de verstappen" in norm
+        "combustible le queda a sterling" in norm or "danos tiene el coche de verano" in norm
     ):
         intent, confidence = Intent.UNKNOWN, 0.2
     elif "undercut" in norm:
@@ -565,8 +575,8 @@ def test_independent_dataset_is_unseen_and_meets_phase_thresholds() -> None:
     assert len(independent.out_of_scope) >= 10
     assert len(independent.ambiguous) >= 5
     assert len(independent.dialogue_sequences) >= 3
-    seen = {case.text for dataset in others for case in dataset.in_scope}
-    assert not {case.text for case in independent.in_scope} & seen
+    seen = set().union(*(_dataset_texts(dataset) for dataset in others))
+    assert not _dataset_texts(independent) & seen
 
     report = run_pilot_evaluation(independent)
     metrics = report["metrics"]

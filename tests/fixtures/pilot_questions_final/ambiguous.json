@@ -1,7 +1,7 @@
 [
   {
     "id": "f-amb-01",
-    "text": "¿Cómo voy con Carlos?",
+    "text": "¿Cómo voy con Dario?",
     "expected_intent": "compare_driver",
     "expected_candidate_indices": [1, 14],
     "resolution_text": "el 55",
@@ -12,15 +12,15 @@
     "text": "¿Cuánto me saca el de Mercedes?",
     "expected_intent": "gap_status",
     "expected_candidate_indices": [6, 11],
-    "resolution_text": "George",
+    "resolution_text": "Gustav",
     "expected_resolved_car_index": 6
   },
   {
     "id": "f-amb-03",
-    "text": "¿Hacemos undercut a Schumacher?",
+    "text": "¿Hacemos undercut a Halden?",
     "expected_intent": "pit_undercut",
     "expected_candidate_indices": [12, 13],
-    "resolution_text": "Mick",
+    "resolution_text": "Timo",
     "expected_resolved_car_index": 12
   },
   {
@@ -36,7 +36,7 @@
     "text": "¿Qué diferencia hay con el de McLaren?",
     "expected_intent": "compare_driver",
     "expected_candidate_indices": [3, 7],
-    "resolution_text": "Lando",
+    "resolution_text": "Leo",
     "expected_resolved_car_index": 3
   }
 ]

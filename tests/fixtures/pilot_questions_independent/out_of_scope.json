@@ -1,14 +1,14 @@
 [
-  {"id": "i-oos-01", "text": "¿Quién ganó el mundial de 2021?"},
+  {"id": "i-oos-01", "text": "¿Cuántos títulos hay en juego?"},
   {"id": "i-oos-02", "text": "¿Cuál es la capital de Francia?"},
   {"id": "i-oos-03", "text": "¿Cuánto cuesta una entrada para Spa?"},
-  {"id": "i-oos-04", "text": "¿Qué significa DRS?"},
+  {"id": "i-oos-04", "text": "¿Qué quiere decir subviraje?"},
   {"id": "i-oos-05", "text": "¿Cuántos puntos da una pole?"},
   {"id": "i-oos-06", "text": "¿Cuándo empieza la película?"},
   {"id": "i-oos-07", "text": "¿Qué hora es en Tokio?"},
   {"id": "i-oos-08", "text": "¿Cuánto pesa el trofeo?"},
   {"id": "i-oos-09", "text": "¿Cómo se llama la curva 3 de Monza?"},
   {"id": "i-oos-10", "text": "¿Cuál fue el récord de vuelta en Silverstone?"},
-  {"id": "i-oos-11", "text": "¿Dónde está el baño del circuito?"},
+  {"id": "i-oos-11", "text": "¿Dónde está la farmacia más cercana?"},
   {"id": "i-oos-12", "text": "¿Qué es un alerón?"}
 ]

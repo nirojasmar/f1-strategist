@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import struct
+from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
@@ -11,6 +12,7 @@ import f1_strategist.pilot.script as script_module
 from f1_strategist.capture import CapturedPacket, CaptureWriter
 from f1_strategist.cli import main
 from f1_strategist.config import AppConfig, LLMConfig, PilotConfig
+from f1_strategist.fingerprint import PilotFingerprintAccumulator
 from f1_strategist.metrics.types import Quality
 from f1_strategist.packets import HEADER_SIZE
 from f1_strategist.parser import ParsedPacket
@@ -29,7 +31,7 @@ from f1_strategist.pilot.types import (
     ToolInputs,
     ToolResult,
 )
-from f1_strategist.store import SessionStore
+from f1_strategist.store import SessionStore, StoredPilotQuery
 
 from .conftest import make_packet
 from .scenarios import ScenarioCar, build_race_timed
@@ -84,6 +86,12 @@ class _FakeResponder:
             latency_s=0.001 * self._seq,
             followup_pending=True,
         )
+
+
+def _expected_fingerprint(rows: Sequence[StoredPilotQuery]) -> str:
+    accumulator = PilotFingerprintAccumulator()
+    accumulator.add(json.loads(row.exchange_json) for row in rows if row.exchange_json is not None)
+    return accumulator.fingerprint
 
 
 def _synthetic_capture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
@@ -313,6 +321,7 @@ def test_cli_ask_and_ask_script_json_and_error_handling(
         rows = list(store.iter_pilot_queries(session_id))
         fingerprint = sessions[0].pilot_fingerprint
     assert fingerprint is not None
+    assert fingerprint == _expected_fingerprint(rows)
     assert [row.query_id for row in rows] == ["script-1", "script-2"]
     assert [row.text for row in rows] == [
         "¿Cómo voy?",
@@ -361,6 +370,8 @@ def test_cli_ask_and_ask_script_json_and_error_handling(
         rows = list(store.iter_pilot_queries(session_id))
         extended_fingerprint = store.list_sessions()[0].pilot_fingerprint
     assert extended_fingerprint is not None
+    assert extended_fingerprint == _expected_fingerprint(rows)
+    assert extended_fingerprint != fingerprint
     assert [row.query_id for row in rows] == ["script-1", "script-2", "script-1"]
     assert [row.text for row in rows] == [
         "¿Cómo voy?",
@@ -391,6 +402,8 @@ def test_cli_ask_and_ask_script_json_and_error_handling(
         rows = list(store.iter_pilot_queries(session_id))
         repaired_fingerprint = store.list_sessions()[0].pilot_fingerprint
     assert repaired_fingerprint is not None
+    assert repaired_fingerprint == _expected_fingerprint(rows)
+    assert repaired_fingerprint != extended_fingerprint
     assert [row.text for row in rows] == [
         "¿Cómo voy?",
         "¿Qué neumático llevo?",
@@ -443,7 +456,7 @@ def test_default_responder_keeps_pending_clarification_between_script_questions(
     responder = DefaultScriptResponder(config)
 
     first = responder.ask(
-        "¿Cómo voy respecto a Schumacher?",
+        "¿Cómo voy respecto a Halden?",
         inputs=ToolInputs(
             state=state,
             metrics=MetricsSnapshot(),
@@ -456,7 +469,7 @@ def test_default_responder_keeps_pending_clarification_between_script_questions(
         ),
     )
     second = responder.ask(
-        "Mick",
+        "Timo",
         inputs=ToolInputs(
             state=state,
             metrics=MetricsSnapshot(),
@@ -472,4 +485,6 @@ def test_default_responder_keeps_pending_clarification_between_script_questions(
     assert first.kind is AnswerKind.CLARIFICATION
     assert second.kind is not AnswerKind.CLARIFICATION
     assert second.intent is Intent.COMPARE_DRIVER
+    assert responder.last_routed is not None
+    assert [entity.car_index for entity in responder.last_routed.entities] == [12]
     assert "comparación" in second.text or "comparacion" in second.text

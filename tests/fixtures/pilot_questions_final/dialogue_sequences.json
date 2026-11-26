@@ -11,16 +11,16 @@
     "id": "f-dlg-02",
     "description": "Intervalo por nombre y continuación por nombre",
     "turns": [
-      {"text": "¿A cuánto está Norris?", "t_s": 0.0, "expected_intent": "gap_status", "expected_car_index": 3},
-      {"text": "¿Y Verstappen?", "t_s": 4.0, "expected_intent": "gap_status", "expected_car_index": 2}
+      {"text": "¿A cuánto está Marchetti?", "t_s": 0.0, "expected_intent": "gap_status", "expected_car_index": 3},
+      {"text": "¿Y Verano?", "t_s": 4.0, "expected_intent": "gap_status", "expected_car_index": 2}
     ]
   },
   {
     "id": "f-dlg-03",
     "description": "Aclaración resuelta por nombre de pila",
     "turns": [
-      {"text": "¿Cuánto me saca Schumacher?", "t_s": 0.0, "expected_intent": "gap_status", "expect_clarification": true, "expected_candidate_indices": [12, 13]},
-      {"text": "Mick", "t_s": 3.0, "expected_intent": "gap_status", "expected_car_index": 12}
+      {"text": "¿Cuánto me saca Halden?", "t_s": 0.0, "expected_intent": "gap_status", "expect_clarification": true, "expected_candidate_indices": [12, 13]},
+      {"text": "Timo", "t_s": 3.0, "expected_intent": "gap_status", "expected_car_index": 12}
     ]
   }
 ]

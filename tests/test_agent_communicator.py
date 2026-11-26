@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import struct
 import threading
-import time
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
@@ -251,6 +250,10 @@ def _estimated_life() -> ToolFact:
     )
 
 
+def _fixed_clock() -> float:
+    return 0.0
+
+
 def _communicator(
     client: FakeClient | None = None,
     *,
@@ -260,7 +263,7 @@ def _communicator(
     fallback_on_failure: Literal["template", "drop"] = "template",
     queue_capacity: int = 64,
     registry: Any = None,
-    clock: Any = time.monotonic,
+    clock: Any = _fixed_clock,
 ) -> AgentCommunicator:
     return AgentCommunicator(
         AgentConfig(

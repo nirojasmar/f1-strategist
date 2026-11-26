@@ -24,15 +24,15 @@
   {"id": "h-pac-03", "text": "Explícame la caída de rendimiento", "expected_intent": "pace_diagnosis", "expect_no_entity": true},
   {"id": "h-pac-04", "text": "¿Por qué se nos escapan décimas?", "expected_intent": "pace_diagnosis", "expect_no_entity": true},
 
-  {"id": "h-cmp-01", "text": "¿Voy por delante o por detrás de Leclerc?", "expected_intent": "compare_driver", "expected_car_index": 5},
-  {"id": "h-cmp-02", "text": "Compara mi ritmo con el de Russell", "expected_intent": "compare_driver", "expected_car_index": 6},
-  {"id": "h-cmp-03", "text": "¿Cómo ando frente a Alonso?", "expected_intent": "compare_driver", "expected_car_index": 8},
-  {"id": "h-cmp-04", "text": "¿Cuántas paradas lleva Antonelli?", "expected_intent": "compare_driver", "expected_car_index": 11},
+  {"id": "h-cmp-01", "text": "¿Voy por delante o por detrás de Dubois?", "expected_intent": "compare_driver", "expected_car_index": 5},
+  {"id": "h-cmp-02", "text": "Compara mi ritmo con el de Reyne", "expected_intent": "compare_driver", "expected_car_index": 6},
+  {"id": "h-cmp-03", "text": "¿Cómo ando frente a Sardena?", "expected_intent": "compare_driver", "expected_car_index": 8},
+  {"id": "h-cmp-04", "text": "¿Cuántas paradas lleva Cataldi?", "expected_intent": "compare_driver", "expected_car_index": 11},
 
   {"id": "h-gap-01", "text": "¿Qué distancia hay hasta el coche de delante?", "expected_intent": "gap_status", "expected_car_index": 4},
   {"id": "h-gap-02", "text": "¿Cuánto tengo detrás de mí?", "expected_intent": "gap_status", "expected_car_index": 5},
   {"id": "h-gap-03", "text": "¿A cuánto rueda el líder?", "expected_intent": "gap_status", "expected_car_index": 2},
-  {"id": "h-gap-04", "text": "Distancia hasta Piastri", "expected_intent": "gap_status", "expected_car_index": 7},
+  {"id": "h-gap-04", "text": "Distancia hasta Kessler", "expected_intent": "gap_status", "expected_car_index": 7},
 
   {"id": "h-dmg-01", "text": "¿El coche sigue entero?", "expected_intent": "damage_status", "expect_no_entity": true},
   {"id": "h-dmg-02", "text": "¿Nos hemos roto algo en el toque?", "expected_intent": "damage_status", "expect_no_entity": true},
@@ -42,7 +42,7 @@
   {"id": "h-wth-02", "text": "¿Cómo pinta el tiempo para las próximas vueltas?", "expected_intent": "weather_forecast", "expect_no_entity": true},
   {"id": "h-wth-03", "text": "¿Habrá que montar intermedios?", "expected_intent": "weather_forecast", "expect_no_entity": true},
 
-  {"id": "h-und-01", "text": "¿Nos sale el undercut a Sainz?", "expected_intent": "pit_undercut", "expected_car_index": 1},
-  {"id": "h-und-02", "text": "¿Podemos adelantar a Hamilton en boxes?", "expected_intent": "pit_undercut", "expected_car_index": 4},
+  {"id": "h-und-01", "text": "¿Nos sale el undercut a Vela?", "expected_intent": "pit_undercut", "expected_car_index": 1},
+  {"id": "h-und-02", "text": "¿Podemos adelantar a Sterling en boxes?", "expected_intent": "pit_undercut", "expected_car_index": 4},
   {"id": "h-und-03", "text": "¿Ganaríamos tiempo con undercut al de delante?", "expected_intent": "pit_undercut", "expected_car_index": 4}
 ]

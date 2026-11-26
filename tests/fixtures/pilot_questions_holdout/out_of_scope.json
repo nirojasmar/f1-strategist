@@ -3,7 +3,7 @@
   {"id": "h-oos-02", "text": "¿Qué resultado hubo en la carrera de ayer?", "tags": ["other_session"]},
   {"id": "h-oos-03", "text": "¿Cuántos puntos dan por la victoria?", "tags": ["trivia"]},
   {"id": "h-oos-04", "text": "¿Dónde está el baño del circuito?", "tags": ["offtopic"]},
-  {"id": "h-oos-05", "text": "¿Qué neumáticos lleva el coche de Leclerc?", "tags": ["restricted_rival"]},
+  {"id": "h-oos-05", "text": "¿Qué neumáticos lleva el coche de Dubois?", "tags": ["restricted_rival"]},
   {"id": "h-oos-06", "text": "¿A qué temperatura está el café?", "tags": ["offtopic"]},
   {"id": "h-oos-07", "text": "Baja la música un poco", "tags": ["offtopic"]},
   {"id": "h-oos-08", "text": "¿Quién es el ingeniero jefe de McLaren?", "tags": ["trivia"]},
