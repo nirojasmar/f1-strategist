@@ -44,8 +44,5 @@
   {"id": "i-wth-03", "text": "¿Cómo está el tiempo?", "expected_intent": "weather_forecast", "expect_no_entity": true},
   {"id": "i-wth-04", "text": "¿Va a llover en las próximas vueltas?", "expected_intent": "weather_forecast", "expect_no_entity": true},
 
-  {"id": "i-und-01", "text": "¿Cubrimos el undercut de Marchetti?", "expected_intent": "pit_undercut", "expected_car_index": 3},
-  {"id": "i-und-02", "text": "¿Podemos adelantar a Sterling con el undercut?", "expected_intent": "pit_undercut", "expected_car_index": 4},
-  {"id": "i-und-03", "text": "¿Nos lanzamos al overcut?", "expected_intent": "pit_undercut", "expect_no_entity": true},
-  {"id": "i-und-04", "text": "¿Funciona el overcut contra Reyne?", "expected_intent": "pit_undercut", "expected_car_index": 6}
+  {"id": "i-und-01", "text": "¿Podemos adelantar a Sterling con el undercut?", "expected_intent": "pit_undercut", "expected_car_index": 4}
 ]

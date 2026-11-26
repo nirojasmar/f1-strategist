@@ -45,7 +45,5 @@
   {"id": "f-wth-04", "text": "¿Habrá lluvia en la carrera?", "expected_intent": "weather_forecast", "expect_no_entity": true},
 
   {"id": "f-und-01", "text": "¿Podemos hacer undercut?", "expected_intent": "pit_undercut", "expect_no_entity": true},
-  {"id": "f-und-02", "text": "¿Funciona el undercut con Sardena?", "expected_intent": "pit_undercut", "expected_car_index": 8},
-  {"id": "f-und-03", "text": "¿Intentamos el overcut?", "expected_intent": "pit_undercut", "expect_no_entity": true},
-  {"id": "f-und-04", "text": "¿Nos cubrimos del undercut de Reyne?", "expected_intent": "pit_undercut", "expected_car_index": 6}
+  {"id": "f-und-02", "text": "¿Funciona el undercut con Sardena?", "expected_intent": "pit_undercut", "expected_car_index": 8}
 ]

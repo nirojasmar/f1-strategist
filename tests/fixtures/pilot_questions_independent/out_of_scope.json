@@ -10,5 +10,7 @@
   {"id": "i-oos-09", "text": "¿Cómo se llama la curva 3 de Monza?"},
   {"id": "i-oos-10", "text": "¿Cuál fue el récord de vuelta en Silverstone?"},
   {"id": "i-oos-11", "text": "¿Dónde está la farmacia más cercana?"},
-  {"id": "i-oos-12", "text": "¿Qué es un alerón?"}
+  {"id": "i-oos-12", "text": "¿Qué es un alerón?"},
+  {"id": "i-oos-13", "text": "¿Nos lanzamos al overcut?", "tags": ["unsupported", "overcut"]},
+  {"id": "i-oos-14", "text": "¿Funciona el overcut contra Reyne?", "tags": ["unsupported", "overcut"]}
 ]

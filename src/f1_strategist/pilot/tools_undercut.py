@@ -44,6 +44,10 @@ MISSING_PIT_LOSS = "pit_loss"
 MISSING_RIVAL_NOT_AHEAD = "rival_not_ahead"
 
 NOTE_PILOT_LEADS = "pilot.leader"
+NOTE_UNSUPPORTED_OVERCUT = "pilot.unsupported.overcut"
+NOTE_UNSUPPORTED_DEFENSIVE_UNDERCUT = "pilot.unsupported.defensive_undercut"
+
+_DEFENSIVE_CUES = ("cubr", "defend", "defiend", "defensa")
 
 ASSUMPTION_PLAYER_PITS_NOW = "player_pits_now"
 ASSUMPTION_RIVAL_PITS_AFTER_K = "rival_pits_after_k_laps"
@@ -271,9 +275,27 @@ def _engine_choice(
     )
 
 
+def _unsupported_note(routed: RoutedQuery) -> str | None:
+    text = routed.normalized_text or routed.query.text.casefold()
+    tokens = [token.strip("¿?¡!.,;:\"'()") for token in text.split()]
+    if "overcut" in tokens:
+        return NOTE_UNSUPPORTED_OVERCUT
+    if any(token.startswith(_DEFENSIVE_CUES) for token in tokens):
+        return NOTE_UNSUPPORTED_DEFENSIVE_UNDERCUT
+    return None
+
+
 def pit_undercut(routed: RoutedQuery, inputs: ToolInputs) -> ToolResult:
     """Herramienta de la intención ``PIT_UNDERCUT``."""
     state = inputs.state
+    unsupported = _unsupported_note(routed)
+    if unsupported is not None:
+        return ToolResult(
+            intent=Intent.PIT_UNDERCUT,
+            quality=Quality.UNAVAILABLE,
+            notes=(unsupported,),
+            data_lap=state.current_lap,
+        )
     player = state.player_car
     if player is None:
         return ToolResult(
@@ -317,8 +339,8 @@ def pit_undercut(routed: RoutedQuery, inputs: ToolInputs) -> ToolResult:
             data_lap=state.current_lap,
         )
 
-    metrics_cfg = MetricsConfig()
-    strategy_cfg = StrategyConfig()
+    metrics_cfg = inputs.metrics_config or MetricsConfig()
+    strategy_cfg = inputs.strategy_config or StrategyConfig()
     player_inputs = MetricInputs(
         state,
         inputs.history,
@@ -418,6 +440,8 @@ __all__ = [
     "ASSUMPTION_RIVAL_PITS_AFTER_K",
     "ASSUMPTION_SAME_PIT_LOSS",
     "NOTE_PILOT_LEADS",
+    "NOTE_UNSUPPORTED_DEFENSIVE_UNDERCUT",
+    "NOTE_UNSUPPORTED_OVERCUT",
     "UndercutEstimate",
     "evaluate_undercut",
     "pit_undercut",

@@ -14,6 +14,8 @@ from f1_strategist.pilot.answers import compose_answer
 from f1_strategist.pilot.tools_undercut import (
     MISSING_PILOT_LEADS,
     MISSING_RIVAL_CLEAN_LAPS,
+    NOTE_UNSUPPORTED_DEFENSIVE_UNDERCUT,
+    NOTE_UNSUPPORTED_OVERCUT,
     UndercutEstimate,
     evaluate_undercut,
     pit_undercut,
@@ -104,13 +106,18 @@ def _model(
     )
 
 
-def _routed(car_index: int | None = None) -> RoutedQuery:
-    query = PilotQuery("q1", "¿undercut?", "es", 0.0)
+def _routed(car_index: int | None = None, *, text: str = "¿undercut?") -> RoutedQuery:
+    query = PilotQuery("q1", text, "es", 0.0)
     entities = () if car_index is None else (EntityRef(raw="rival", car_index=car_index),)
     return RoutedQuery(query, Intent.PIT_UNDERCUT, 1.0, entities=entities)
 
 
-def _tool_inputs(inputs: MetricInputs) -> ToolInputs:
+def _tool_inputs(
+    inputs: MetricInputs,
+    *,
+    metrics_config: MetricsConfig | None = None,
+    strategy_config: StrategyConfig | None = None,
+) -> ToolInputs:
     return ToolInputs(
         state=inputs.state,
         metrics=MetricsSnapshot(),
@@ -118,6 +125,8 @@ def _tool_inputs(inputs: MetricInputs) -> ToolInputs:
         history=inputs.history,
         config=PilotConfig(),
         now=inputs.now,
+        metrics_config=metrics_config,
+        strategy_config=strategy_config,
     )
 
 
@@ -360,3 +369,85 @@ def test_tool_rival_without_model_is_insufficient() -> None:
 
     assert result.quality is Quality.INSUFFICIENT
     assert MISSING_RIVAL_CLEAN_LAPS in result.missing
+
+
+def test_tool_uses_injected_configs() -> None:
+    """#37: la herramienta respeta las configuraciones recibidas."""
+    records = {
+        PLAYER: _player_records(),
+        RIVAL: _rival_records(),
+    }
+    cars = (
+        _car(
+            PLAYER,
+            position=2,
+            current_lap=7,
+            tyre_age_laps=4,
+            actual_tyre_compound="soft",
+            delta_to_leader_ms=10_000.0,
+        ),
+        _car(
+            RIVAL,
+            position=1,
+            current_lap=4,
+            tyre_age_laps=4,
+            actual_tyre_compound="soft",
+            delta_to_leader_ms=0.0,
+        ),
+        _car(
+            TRAFFIC,
+            position=3,
+            current_lap=7,
+            actual_tyre_compound="soft",
+            delta_to_leader_ms=42_500.0,
+        ),
+    )
+    inputs = _tool_inputs(
+        _inputs(records, cars=cars),
+        metrics_config=MetricsConfig(traffic_gap_s=2.0),
+        strategy_config=StrategyConfig(pit_loss_override_s=33.0),
+    )
+
+    result = pit_undercut(_routed(RIVAL), inputs)
+
+    facts = {fact.name: fact.value for fact in result.facts}
+    assert facts["pit_loss_s"] == 33.0
+    assert facts["traffic_risk"] is True
+
+
+def test_defensive_undercut_is_explicitly_unsupported() -> None:
+    """#28: «cubrir el undercut» no devuelve la ganancia ofensiva."""
+    routed = _routed(3, text="¿Cubrimos el undercut de Marchetti?")
+    inputs = _tool_inputs(
+        _inputs(
+            cars=(
+                _car(PLAYER, position=2, current_lap=10, delta_to_leader_ms=5_000.0),
+                _car(3, position=1, current_lap=10, delta_to_leader_ms=0.0),
+            )
+        )
+    )
+
+    result = pit_undercut(routed, inputs)
+
+    assert result.quality is Quality.UNAVAILABLE
+    assert result.facts == ()
+    assert MISSING_PILOT_LEADS not in result.missing
+    assert result.notes == (NOTE_UNSUPPORTED_DEFENSIVE_UNDERCUT,)
+    answer = compose_answer(routed, result, language="es", cfg=PilotConfig())
+    assert answer.text == (
+        "El undercut defensivo no está soportado; solo puedo evaluar undercuts ofensivos."
+    )
+
+
+def test_overcut_is_explicitly_unsupported() -> None:
+    """#29: el overcut no se evalúa como undercut ofensivo."""
+    routed = _routed(text="¿Nos lanzamos al overcut?")
+    inputs = _tool_inputs(_inputs())
+
+    result = pit_undercut(routed, inputs)
+
+    assert result.quality is Quality.UNAVAILABLE
+    assert result.facts == ()
+    assert result.notes == (NOTE_UNSUPPORTED_OVERCUT,)
+    answer = compose_answer(routed, result, language="es", cfg=PilotConfig())
+    assert answer.text == ("El overcut no está soportado; solo puedo evaluar undercuts ofensivos.")

@@ -92,6 +92,12 @@ PILOT_STALE_TEXT = " Los datos están desactualizados."
 PILOT_MISSING_TEXT = " No tengo {missing}."
 PILOT_GENERIC_TEXT = "Datos: {facts}."
 PILOT_NO_DATA_TEXT = "No tengo datos ahora mismo."
+PILOT_UNSUPPORTED_OVERCUT_TEXT = (
+    "El overcut no está soportado; solo puedo evaluar undercuts ofensivos."
+)
+PILOT_UNSUPPORTED_DEFENSIVE_UNDERCUT_TEXT = (
+    "El undercut defensivo no está soportado; solo puedo evaluar undercuts ofensivos."
+)
 
 _PILOT_INTENT_LEADS: Mapping[Intent, tuple[str, str]] = MappingProxyType(
     {
@@ -124,6 +130,8 @@ def _build_pilot_templates() -> dict[str, str]:
         "pilot.missing": PILOT_MISSING_TEXT,
         "pilot.generic": PILOT_GENERIC_TEXT,
         "pilot.no_data": PILOT_NO_DATA_TEXT,
+        "pilot.unsupported.overcut": PILOT_UNSUPPORTED_OVERCUT_TEXT,
+        "pilot.unsupported.defensive_undercut": PILOT_UNSUPPORTED_DEFENSIVE_UNDERCUT_TEXT,
         "pilot.missing_template": PILOT_MISSING_TEMPLATE,
     }
     for intent, (lead, topic) in _PILOT_INTENT_LEADS.items():

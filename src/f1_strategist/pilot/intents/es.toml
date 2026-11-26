@@ -336,7 +336,6 @@ negative = [
 "hacer undercut" = 1.0
 "cubrir el undercut" = 1.0
 "undercut" = 0.9
-"overcut" = 0.9
 "podemos adelantar" = 0.75
 "funciona el undercut" = 0.95
 "intentar un undercut" = 0.95
@@ -350,7 +349,6 @@ negative = [
 
 [intents.pit_undercut.keywords]
 "undercut" = 0.7
-"overcut" = 0.7
 "adelantar" = 0.5
 "adelantamiento" = 0.5
 

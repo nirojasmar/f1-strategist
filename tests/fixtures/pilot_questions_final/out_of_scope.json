@@ -10,5 +10,6 @@
   {"id": "f-oos-09", "text": "¿Cuál es el récord del circuito?", "tags": ["trivia"]},
   {"id": "f-oos-10", "text": "Enciende las luces del garaje", "tags": ["offtopic"]},
   {"id": "f-oos-11", "text": "¿Cuántos puntos da una victoria?", "tags": ["trivia"]},
-  {"id": "f-oos-12", "text": "¿Qué es un undercut?", "tags": ["trivia", "adversarial"]}
+  {"id": "f-oos-12", "text": "¿Qué es un undercut?", "tags": ["trivia", "adversarial"]},
+  {"id": "f-oos-13", "text": "¿Intentamos el overcut?", "tags": ["unsupported", "overcut"]}
 ]
