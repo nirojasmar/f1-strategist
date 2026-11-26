@@ -194,10 +194,12 @@ class DriverDirectory:
         )
 
     def leader(self) -> DriverCandidate | None:
-        return next(iter(self.active()), None)
+        classified = [item for item in self.active() if item.position is not None]
+        return min(classified, key=_position_key, default=None)
 
     def last(self) -> DriverCandidate | None:
-        return next(reversed(self.active()), None)
+        classified = [item for item in self.active() if item.position is not None]
+        return max(classified, key=_position_key, default=None)
 
     def ahead_of(self, car_index: int) -> DriverCandidate | None:
         driver = self.get(car_index)

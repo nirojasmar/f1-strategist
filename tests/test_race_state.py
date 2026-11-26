@@ -79,6 +79,24 @@ def test_initial_snapshot_has_22_cars_and_unknown_values_are_none() -> None:
     assert all(item.updated_at_monotonic is None for item in snapshot.freshness)
 
 
+def test_participants_keep_the_race_number_for_live_identification() -> None:
+    state = RaceState()
+    participants = _parsed_fixture("participants.bin")
+    assert isinstance(participants, ParticipantsPacket)
+    first = participants.participants[0]
+    assert first is not None
+    participants = _with_header(
+        replace(
+            participants,
+            participants=(replace(first, race_number=44), *participants.participants[1:]),
+        )
+    )
+
+    state.apply(participants, 1.0)
+
+    assert state.snapshot().cars[0].race_number == 44
+
+
 def test_packets_update_pilot_and_named_car_snapshots_without_filling_missing_data() -> None:
     state = RaceState()
     session = _parsed_fixture("session.bin")

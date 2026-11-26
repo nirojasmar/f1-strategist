@@ -278,10 +278,22 @@ def route(
     if intent in _COMPARABLE_STATE_INTENTS and (entities or clarification is not None):
         # Preguntar por el estado propio mencionando a un piloto es compararse con él.
         intent = Intent.COMPARE_DRIVER
-    if clarification is None and intent in _PLAYER_ONLY_INTENTS and entities:
-        player = drivers.player_car_index if isinstance(drivers, DriverDirectory) else None
-        if player is not None and entities[0].car_index != player:
-            return _routed(query, normalized, Intent.UNKNOWN, 0.0)
+    player = drivers.player_car_index if isinstance(drivers, DriverDirectory) else None
+    if (
+        intent is Intent.TYRE_LIFE
+        and entities
+        and _RIVAL_COMPOUND_QUESTION.search(normalized) is not None
+        and (entities[0].car_index is None or entities[0].car_index != player)
+    ):
+        intent = Intent.COMPARE_DRIVER
+    if (
+        clarification is None
+        and intent in _PLAYER_ONLY_INTENTS
+        and entities
+        and player is not None
+        and entities[0].car_index != player
+    ):
+        return _routed(query, normalized, Intent.UNKNOWN, 0.0)
     if clarification is not None:
         start = getattr(dialogue, "start_clarification", None)
         if callable(start):
@@ -322,6 +334,10 @@ def _routed(
 _COMPARE_CUE = re.compile(
     r"(?<![a-z0-9])(?:por delante|por detras|mejor que|peor que|mas rapido)"
     r"(?![a-z0-9])"
+)
+# Preguntar qué compuesto lleva un rival no usa las métricas privadas del coche propio.
+_RIVAL_COMPOUND_QUESTION = re.compile(
+    r"\b(?:neumaticos|compuesto|gomas|ruedas)\b.{0,24}\b(?:lleva|usa|tiene|calza)\b"
 )
 
 

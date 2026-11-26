@@ -98,6 +98,9 @@ PILOT_UNSUPPORTED_OVERCUT_TEXT = (
 PILOT_UNSUPPORTED_DEFENSIVE_UNDERCUT_TEXT = (
     "El undercut defensivo no está soportado; solo puedo evaluar undercuts ofensivos."
 )
+PILOT_UNSUPPORTED_RIVAL_GAP_TEXT = (
+    "Solo tengo los intervalos del coche propio; no puedo darte el intervalo de ese piloto."
+)
 
 _PILOT_INTENT_LEADS: Mapping[Intent, tuple[str, str]] = MappingProxyType(
     {
@@ -132,6 +135,7 @@ def _build_pilot_templates() -> dict[str, str]:
         "pilot.no_data": PILOT_NO_DATA_TEXT,
         "pilot.unsupported.overcut": PILOT_UNSUPPORTED_OVERCUT_TEXT,
         "pilot.unsupported.defensive_undercut": PILOT_UNSUPPORTED_DEFENSIVE_UNDERCUT_TEXT,
+        "pilot.unsupported.rival_gap": PILOT_UNSUPPORTED_RIVAL_GAP_TEXT,
         "pilot.missing_template": PILOT_MISSING_TEMPLATE,
     }
     for intent, (lead, topic) in _PILOT_INTENT_LEADS.items():

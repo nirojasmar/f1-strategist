@@ -207,3 +207,41 @@ def test_unknown_and_empty_references() -> None:
     unknown = resolve_driver("nadie", directory)
     assert isinstance(unknown, Unknown)
     assert unknown.reason == UnknownReason.DRIVER_NOT_FOUND
+
+
+def test_live_race_numbers_resolve_without_evaluation_mapping() -> None:
+    cars = (
+        CarSnapshot(0, name="Lewis Hamilton", position=1, race_number=44),
+        CarSnapshot(1, name="Max Verstappen", position=2, race_number=1),
+    )
+    state = replace(RaceState().snapshot(), cars=cars, player_car_index=0)
+    directory = DriverDirectory.from_state(state)
+    result = resolve_driver("el 44", directory)
+    assert isinstance(result, Resolved)
+    assert result.driver.name == "Lewis Hamilton"
+
+
+def test_leader_and_last_need_a_known_position() -> None:
+    cars = (
+        CarSnapshot(0, name="Sin clasificar A"),
+        CarSnapshot(1, name="Sin clasificar B"),
+    )
+    state = replace(RaceState().snapshot(), cars=cars, player_car_index=0)
+    directory = DriverDirectory.from_state(state)
+    assert directory.leader() is None
+    assert directory.last() is None
+    leader = resolve_driver("el líder", directory)
+    assert isinstance(leader, Unknown)
+    assert leader.reason == UnknownReason.NO_LEADER
+
+
+def test_last_ignores_unpositioned_cars_when_others_are_classified() -> None:
+    cars = (
+        CarSnapshot(0, name="Clasificado", position=5),
+        CarSnapshot(9, name="Sin clasificar"),
+    )
+    state = replace(RaceState().snapshot(), cars=cars, player_car_index=0)
+    directory = DriverDirectory.from_state(state)
+    last = directory.last()
+    assert last is not None
+    assert last.name == "Clasificado"

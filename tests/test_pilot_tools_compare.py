@@ -234,3 +234,37 @@ def test_gap_status_marks_stale_metrics() -> None:
     assert result.quality is Quality.STALE
     assert result.stale is True
     assert _fact(result, "gap.ahead_s").quality is Quality.STALE
+
+
+def test_gap_status_never_answers_another_driver_with_player_gaps() -> None:
+    cars = (
+        _car(0, "Piloto", 5, 12000),
+        _car(7, "Kessler", 8, 20000),
+    )
+    metrics = (
+        _metric("gap.ahead_s", 2.0),
+        _metric("gap.behind_s", 3.0),
+        _metric("gap.leader_s", 12.0),
+    )
+
+    result = gap_status(_routed(Intent.GAP_STATUS, 7), _inputs(cars, metrics=metrics))
+
+    assert result.quality is Quality.INSUFFICIENT
+    assert result.facts == ()
+    assert result.notes == ("pilot.unsupported.rival_gap",)
+
+
+def test_gap_status_for_the_leader_keeps_only_the_leader_gap() -> None:
+    cars = (
+        _car(0, "Piloto", 2, 1000),
+        _car(1, "Líder", 1, 0),
+    )
+    metrics = (
+        _metric("gap.ahead_s", 1.0),
+        _metric("gap.behind_s", 5.0),
+        _metric("gap.leader_s", 1.0),
+    )
+
+    result = gap_status(_routed(Intent.GAP_STATUS, 1), _inputs(cars, metrics=metrics))
+
+    assert [fact.name for fact in result.facts] == ["gap.ahead_s", "gap.leader_s"]

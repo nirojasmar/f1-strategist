@@ -54,6 +54,28 @@ def unresolved_reference_note(routed: RoutedQuery) -> str | None:
     return None
 
 
+def _target_gap_prefixes(routed: RoutedQuery, inputs: ToolInputs) -> frozenset[str] | None:
+    """Intervalos válidos para el coche preguntado; ``None`` si no hay datos suyos."""
+    entity = next((item for item in routed.entities if item.car_index is not None), None)
+    player = inputs.state.player_car
+    if entity is None or entity.car_index == inputs.state.player_car_index:
+        return frozenset({"ahead", "behind", "leader"})
+    target = next(
+        (car for car in inputs.state.cars if car.car_index == entity.car_index),
+        None,
+    )
+    if target is None or target.position is None or player is None or player.position is None:
+        return None
+    prefixes: set[str] = set()
+    if target.position == 1:
+        prefixes.add("leader")
+    if target.position == player.position - 1:
+        prefixes.add("ahead")
+    if target.position == player.position + 1:
+        prefixes.add("behind")
+    return frozenset(prefixes) or None
+
+
 def _rival_index(routed: RoutedQuery, player_index: int) -> int | None:
     if routed.clarification is not None:
         return None
@@ -221,10 +243,21 @@ def gap_status(routed: RoutedQuery, inputs: ToolInputs) -> ToolResult:
             data_lap=inputs.state.current_lap,
             notes=(note,),
         )
+    prefixes = _target_gap_prefixes(routed, inputs)
+    if prefixes is None:
+        return ToolResult(
+            Intent.GAP_STATUS,
+            Quality.INSUFFICIENT,
+            missing=("gap.target",),
+            data_lap=inputs.state.current_lap,
+            notes=("pilot.unsupported.rival_gap",),
+        )
     facts: list[ToolFact] = []
     missing: list[str] = []
     stale = False
     for key, kind in _GAP_FACTS:
+        if key.split(".")[1].split("_")[0] not in prefixes:
+            continue
         metric = inputs.metrics.get(key)
         if metric is None or metric.value is None or isinstance(metric.value, tuple):
             missing.append(key)

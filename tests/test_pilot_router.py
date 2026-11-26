@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from f1_strategist.config import PilotConfig
@@ -14,6 +16,7 @@ from f1_strategist.pilot.router import (
     route,
 )
 from f1_strategist.pilot.types import Intent, RoutedQuery
+from f1_strategist.race_state import CarSnapshot, RaceState
 
 
 class _Drivers(DriverDirectory):
@@ -218,3 +221,41 @@ def test_unsupported_language_is_a_clear_error(language: str) -> None:
 def test_route_rejects_unsupported_language() -> None:
     with pytest.raises(RouterError):
         _route("¿Cuánto combustible queda?", language="en")
+
+
+def _race_drivers() -> DriverDirectory:
+    cars = (
+        CarSnapshot(0, name="Adrian Vance", position=4),
+        CarSnapshot(7, name="Otto Kessler", position=8),
+    )
+    state = replace(RaceState().snapshot(), cars=cars, player_car_index=0)
+    return DriverDirectory.from_state(state)
+
+
+def test_rival_compound_question_routes_as_a_driver_comparison() -> None:
+    routed = route(
+        "¿Qué neumáticos lleva Kessler?",
+        language="es",
+        drivers=_race_drivers(),
+        dialogue=None,
+        cfg=PilotConfig(),
+        now=0.0,
+        catalog=None,
+    )
+
+    assert routed.intent is Intent.COMPARE_DRIVER
+    assert routed.entities[0].car_index == 7
+
+
+def test_own_tyre_question_stays_player_only_with_a_full_grid() -> None:
+    routed = route(
+        "¿Cuánto aguantan estos neumáticos?",
+        language="es",
+        drivers=_race_drivers(),
+        dialogue=None,
+        cfg=PilotConfig(),
+        now=0.0,
+        catalog=None,
+    )
+
+    assert routed.intent is Intent.TYRE_LIFE
