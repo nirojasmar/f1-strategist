@@ -52,7 +52,7 @@ from .diagnostics import ConnectionState, connection_state, diagnose
 from .events.types import EventsSnapshot
 from .metrics.engine import MetricsSnapshot
 from .packets import packet_name
-from .pilot.console_input import LineEditor, TerminalKeyReader
+from .pilot.console_input import KeySource, LineEditor, TerminalKeyReader
 from .pilot.types import PilotAnswer, PilotSnapshot
 from .ports import SessionPort
 from .race_state import RaceStateSnapshot
@@ -332,10 +332,13 @@ def _render_pilot_summary(
     *,
     pending: str | None = None,
     error: str | None = None,
+    draft: str | None = None,
+    warning: str | None = None,
+    help_text: str | None = None,
 ) -> Panel:
     table = Table.grid(padding=(0, 2))
-    table.add_column(style="bold")
-    table.add_column()
+    table.add_column(style="bold", no_wrap=True)
+    table.add_column(no_wrap=True, overflow="ellipsis")
     limit = max(1, min(5, cfg.pilot.history_size))
     exchanges = snapshot.recent[-limit:]
     for exchange in exchanges:
@@ -353,7 +356,23 @@ def _render_pilot_summary(
         table.add_row(PILOT_CLARIFICATION_LABEL, Text(render_pilot_clarification(clarification)))
     if error is not None:
         table.add_row("", Text(error, style="red"))
-    if not exchanges and pending is None and clarification is None and error is None:
+    if draft is not None:
+        table.add_row("", Text(f"{PILOT_INPUT_PROMPT}{draft}", style="bold"))
+    if warning is not None:
+        table.add_row("", Text(warning, style="yellow"))
+    if help_text is not None:
+        table.add_row("", Text(help_text, style="dim"))
+    elif draft is not None:
+        table.add_row("", Text(PILOT_INPUT_HELP_RUN, style="dim"))
+    if (
+        not exchanges
+        and pending is None
+        and clarification is None
+        and error is None
+        and draft is None
+        and warning is None
+        and help_text is None
+    ):
         table.add_row("", PILOT_EMPTY)
     return Panel(table, title=PILOT_PANEL_TITLE, expand=False)
 
@@ -430,18 +449,21 @@ def render(
 
     race = session.race_snapshot()
     parts: list[RenderableType] = [
+        _render_pilot_summary(
+            session.pilot_snapshot(),
+            cfg,
+            pending=pilot_pending,
+            error=pilot_error,
+            draft=pilot_draft,
+            warning=pilot_input_warning,
+            help_text=pilot_help,
+        ),
         Panel(info, title="F1 Strategist · telemetría UDP", expand=False),
         _render_race_summary(race, race_now),
         _render_metrics_summary(session.metrics_snapshot(), race, race_now),
         _render_strategy_summary(session.strategy_snapshot(), cfg, race),
         _render_events_summary(session.events_snapshot()),
         _render_agent_summary(session.agent_snapshot(), cfg),
-        _render_pilot_summary(
-            session.pilot_snapshot(),
-            cfg,
-            pending=pilot_pending,
-            error=pilot_error,
-        ),
     ]
     if snap.packets_by_id:
         table = Table(title="Paquetes por tipo · huecos estimados", expand=False)
@@ -464,17 +486,23 @@ def render(
         parts.append(table)
     for diagnostic in diagnose(tele, snap, now):
         parts.append(f"[yellow]{escape(render_diagnostic(diagnostic))}[/]")
-    if pilot_draft is not None:
-        parts.append(Text(f"{PILOT_INPUT_PROMPT}{pilot_draft}", style="bold"))
-    if pilot_input_warning is not None:
-        parts.append(Text(pilot_input_warning, style="yellow"))
-    if pilot_help is not None:
-        parts.append(Text(pilot_help, style="dim"))
-    elif pilot_draft is not None:
-        parts.append(Text(PILOT_INPUT_HELP_RUN, style="dim"))
-    else:
+    if pilot_help is None and pilot_draft is None:
         parts.append("[dim]Ctrl+C para salir[/]")
     return Group(*parts)
+
+
+_KEY_BATCH_LIMIT = 64
+
+
+def _read_key_batch(keys: KeySource, limit: int = _KEY_BATCH_LIMIT) -> list[str]:
+    """Drena teclas disponibles sin esperar, para que un pegado no acumule latencia."""
+    batch: list[str] = []
+    while len(batch) < limit:
+        key = keys.read()
+        if key is None:
+            break
+        batch.append(key)
+    return batch
 
 
 def run_console(
@@ -514,11 +542,10 @@ def run_console(
             try:
                 while session.receiver_error is None:
                     if keys.enabled:
-                        key = keys.read()
-                        question = editor.feed(key) if key is not None else None
-                        if question is not None:
-                            pilot.submit(question)
-                            live.update(build(), refresh=True)
+                        for key in _read_key_batch(keys):
+                            question = editor.feed(key)
+                            if question is not None:
+                                pilot.submit(question)
                     time.sleep(0.05)
                     live.update(build(), refresh=True)
             except KeyboardInterrupt:

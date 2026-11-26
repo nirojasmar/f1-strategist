@@ -6,23 +6,28 @@ import os
 import sys
 import threading
 from io import StringIO
+from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
 from rich.console import Console
+from rich.text import Text
 
 import f1_strategist.cli as cli_module
 from f1_strategist.config import AppConfig
-from f1_strategist.console import _PilotConsole, render
+from f1_strategist.console import _PilotConsole, _read_key_batch, render
 from f1_strategist.console_messages import (
     PILOT_ACK_TEXT,
     PILOT_CLARIFICATION_LABEL,
     PILOT_EMPTY,
     PILOT_INPUT_BUSY,
+    PILOT_INPUT_DISABLED,
     PILOT_INPUT_ERROR,
+    PILOT_INPUT_HELP_RUN,
     PILOT_INPUT_PROMPT,
     PILOT_PANEL_TITLE,
     PILOT_PLAY_HELP,
+    PILOT_PLAY_HELP_DISABLED,
 )
 from f1_strategist.pilot.console_input import (
     HISTORY_DOWN,
@@ -395,3 +400,193 @@ def test_key_reader_disables_itself_when_stdin_has_no_terminal(
     assert reader.enabled is False
     assert reader.read() is None
     reader.close()
+
+
+class _CaptureSessionStub:
+    def __init__(self, _cfg: AppConfig) -> None:
+        self.capture_path = None
+        self.receiver_error = None
+
+    def start(self) -> None:
+        pass
+
+    def stop(self) -> None:
+        pass
+
+    def snapshot(self) -> SimpleNamespace:
+        return SimpleNamespace(received=0, receiver_error=None)
+
+
+class _PlaybackSessionStub:
+    def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+        self.error = None
+        self.finished = False
+
+    def play(self) -> None:
+        pass
+
+    def stop(self) -> None:
+        pass
+
+    def snapshot(self) -> SimpleNamespace:
+        return SimpleNamespace(received=0)
+
+
+@pytest.mark.parametrize("command", ["run", "play"])
+@pytest.mark.parametrize(("flag", "expected"), [([], None), (["--no-input"], False)])
+def test_cli_lets_console_auto_detect_input(
+    monkeypatch: pytest.MonkeyPatch,
+    command: str,
+    flag: list[str],
+    expected: bool | None,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_run_console(*_args: Any, **kwargs: Any) -> None:
+        captured.update(kwargs)
+
+    monkeypatch.setattr(cli_module, "_install_signal_handlers", lambda: None)
+    monkeypatch.setattr(cli_module, "load_config", lambda _path: AppConfig())
+    monkeypatch.setattr(cli_module, "_profiles_for_capture", lambda *_a, **_k: {})
+
+    console = Console(file=StringIO(), no_color=True)
+    argv = [command]
+    if command == "run":
+        monkeypatch.setattr(cli_module, "CaptureSession", _CaptureSessionStub)
+        monkeypatch.setattr(cli_module, "run_console", fake_run_console)
+    else:
+        argv.append("captura.f1cap")
+        monkeypatch.setattr(cli_module, "PlaybackSession", _PlaybackSessionStub)
+        monkeypatch.setattr(cli_module, "_run_playback_console", fake_run_console)
+    args = cli_module._build_parser().parse_args(argv + flag)
+
+    result = (
+        cli_module._cmd_run(args, console, console)
+        if command == "run"
+        else (cli_module._cmd_play(args, console, console))
+    )
+
+    assert result == 0
+    assert captured["input_enabled"] is expected
+
+
+class _QueuedKeys:
+    enabled = True
+
+    def __init__(self, keys: list[str]) -> None:
+        self._keys = list(keys)
+
+    def read(self) -> str | None:
+        return self._keys.pop(0) if self._keys else None
+
+    def close(self) -> None:
+        pass
+
+
+class _SilentLive:
+    def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+        pass
+
+    def __enter__(self) -> _SilentLive:
+        return self
+
+    def __exit__(self, *_args: Any) -> bool:
+        return False
+
+    def update(self, *_args: Any, **_kwargs: Any) -> None:
+        pass
+
+
+def test_play_keys_work_with_no_input(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class PlaybackStub(_PlaybackStub):
+        finished = False
+        error = None
+
+    session = PlaybackStub()
+    keys = _QueuedKeys(["/", " ", "+", "q"])
+    rendered: dict[str, Any] = {}
+
+    def fake_render(*_args: Any, **kwargs: Any) -> Text:
+        rendered.update(kwargs)
+        return Text("")
+
+    def fail_sleep(_seconds: float) -> None:
+        raise AssertionError("batched playback must quit without sleeping")
+
+    monkeypatch.setattr(cli_module, "TerminalKeyReader", lambda *_a, **_k: keys)
+    monkeypatch.setattr(cli_module, "Live", _SilentLive)
+    monkeypatch.setattr(cli_module, "_render_playback", fake_render)
+    monkeypatch.setattr(cli_module.time, "sleep", fail_sleep)
+
+    cli_module._run_playback_console(
+        AppConfig(),
+        cast(Any, session),
+        Console(file=StringIO(), no_color=True),
+        input_enabled=False,
+    )
+
+    assert session.paused is True
+    assert session.speed == 2.0
+    assert rendered["pilot_draft"] is None
+    assert rendered["pilot_input_warning"] == PILOT_INPUT_DISABLED
+    assert rendered["pilot_help"] == PILOT_PLAY_HELP_DISABLED
+
+
+def _render_cropped(config: AppConfig, session: Any, **kwargs: Any) -> str:
+    console = Console(file=StringIO(), width=120, height=24, no_color=True)
+    options = console.options.update(height=24)
+    lines = console.render_lines(
+        render(config, session, now=100.0, race_now=100.0, **kwargs),
+        options,
+        pad=False,
+    )
+    return "\n".join("".join(segment.text for segment in line) for line in lines)
+
+
+@pytest.mark.parametrize("mode", ["run", "play"])
+def test_question_panel_visible_in_24_rows(mode: str) -> None:
+    config = AppConfig()
+    session = CaptureSession(config)
+    snapshot = PilotSnapshot(recent=(_exchange(),))
+    session.pilot_snapshot = lambda: snapshot  # type: ignore[method-assign]
+    kwargs: dict[str, Any] = {"pilot_pending": "¿Y el neumático?"}
+    if mode == "run":
+        kwargs.update(
+            pilot_draft="x" * 200,
+            pilot_input_warning=PILOT_INPUT_DISABLED,
+        )
+    else:
+        kwargs["pilot_help"] = PILOT_PLAY_HELP
+
+    text = _render_cropped(config, session, **kwargs)
+
+    assert PILOT_PANEL_TITLE in text
+    assert PILOT_ACK_TEXT in text
+    assert "32 vueltas." in text
+    if mode == "run":
+        assert PILOT_INPUT_PROMPT in text
+        assert PILOT_INPUT_HELP_RUN in text
+        assert PILOT_INPUT_DISABLED in text
+    else:
+        assert PILOT_PLAY_HELP in text
+
+
+def test_batched_keys_consume_pasted_text_quickly() -> None:
+    keys = _QueuedKeys(list("a" * 200) + ["\r"])
+    editor = LineEditor(max_chars=200)
+    questions: list[str] = []
+    batches = 0
+    while True:
+        batch = _read_key_batch(keys)
+        if not batch:
+            break
+        batches += 1
+        for key in batch:
+            question = editor.feed(key)
+            if question is not None:
+                questions.append(question)
+
+    assert questions == ["a" * 200]
+    assert batches <= 4

@@ -30,7 +30,7 @@ from .agent.llm_client import OpenAICompatibleClient
 from .agent.types import CallOutcome, MessageSource
 from .capture import CaptureError
 from .config import AppConfig, ConfigError, LLMConfig, MetricsConfig, apply_overrides, load_config
-from .console import _PilotConsole, format_bytes, render, run_console
+from .console import _PilotConsole, _read_key_batch, format_bytes, render, run_console
 from .console_messages import (
     AGENT_EMPTY_MESSAGES,
     AGENT_EXPORT_OVERWRITES_CAPTURE,
@@ -659,7 +659,7 @@ def _cmd_run(args: argparse.Namespace, console: Console, err: Console) -> int:
         err.print(f"[red]Error:[/] {exc}")
         return 2
     try:
-        run_console(cfg, session, console, input_enabled=not args.no_input)
+        run_console(cfg, session, console, input_enabled=False if args.no_input else None)
     finally:
         session.stop()
     snap = session.snapshot()
@@ -703,6 +703,8 @@ def _apply_play_key(
     editor: LineEditor,
     pilot: _PilotConsole,
     editing: bool,
+    *,
+    questions_enabled: bool = True,
 ) -> tuple[bool, bool]:
     """Handle one key in playback; returns (editing, quit)."""
     if editing:
@@ -714,7 +716,7 @@ def _apply_play_key(
             pilot.submit(question)
             return False, False
         return True, False
-    if key == "/":
+    if key == "/" and questions_enabled:
         return True, False
     if key == " ":
         if session.paused:
@@ -760,7 +762,8 @@ def _run_playback_console(
     *,
     input_enabled: bool | None = None,
 ) -> None:
-    keys = TerminalKeyReader(enabled=input_enabled)
+    keys = TerminalKeyReader()
+    questions_enabled = input_enabled is not False
     editor = LineEditor(max_chars=cfg.pilot.max_question_chars)
     pilot = _PilotConsole(session)
     warning = (
@@ -781,7 +784,9 @@ def _run_playback_console(
             pilot_draft=editor.text if keys.enabled and editing else None,
             pilot_input_warning=warning,
             pilot_error=pilot.error_text,
-            pilot_help=PILOT_PLAY_HELP if keys.enabled else PILOT_PLAY_HELP_DISABLED,
+            pilot_help=(
+                PILOT_PLAY_HELP if keys.enabled and questions_enabled else PILOT_PLAY_HELP_DISABLED
+            ),
         )
         pilot.mark_rendered()
         return view
@@ -790,12 +795,20 @@ def _run_playback_console(
         with Live(build(), console=console, refresh_per_second=4) as live:
             try:
                 while not session.finished and session.error is None:
-                    key = keys.read()
-                    if key is not None:
-                        editing, quit_ = _apply_play_key(key, session, editor, pilot, editing)
+                    quit_ = False
+                    for key in _read_key_batch(keys):
+                        editing, quit_ = _apply_play_key(
+                            key,
+                            session,
+                            editor,
+                            pilot,
+                            editing,
+                            questions_enabled=questions_enabled,
+                        )
                         if quit_:
                             break
-                        live.update(build(), refresh=True)
+                    if quit_:
+                        break
                     time.sleep(0.05)
                     live.update(build(), refresh=True)
             except KeyboardInterrupt:
@@ -825,7 +838,7 @@ def _cmd_play(args: argparse.Namespace, console: Console, err: Console) -> int:
     _install_signal_handlers()
     try:
         session.play()
-        _run_playback_console(cfg, session, console, input_enabled=not args.no_input)
+        _run_playback_console(cfg, session, console, input_enabled=False if args.no_input else None)
     finally:
         session.stop()
     if session.error is not None:
