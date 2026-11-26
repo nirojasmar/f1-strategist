@@ -2,13 +2,20 @@
 
 from __future__ import annotations
 
+import struct
 import threading
 from collections.abc import Iterable
 from pathlib import Path
+from typing import Any
 
-from f1_strategist.config import RecordingConfig
-from f1_strategist.fingerprint import compute_pilot_fingerprint
+import pytest
+
+from f1_strategist.capture import CapturedPacket, CaptureWriter
+from f1_strategist.config import AppConfig, RecordingConfig
+from f1_strategist.fingerprint import PilotFingerprintAccumulator, compute_pilot_fingerprint
 from f1_strategist.metrics.types import Quality
+from f1_strategist.packets import HEADER_SIZE
+from f1_strategist.parser import ParsedPacket
 from f1_strategist.pilot.types import (
     AnswerKind,
     Clarification,
@@ -23,10 +30,22 @@ from f1_strategist.pilot.types import (
     ToolFact,
     ToolResult,
 )
-from f1_strategist.recorder import SessionRecorder
+from f1_strategist.recorder import SessionRecorder, ingest_capture
 from f1_strategist.store import SessionStore, StoredPilotQuery
+from tests.conftest import make_packet
+from tests.scenarios import build_weekend_timed
 
-from .test_recorder import _BlockingStore, _history, _metrics, _session_id, _snapshot
+from .test_recorder import (
+    _agent_message,
+    _BlockingStore,
+    _capture,
+    _cars,
+    _FakeStore,
+    _history,
+    _metrics,
+    _session_id,
+    _snapshot,
+)
 
 
 def _exchange(
@@ -177,3 +196,133 @@ def test_record_pilot_drops_without_advancing_sequence_when_queue_is_full() -> N
 
     assert [row.seq for _, row in store.pilot_queries] == [1, 2]
     assert [row.query_id for _, row in store.pilot_queries] == ["q-1", "q-3"]
+
+
+def test_record_pilot_discards_state_when_session_changes_while_enqueuing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recorder = SessionRecorder(_FakeStore(), RecordingConfig(batch_size=1, flush_interval_s=0.01))
+    try:
+        recorder.observe(1.0, 1.0, _snapshot(), _metrics(), _history())
+        enqueue = recorder._enqueue
+
+        def enqueue_then_switch(batch: Any) -> bool:
+            enqueued = enqueue(batch)
+            # La sesión cambia mientras el lote espera en la cola.
+            recorder._reset_session(2)
+            return enqueued
+
+        monkeypatch.setattr(recorder, "_enqueue", enqueue_then_switch)
+        recorder.record_pilot((_exchange("q-1"),), 2.0)
+
+        assert recorder._pilot_seq == 0
+        assert recorder._pilot_fingerprint.fingerprint == (
+            PilotFingerprintAccumulator().fingerprint
+        )
+        assert recorder._producer_info is None
+    finally:
+        recorder.stop()
+
+
+def test_record_agent_persists_query_link_and_kind(tmp_path: Path) -> None:
+    with SessionStore.open(tmp_path / "sessions.db") as store:
+        recorder = SessionRecorder(store, RecordingConfig(batch_size=1, flush_interval_s=0.01))
+        recorder.observe(1.0, 1.0, _snapshot(), _metrics(), _history())
+        recorder.record_agent((), (_agent_message(query_id="q-1", kind="followup"),), 2.0)
+        recorder.stop()
+
+        row = next(iter(store.iter_agent_messages(_session_id(recorder))))
+        assert row.query_id == "q-1"
+        assert row.kind == "followup"
+
+
+def test_appending_pilots_without_payload_invalidates_fingerprint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = _capture(tmp_path, monkeypatch)
+    config = AppConfig().model_copy(
+        update={"pilot": AppConfig().pilot.model_copy(update={"record_text": False})}
+    )
+    with SessionStore.open(tmp_path / "sessions.db") as store:
+        first = ingest_capture(path, store, config, pilot_exchanges=((2.0, _exchange("q-1")),))
+        session = store.get_session(first.session_id)
+        assert session is not None
+        assert session.pilot_fingerprint is not None
+
+        # Sin texto no hay payload y la huella ya no puede recomponerse.
+        second = ingest_capture(path, store, config, pilot_exchanges=((3.0, _exchange("q-2")),))
+
+        assert second.skipped
+        session = store.get_session(first.session_id)
+        assert session is not None
+        assert session.id is not None
+        assert [row.query_id for row in store.iter_pilot_queries(session.id)] == ["q-1", "q-2"]
+        assert session.pilot_fingerprint is None
+
+
+def test_appending_pilots_with_payload_recomputes_fingerprint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = _capture(tmp_path, monkeypatch)
+    with SessionStore.open(tmp_path / "sessions.db") as store:
+        first = ingest_capture(path, store, AppConfig(), pilot_exchanges=((2.0, _exchange("q-1")),))
+        second = ingest_capture(
+            path, store, AppConfig(), pilot_exchanges=((3.0, _exchange("q-2")),)
+        )
+
+        assert second.skipped
+        session = store.get_session(first.session_id)
+        assert session is not None
+        assert session.pilot_fingerprint is not None
+
+
+def _weekend_capture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    packets = [
+        packet for packet, _ in build_weekend_timed(_cars(), total_laps=3, samples_per_lap=1)
+    ]
+    path = tmp_path / "weekend.f1cap"
+    with CaptureWriter(path) as writer:
+        for index, _ in enumerate(packets):
+            writer.write(
+                CapturedPacket(
+                    recv_time_ns=index * 1_000_000_000,
+                    source_ip="127.0.0.1",
+                    source_port=4000,
+                    payload=make_packet(1, extra=struct.pack("<I", index)),
+                )
+            )
+
+    def fake_parse(payload: bytes) -> ParsedPacket:
+        return packets[struct.unpack_from("<I", payload, HEADER_SIZE)[0]]
+
+    monkeypatch.setattr("f1_strategist.offline.parse_packet", fake_parse)
+    return path
+
+
+def test_ingest_capture_records_each_pilot_exchange_in_its_session(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = _weekend_capture(tmp_path, monkeypatch)
+    exchanges = (
+        (20.0, _exchange("q-practice")),
+        (40.0, _exchange("q-qualifying")),
+        (60.0, _exchange("q-race")),
+    )
+
+    with SessionStore.open(tmp_path / "sessions.db") as store:
+        ingest_capture(path, store, AppConfig(), pilot_exchanges=exchanges)
+        sessions = {session.session_uid: session for session in store.list_sessions()}
+        expected = {
+            0xF12501: ["q-practice"],
+            0xF12502: ["q-qualifying"],
+            0xF12503: ["q-race"],
+        }
+
+        assert set(sessions) == set(expected)
+        for uid, query_ids in expected.items():
+            session = sessions[uid]
+            assert session.id is not None
+            assert [row.query_id for row in store.iter_pilot_queries(session.id)] == query_ids

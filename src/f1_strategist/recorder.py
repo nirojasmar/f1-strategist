@@ -653,6 +653,8 @@ class SessionRecorder:
                         lap=item.lap or None,
                         llm_call_id=item.llm_call_id,
                         interrupt=item.interrupt,
+                        query_id=item.query_id,
+                        kind=item.kind,
                     )
                     for index, item in enumerate(message_values, 1)
                 )
@@ -741,9 +743,12 @@ class SessionRecorder:
                 )
             )
             if enqueued:
-                self._pilot_seq = start + len(rows)
-                self._pilot_fingerprint = fingerprint_state
-                self._producer_info = info
+                with self._lock:
+                    # Una sesión nueva pudo empezar mientras el lote esperaba.
+                    if self._session_uid == uid:
+                        self._pilot_seq = start + len(rows)
+                        self._pilot_fingerprint = fingerprint_state
+                        self._producer_info = info
         except Exception as exc:  # noqa: BLE001 - el grabador nunca detiene la captura
             self._remember_error(exc)
 
@@ -1457,6 +1462,7 @@ class _IngestCollector:
         *,
         profiles_by_uid: Mapping[int, WeekendProfile],
         agent: AgentCommunicator | None = None,
+        pending_pilot: Iterable[tuple[float, PilotExchange]] = (),
     ) -> None:
         self.engine = engine
         self.strategy_engine = strategy_engine
@@ -1471,14 +1477,27 @@ class _IngestCollector:
         self.last_header_time: float | None = None
         self.last_header: PacketHeader | None = None
         self.event_evaluation_failed = False
+        self._pending_pilot = sorted(pending_pilot, key=lambda item: item[0])
+
+    def dispatch_pilot(self, upto: float) -> None:
+        """Graba las preguntas del guion que ya llegaron a su instante."""
+        while self._pending_pilot and self._pending_pilot[0][0] <= upto:
+            observed_at, exchange = self._pending_pilot.pop(0)
+            self.recorder.record_pilot((exchange,), observed_at)
 
     def apply(self, packet: ParsedPacket, observed_at: float) -> None:
         previous_state = self.state.snapshot()
         self.state.apply(packet, observed_at)
         snapshot = self.state.snapshot()
-        if (
+        session_changed = (
             previous_state.session.uid is not None
             and snapshot.session.uid != previous_state.session.uid
+        )
+        if session_changed:
+            # El grabador todavía tiene la sesión anterior: sus preguntas van ahí.
+            self.dispatch_pilot(observed_at)
+        if (
+            session_changed
             and self.last_observed_at is not None
             and self.last_state is not None
             and self.last_header is not None
@@ -1538,6 +1557,7 @@ class _IngestCollector:
             self.engine.history,
             header=packet.header,
         )
+        self.dispatch_pilot(observed_at)
         evaluation = self.event_engine.last_evaluation
         if evaluation is not None:
             self.recorder.record_events(evaluation.signals, evaluation.decisions, observed_at)
@@ -1611,6 +1631,7 @@ def ingest_capture(
         event_engine,
         profiles_by_uid=registered_profiles,
         agent=agent,
+        pending_pilot=exchanges,
     )
     offline: OfflineResult | None = None
     metrics: MetricsSnapshot | None = None
@@ -1636,8 +1657,7 @@ def ingest_capture(
             path,
             run_info=run_info,
         )
-        for observed_at, exchange in exchanges:
-            recorder.record_pilot((exchange,), observed_at)
+        collector.dispatch_pilot(math.inf)
     finally:
         agent.stop()
         calls, messages = agent.drain_records()
@@ -1731,10 +1751,10 @@ def _append_pilot_queries(
             accumulator = PilotFingerprintAccumulator()
             accumulator.add(payloads)
             fingerprint = accumulator.fingerprint
-        store.update_session(
-            session.id,
-            replace(session, pilot_fingerprint=fingerprint),
-        )
+        if fingerprint is None:
+            store.clear_pilot_fingerprint(session.id)
+        else:
+            store.update_session(session.id, replace(session, pilot_fingerprint=fingerprint))
 
 
 def _resolve_config(config: AppConfig | MetricsConfig | None) -> AppConfig:

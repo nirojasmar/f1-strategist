@@ -686,6 +686,16 @@ class SessionStore:
         if cursor.rowcount == 0:
             raise StoreError(f"No existe la sesión {session_id}")
 
+    def clear_pilot_fingerprint(self, session_id: int) -> None:
+        """Invalida la huella del piloto, que ya no puede recomponerse."""
+        with self.transaction() as connection:
+            cursor = connection.execute(
+                "UPDATE sessions SET pilot_fingerprint = NULL WHERE id = ?",
+                (session_id,),
+            )
+        if cursor.rowcount == 0:
+            raise StoreError(f"No existe la sesión {session_id}")
+
     def update_capture_sha256(self, session_id: int, sha256: str) -> None:
         """Asocia el hash de una captura ya cerrada a una sesión de esa ejecución."""
         with self.transaction() as connection:
@@ -1227,9 +1237,16 @@ class SessionStore:
             )
 
     def iter_agent_messages(self, session_id: int) -> Iterator[StoredAgentMessage]:
+        columns = {
+            str(row["name"])
+            for row in self._connection.execute("PRAGMA table_info(agent_messages)")
+        }
+        query_id = "query_id" if "query_id" in columns else "NULL"
+        kind = "kind" if "kind" in columns else "NULL"
         cursor = self._connection.execute(
             "SELECT seq,t_sim_s,message_id,alert_id,event_id,priority,language,text,source,"
-            "used_facts_json,lap,llm_call_id,interrupt,query_id,kind FROM agent_messages "
+            "used_facts_json,lap,llm_call_id,interrupt,"
+            f"{query_id} AS query_id, {kind} AS kind FROM agent_messages "
             "WHERE session_id=? ORDER BY seq",
             (session_id,),
         )
@@ -1303,10 +1320,15 @@ class SessionStore:
     def iter_pilot_queries(
         self, session_id: int, *, intent: str | None = None
     ) -> Iterator[StoredPilotQuery]:
+        columns = {
+            str(row["name"]) for row in self._connection.execute("PRAGMA table_info(pilot_queries)")
+        }
+        exchange_json = "exchange_json" if "exchange_json" in columns else "NULL"
         sql = (
             "SELECT seq,t_sim_s,query_id,text,language,intent,confidence,entities_json,"
             "clarification_json,facts_json,missing_json,answer_text,answer_kind,message_key,"
-            "latency_s,followup_status,followup_message,exchange_json "
+            "latency_s,followup_status,followup_message,"
+            f"{exchange_json} AS exchange_json "
             "FROM pilot_queries WHERE session_id=?"
         )
         parameters: tuple[object, ...] = (session_id,)

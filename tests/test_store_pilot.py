@@ -207,3 +207,63 @@ def test_readonly_store_rejects_writes(tmp_path: Path) -> None:
         with pytest.raises(sqlite3.OperationalError):
             store.add_pilot_queries(session_id, [_query()])
         assert list(store.iter_pilot_queries(session_id)) == []
+
+
+def test_readonly_v9_store_reads_agent_messages_without_query_columns(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "v9.db"
+    connection = sqlite3.connect(path)
+    try:
+        apply_migrations(connection, MIGRATIONS[:-2])
+        connection.execute(
+            "INSERT INTO sessions (session_uid, source, started_at_utc, agent_fingerprint) "
+            "VALUES ('123', 'live', '2026-11-05T10:00:00Z', ?)",
+            ("a" * 64,),
+        )
+        connection.execute(
+            "INSERT INTO agent_messages (session_id, seq, t_sim_s, message_id, priority, "
+            "language, text, source) VALUES (1, 1, 5.0, 'msg-1', 'strategic', 'es', "
+            "'Box this lap.', 'template')"
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    with SessionStore.open(path, readonly=True) as store:
+        messages = list(store.iter_agent_messages(1))
+        assert len(messages) == 1
+        assert messages[0].text == "Box this lap."
+        assert messages[0].query_id is None
+        assert messages[0].kind is None
+        assert store.connection.execute("PRAGMA user_version").fetchone()[0] == 9
+
+
+def test_readonly_v10_store_reads_pilot_queries_without_exchange_payload(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "v10.db"
+    connection = sqlite3.connect(path)
+    try:
+        apply_migrations(connection, MIGRATIONS[:-1])
+        connection.execute(
+            "INSERT INTO sessions (session_uid, source, started_at_utc, agent_fingerprint) "
+            "VALUES ('123', 'live', '2026-11-05T10:00:00Z', ?)",
+            ("a" * 64,),
+        )
+        connection.execute(
+            "INSERT INTO pilot_queries (session_id, seq, t_sim_s, query_id, language, intent, "
+            "answer_text, answer_kind, message_key, followup_status) VALUES "
+            "(1, 1, 12.5, 'q-1', 'es', 'fuel_status', 'Quedan 12,4 kg.', 'answer', "
+            "'pilot_fuel_status', 'none')"
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    with SessionStore.open(path, readonly=True) as store:
+        rows = list(store.iter_pilot_queries(1))
+        assert len(rows) == 1
+        assert rows[0].query_id == "q-1"
+        assert rows[0].exchange_json is None
+        assert store.connection.execute("PRAGMA user_version").fetchone()[0] == 10
