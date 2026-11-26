@@ -7,7 +7,6 @@ import csv
 import io
 import json
 import os
-import select
 import signal
 import sqlite3
 import sys
@@ -31,7 +30,7 @@ from .agent.llm_client import OpenAICompatibleClient
 from .agent.types import CallOutcome, MessageSource
 from .capture import CaptureError
 from .config import AppConfig, ConfigError, LLMConfig, MetricsConfig, apply_overrides, load_config
-from .console import format_bytes, render, run_console
+from .console import _PilotConsole, _read_key_batch, format_bytes, render, run_console
 from .console_messages import (
     AGENT_EMPTY_MESSAGES,
     AGENT_EXPORT_OVERWRITES_CAPTURE,
@@ -58,6 +57,10 @@ from .console_messages import (
     LLM_EVAL_OVERWRITES_DATASET,
     LLM_EVAL_OVERWRITES_DB,
     LLM_EVAL_SKIPPED_CALLS,
+    PILOT_INPUT_DISABLED,
+    PILOT_INPUT_NO_TERMINAL,
+    PILOT_PLAY_HELP,
+    PILOT_PLAY_HELP_DISABLED,
     render_agent_priority,
     render_agent_source,
     render_event_message,
@@ -78,13 +81,22 @@ from .metrics.history import MetricInputs
 from .offline import OfflineResult, run_capture_offline
 from .packets import packet_name
 from .parser import ParsedPacket
+from .pilot.console_input import LineEditor, TerminalKeyReader
+from .pilot.evaluation import (
+    DEFAULT_PILOT_DATASET,
+    evaluation_report_json,
+    load_pilot_dataset,
+    run_pilot_evaluation,
+)
+from .pilot.script import ask_capture_at_lap, run_pilot_script
+from .pilot.types import PilotExchange, PilotQuery
 from .playback import PlaybackSession
 from .race_state import RaceState
 from .receiver import ReceiverError
 from .recorder import ingest_capture
 from .replay import replay_capture
 from .session import CaptureSession
-from .store import SessionInfo, SessionStore, StoreError
+from .store import SessionInfo, SessionStore, StoredPilotQuery, StoreError
 from .store.queries import (
     held_metric_values,
     list_session_summaries,
@@ -183,6 +195,11 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="detectar y registrar eventos sin emitir avisos",
     )
+    run.add_argument(
+        "--no-input",
+        action="store_true",
+        help="desactiva la entrada de preguntas",
+    )
 
     replay = sub.add_parser("replay", help="reenvía una captura por UDP (sin abrir el juego)")
     replay.add_argument("file", type=Path)
@@ -199,6 +216,11 @@ def _build_parser() -> argparse.ArgumentParser:
     play.add_argument("--loop", action="store_true", help="repetir hasta Ctrl+C")
     play.add_argument("--start-lap", type=int, help="empezar en esta vuelta (avance rápido)")
     play.add_argument("--config", type=Path, help="archivo TOML de configuración")
+    play.add_argument(
+        "--no-input",
+        action="store_true",
+        help="desactiva la entrada de preguntas",
+    )
 
     inspect = sub.add_parser("inspect", help="resume el contenido de una captura")
     inspect.add_argument("file", type=Path)
@@ -547,8 +569,62 @@ def _build_parser() -> argparse.ArgumentParser:
     llm_eval.add_argument("--config", type=Path, help="archivo TOML de configuración")
     llm_eval.add_argument("--endpoint", help="URL base compatible con OpenAI")
 
-    sub.add_parser("ask", help="preguntas del piloto por texto")
-    sub.add_parser("queries", help="consulta las preguntas registradas en la base de datos")
+    queries = sub.add_parser(
+        "queries", help="consulta las preguntas registradas en la base de datos"
+    )
+    queries_sub = queries.add_subparsers(dest="queries_command")
+    queries_show = queries_sub.add_parser("show", help="muestra las consultas guardadas")
+    queries_show.add_argument("--session", type=_positive_int, required=True, metavar="ID")
+    queries_show.add_argument("--intent", help="filtra por intención")
+    queries_show.add_argument("--db", type=Path, help="base SQLite (por defecto, configuración)")
+    queries_summary = queries_sub.add_parser("summary", help="resume las consultas guardadas")
+    queries_summary.add_argument("--session", type=_positive_int, required=True, metavar="ID")
+    queries_summary.add_argument("--db", type=Path, help="base SQLite (por defecto, configuración)")
+    queries_export = queries_sub.add_parser("export", help="exporta las consultas guardadas")
+    queries_export.add_argument("--session", type=_positive_int, required=True, metavar="ID")
+    queries_export.add_argument(
+        "--format", choices=("json", "jsonl", "csv"), default="json", help="formato de salida"
+    )
+    queries_export.add_argument("--db", type=Path, help="base SQLite (por defecto, configuración)")
+
+    ask = sub.add_parser("ask", help="preguntas del piloto por texto")
+    ask.add_argument("file", nargs="?", type=Path, help="captura de entrada (.f1cap o .f1cap.gz)")
+    ask.add_argument("--lap", type=_positive_int, help="vuelta en la que lanzar la pregunta")
+    ask.add_argument("question", nargs="?", help="texto de la pregunta")
+    ask.add_argument("--config", type=Path, help="archivo TOML de configuración")
+    ask.add_argument("--json", action="store_true", help="imprime la respuesta en JSON")
+
+    ask_script = sub.add_parser(
+        "ask-script",
+        help="ejecuta un guion JSONL de preguntas sobre una captura",
+    )
+    ask_script.add_argument("file", type=Path, help="captura de entrada (.f1cap o .f1cap.gz)")
+    ask_script.add_argument("script", type=Path, help="guion de preguntas (.jsonl)")
+    ask_script.add_argument(
+        "--db",
+        type=Path,
+        help="base SQLite (por defecto, la de la configuración)",
+    )
+    ask_script.add_argument("--json", action="store_true", help="imprime el resultado en JSON")
+    ask_script.add_argument("--config", type=Path, help="archivo TOML de configuración")
+
+    pilot = sub.add_parser("pilot", help="herramientas y evaluación de preguntas del piloto")
+    pilot_sub = pilot.add_subparsers(dest="pilot_command", required=True)
+    pilot_eval = pilot_sub.add_parser(
+        "eval",
+        help="evalúa el enrutador, entidades y aclaraciones sobre conjuntos etiquetados",
+    )
+    pilot_eval.add_argument(
+        "--dataset",
+        type=Path,
+        default=DEFAULT_PILOT_DATASET,
+        metavar="DIR",
+        help=f"directorio con los conjuntos etiquetados (por defecto, {DEFAULT_PILOT_DATASET})",
+    )
+    pilot_eval.add_argument("--config", type=Path, help="archivo TOML de configuración")
+    pilot_eval.add_argument("--out", type=Path, metavar="ARCHIVO", help="archivo JSON de salida")
+    pilot_eval.add_argument("--json", action="store_true", help="imprime el informe en JSON")
+
     return parser
 
 
@@ -583,7 +659,7 @@ def _cmd_run(args: argparse.Namespace, console: Console, err: Console) -> int:
         err.print(f"[red]Error:[/] {exc}")
         return 2
     try:
-        run_console(cfg, session, console)
+        run_console(cfg, session, console, input_enabled=False if args.no_input else None)
     finally:
         session.stop()
     snap = session.snapshot()
@@ -607,63 +683,6 @@ def _cmd_replay(args: argparse.Namespace, console: Console, err: Console) -> int
     return 0
 
 
-class _KeyReader:
-    """Lectura de teclas sin bloquear; se desactiva si stdin no es un terminal."""
-
-    def __init__(self) -> None:
-        self._enabled = bool(getattr(sys.stdin, "isatty", lambda: False)())
-        self._windows = os.name == "nt"
-        self._saved_attributes: Any | None = None
-        self._fd: int | None = None
-        if not self._enabled:
-            return
-        if not self._windows:
-            import termios  # noqa: PLC0415
-            import tty  # noqa: PLC0415
-
-            self._fd = sys.stdin.fileno()
-            self._saved_attributes = termios.tcgetattr(self._fd)  # type: ignore[reportAttributeAccessIssue]
-            tty.setcbreak(self._fd)  # type: ignore[reportAttributeAccessIssue]
-
-    def read(self) -> str | None:
-        if not self._enabled:
-            return None
-        if self._windows:
-            import msvcrt  # noqa: PLC0415
-
-            # Las stubs de msvcrt en plataformas no Windows no declaran estas
-            # funciones, aunque solo se usan cuando os.name == "nt".
-            kbhit = getattr(msvcrt, "kbhit", None)
-            getwch = getattr(msvcrt, "getwch", None)
-            if kbhit is None or getwch is None or not kbhit():
-                return None
-            key = getwch()
-            return key if key != "\x03" else "q"
-        fd = self._fd
-        if fd is None:
-            return None
-        ready, _, _ = select.select([fd], [], [], 0)
-        if not ready:
-            return None
-        data = os.read(fd, 1)
-        if not data:
-            return None
-        return data.decode("utf-8", errors="ignore") or None
-
-    def close(self) -> None:
-        if self._saved_attributes is None or self._fd is None:
-            return
-        import termios  # noqa: PLC0415
-
-        termios.tcsetattr(  # type: ignore[reportAttributeAccessIssue]
-            self._fd,
-            termios.TCSADRAIN,  # type: ignore[reportAttributeAccessIssue]
-            self._saved_attributes,
-        )
-        self._saved_attributes = None
-        self._fd = None
-
-
 def _next_speed(current: float, direction: int) -> float:
     if current <= 0:
         return _SPEED_STEPS[0] if direction > 0 else 0.0
@@ -678,11 +697,61 @@ def _next_speed(current: float, direction: int) -> float:
     )
 
 
-def _render_playback(cfg: AppConfig, session: PlaybackSession) -> Group:
-    help_text = "espacio: pausa · +/-: velocidad · q: salir"
-    return Group(
-        render(cfg, session, time.monotonic(), race_now=session.observed_at),
-        Text(help_text, style="dim"),
+def _apply_play_key(
+    key: str,
+    session: PlaybackSession,
+    editor: LineEditor,
+    pilot: _PilotConsole,
+    editing: bool,
+    *,
+    questions_enabled: bool = True,
+) -> tuple[bool, bool]:
+    """Handle one key in playback; returns (editing, quit)."""
+    if editing:
+        if key == "\x1b":
+            editor.reset()
+            return False, False
+        question = editor.feed(key)
+        if question is not None:
+            pilot.submit(question)
+            return False, False
+        return True, False
+    if key == "/" and questions_enabled:
+        return True, False
+    if key == " ":
+        if session.paused:
+            session.resume()
+        else:
+            session.pause()
+    elif key in {"+", "="}:
+        session.set_speed(_next_speed(session.speed, 1))
+    elif key == "-":
+        session.set_speed(_next_speed(session.speed, -1))
+    elif key in {"q", "Q"}:
+        return False, True
+    return False, False
+
+
+def _render_playback(
+    cfg: AppConfig,
+    session: PlaybackSession,
+    *,
+    pilot_pending: str | None = None,
+    pilot_draft: str | None = None,
+    pilot_input_warning: str | None = None,
+    pilot_error: str | None = None,
+    pilot_help: str | None = None,
+) -> Group:
+    return render(
+        cfg,
+        session,
+        time.monotonic(),
+        race_now=session.observed_at,
+        pilot_pending=pilot_pending,
+        pilot_draft=pilot_draft,
+        pilot_input_warning=pilot_input_warning,
+        pilot_error=pilot_error,
+        pilot_help=pilot_help,
     )
 
 
@@ -690,29 +759,62 @@ def _run_playback_console(
     cfg: AppConfig,
     session: PlaybackSession,
     console: Console,
+    *,
+    input_enabled: bool | None = None,
 ) -> None:
-    keys = _KeyReader()
+    keys = TerminalKeyReader()
+    questions_enabled = input_enabled is not False
+    editor = LineEditor(max_chars=cfg.pilot.max_question_chars)
+    pilot = _PilotConsole(session)
+    warning = (
+        PILOT_INPUT_DISABLED
+        if input_enabled is False
+        else PILOT_INPUT_NO_TERMINAL
+        if not keys.enabled
+        else None
+    )
+    editing = False
+
+    def build() -> Group:
+        pilot.poll()
+        view = _render_playback(
+            cfg,
+            session,
+            pilot_pending=pilot.pending_text,
+            pilot_draft=editor.text if keys.enabled and editing else None,
+            pilot_input_warning=warning,
+            pilot_error=pilot.error_text,
+            pilot_help=(
+                PILOT_PLAY_HELP if keys.enabled and questions_enabled else PILOT_PLAY_HELP_DISABLED
+            ),
+        )
+        pilot.mark_rendered()
+        return view
+
     try:
-        with Live(_render_playback(cfg, session), console=console, refresh_per_second=4) as live:
+        with Live(build(), console=console, refresh_per_second=4) as live:
             try:
                 while not session.finished and session.error is None:
-                    key = keys.read()
-                    if key == " ":
-                        if session.paused:
-                            session.resume()
-                        else:
-                            session.pause()
-                    elif key in {"+", "="}:
-                        session.set_speed(_next_speed(session.speed, 1))
-                    elif key == "-":
-                        session.set_speed(_next_speed(session.speed, -1))
-                    elif key in {"q", "Q"}:
+                    quit_ = False
+                    for key in _read_key_batch(keys):
+                        editing, quit_ = _apply_play_key(
+                            key,
+                            session,
+                            editor,
+                            pilot,
+                            editing,
+                            questions_enabled=questions_enabled,
+                        )
+                        if quit_:
+                            break
+                    if quit_:
                         break
                     time.sleep(0.05)
-                    live.update(_render_playback(cfg, session))
+                    live.update(build(), refresh=True)
             except KeyboardInterrupt:
                 pass
     finally:
+        pilot.close()
         keys.close()
 
 
@@ -729,11 +831,14 @@ def _cmd_play(args: argparse.Namespace, console: Console, err: Console) -> int:
         strategy_config=cfg.strategy,
         events_config=cfg.events,
         gate_config=cfg.gate,
+        agent_config=cfg.agent,
+        llm_config=cfg.llm,
+        pilot_config=cfg.pilot,
     )
     _install_signal_handlers()
     try:
         session.play()
-        _run_playback_console(cfg, session, console)
+        _run_playback_console(cfg, session, console, input_enabled=False if args.no_input else None)
     finally:
         session.stop()
     if session.error is not None:
@@ -2039,6 +2144,157 @@ def _cmd_events_simulate(args: argparse.Namespace, console: Console, err: Consol
     return 0
 
 
+_QUERIES_SCHEMA_VERSION = 10
+_QUERIES_TITLE = "Consultas del piloto · sesión {session_id}"
+_QUERIES_COLUMNS = (
+    "Tiempo",
+    "Intención",
+    "Tipo",
+    "Confianza",
+    "Pregunta",
+    "Respuesta",
+    "Seguimiento",
+)
+_QUERIES_EMPTY = "La sesión {session_id} no tiene consultas registradas."
+_QUERIES_SCHEMA_ERROR = (
+    "Los comandos queries requieren esquema v{required}; la base actual es v{actual}."
+)
+_QUERIES_SUMMARY_TITLE = "Resumen de consultas · sesión {session_id}"
+_QUERIES_SUMMARY_INTENTS_TITLE = "Consultas por intención"
+_QUERIES_SUMMARY_KINDS_TITLE = "Consultas por tipo de respuesta"
+_QUERIES_SUMMARY_RATES_TITLE = "Tasas"
+_QUERIES_SUMMARY_INTENT_COLUMN = "Intención"
+_QUERIES_SUMMARY_KIND_COLUMN = "Tipo"
+_QUERIES_SUMMARY_METRIC_COLUMN = "Métrica"
+_QUERIES_SUMMARY_RATE_COLUMN = "Porcentaje"
+_QUERIES_SUMMARY_LATENCY_TITLE = "Latencia de respuesta"
+_QUERIES_SUMMARY_PERCENTILE_COLUMN = "Percentil"
+_QUERIES_SUMMARY_SECONDS_COLUMN = "Segundos"
+_QUERIES_EXPORT_SCHEMA_VERSION = 1
+
+
+def _cmd_queries(args: argparse.Namespace, console: Console, err: Console) -> int:
+    if args.queries_command is None:
+        return _cmd_pending_group(args, console, err)
+    db = _sessions_database(args)
+    with SessionStore.open(db, readonly=True) as store:
+        require_session(store, args.session)
+        version_row = store.connection.execute("PRAGMA user_version").fetchone()
+        schema_version = 0 if version_row is None else int(version_row[0])
+        if schema_version < _QUERIES_SCHEMA_VERSION:
+            raise StoreError(
+                _QUERIES_SCHEMA_ERROR.format(
+                    required=_QUERIES_SCHEMA_VERSION, actual=schema_version
+                )
+            )
+        intent = getattr(args, "intent", None)
+        queries = tuple(store.iter_pilot_queries(args.session, intent=intent))
+    if args.queries_command == "show":
+        return _queries_show(args.session, queries, console)
+    if args.queries_command == "summary":
+        return _queries_summary(args.session, queries, console)
+    _write_stdout(_render_queries_export(args.session, queries, args.format))
+    return 0
+
+
+def _queries_show(session_id: int, queries: tuple[StoredPilotQuery, ...], console: Console) -> int:
+    if not queries:
+        console.print(_QUERIES_EMPTY.format(session_id=session_id))
+        return 0
+    table = Table(title=_QUERIES_TITLE.format(session_id=session_id), expand=False)
+    table.add_column(_QUERIES_COLUMNS[0], min_width=8, no_wrap=True)
+    table.add_column(_QUERIES_COLUMNS[1], min_width=12, no_wrap=True)
+    table.add_column(_QUERIES_COLUMNS[2], min_width=10, no_wrap=True)
+    table.add_column(_QUERIES_COLUMNS[3], min_width=8, no_wrap=True)
+    table.add_column(_QUERIES_COLUMNS[4], overflow="fold", ratio=2)
+    table.add_column(_QUERIES_COLUMNS[5], overflow="fold", ratio=2)
+    table.add_column(_QUERIES_COLUMNS[6], min_width=10, overflow="fold")
+    for query in queries:
+        followup = query.followup_status
+        if query.followup_message is not None:
+            followup = f"{followup}: {query.followup_message}"
+        table.add_row(
+            f"{query.t_sim_s:.1f} s",
+            query.intent,
+            query.answer_kind,
+            "—" if query.confidence is None else f"{query.confidence:.2f}",
+            Text("—" if query.text is None else query.text),
+            Text(query.answer_text),
+            followup,
+        )
+    console.print(table)
+    return 0
+
+
+def _queries_summary(
+    session_id: int, queries: tuple[StoredPilotQuery, ...], console: Console
+) -> int:
+    console.print(_QUERIES_SUMMARY_TITLE.format(session_id=session_id))
+    _print_counter_table(
+        console,
+        _QUERIES_SUMMARY_INTENTS_TITLE,
+        _QUERIES_SUMMARY_INTENT_COLUMN,
+        Counter(query.intent for query in queries),
+    )
+    _print_counter_table(
+        console,
+        _QUERIES_SUMMARY_KINDS_TITLE,
+        _QUERIES_SUMMARY_KIND_COLUMN,
+        Counter(query.answer_kind for query in queries),
+    )
+    rates = Table(title=_QUERIES_SUMMARY_RATES_TITLE, expand=False)
+    rates.add_column(_QUERIES_SUMMARY_METRIC_COLUMN)
+    rates.add_column(_QUERIES_SUMMARY_RATE_COLUMN, justify="right")
+    total = len(queries)
+    unknown = sum(1 for query in queries if query.intent == "unknown")
+    clarifications = sum(
+        1
+        for query in queries
+        if query.answer_kind == "clarification" or query.clarification_json is not None
+    )
+    rates.add_row("Desconocidas", _percent_text(unknown, total))
+    rates.add_row("Aclaraciones", _percent_text(clarifications, total))
+    console.print(rates)
+
+    latencies = sorted(query.latency_s for query in queries if query.latency_s is not None)
+    latency_table = Table(title=_QUERIES_SUMMARY_LATENCY_TITLE, expand=False)
+    latency_table.add_column(_QUERIES_SUMMARY_PERCENTILE_COLUMN)
+    latency_table.add_column(_QUERIES_SUMMARY_SECONDS_COLUMN, justify="right")
+    if latencies:
+        latency_table.add_row("p50", f"{_percentile(latencies, 0.50):.3f}")
+        latency_table.add_row("p95", f"{_percentile(latencies, 0.95):.3f}")
+    else:
+        latency_table.add_row("p50 / p95", "—")
+    console.print(latency_table)
+    return 0
+
+
+def _percent_text(count: int, total: int) -> str:
+    return "—" if total == 0 else f"{100.0 * count / total:.1f} %"
+
+
+def _render_queries_export(
+    session_id: int, queries: tuple[StoredPilotQuery, ...], export_format: str
+) -> str:
+    rows = [query.to_dict() for query in queries]
+    if export_format == "json":
+        payload = {
+            "schema_version": _QUERIES_EXPORT_SCHEMA_VERSION,
+            "session_id": session_id,
+            "pilot_queries": rows,
+        }
+        return json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    if export_format == "jsonl":
+        return "".join(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n" for row in rows)
+    output = io.StringIO(newline="")
+    fieldnames = sorted({key for row in rows for key in row})
+    writer = csv.DictWriter(output, fieldnames=fieldnames, lineterminator="\n")
+    writer.writeheader()
+    for row in rows:
+        writer.writerow({key: "" if value is None else str(value) for key, value in row.items()})
+    return output.getvalue()
+
+
 def _cmd_pending_group(args: argparse.Namespace, console: Console, err: Console) -> int:
     """Grupo de L1 sin subcomandos; L9 y L10 los añaden."""
     err.print(f"El grupo «{args.command}» todavía no tiene subcomandos.")
@@ -2432,6 +2688,140 @@ def _cmd_llm_eval(args: argparse.Namespace, console: Console) -> int:
     return 0
 
 
+def _cmd_ask(args: argparse.Namespace, console: Console, err: Console) -> int:
+    if args.file is None or args.lap is None or args.question is None:
+        raise ValueError('Uso: f1-strategist ask CAPTURA --lap N "pregunta"')
+    cfg = load_config(args.config)
+    profiles = _profiles_for_capture(cfg, args.file, err)
+    exchange, offline = ask_capture_at_lap(
+        args.file,
+        args.lap,
+        args.question,
+        cfg,
+        profiles_by_uid=profiles,
+    )
+    _warn_offline_issues(offline, err)
+    if args.json:
+        payload = json.dumps(exchange.to_dict(), ensure_ascii=False, indent=2, sort_keys=True)
+        _write_stdout(payload + "\n")
+        return 0
+    console.print(
+        f"Vuelta {exchange.lap} ({exchange.t_sim_s:.1f} s) · "
+        f"{exchange.answer.intent.value} · {exchange.answer.kind.value}"
+    )
+    console.print(exchange.answer.text or exchange.answer.message_key)
+    return 0
+
+
+def _cmd_ask_script(args: argparse.Namespace, console: Console, err: Console) -> int:
+    cfg = load_config(args.config)
+    if args.db is not None:
+        cfg = cfg.model_copy(
+            update={"recording": cfg.recording.model_copy(update={"database": args.db})}
+        )
+    profiles = _profiles_for_capture(cfg, args.file, err)
+    result = run_pilot_script(args.file, args.script, cfg, profiles_by_uid=profiles)
+    if args.db is not None:
+        exchanges = tuple(
+            (
+                item.t_sim_s,
+                PilotExchange(
+                    query=PilotQuery(
+                        item.answer.query_id,
+                        item.query_text,
+                        cfg.pilot.language,
+                        item.t_sim_s,
+                        source="script",
+                    ),
+                    answer=item.answer,
+                    routed=item.routed,
+                ),
+            )
+            for item in result.exchanges
+        )
+        with SessionStore.open(cfg.recording.database) as store:
+            ingest_capture(args.file, store, cfg, pilot_exchanges=exchanges)
+    _warn_offline_issues(result.offline, err)
+    if args.json:
+        _write_stdout(result.to_json())
+        return 0
+
+    table = Table(title="Preguntas guiadas", expand=False)
+    for column in ("Línea", "Disparador", "Tiempo", "Vuelta", "Pregunta", "Intención", "Respuesta"):
+        table.add_column(column, overflow="fold")
+    for item in result.exchanges:
+        table.add_row(
+            str(item.line),
+            item.trigger,
+            f"{item.t_sim_s:.1f} s",
+            "—" if item.lap is None else str(item.lap),
+            item.query_text,
+            item.answer.intent.value,
+            item.answer.text or item.answer.message_key,
+        )
+    if result.exchanges:
+        console.print(table)
+    else:
+        console.print("No se disparó ninguna pregunta del guion.")
+    if result.untriggered:
+        lines = ", ".join(str(step.line) for step in result.untriggered)
+        err.print(f"[yellow]Aviso:[/] pasos sin disparar (líneas {lines}).")
+    console.print(f"Huella determinista: [bold]{result.fingerprint}[/]")
+    return 0
+
+
+def _cmd_pilot(args: argparse.Namespace, console: Console, err: Console) -> int:
+    del err
+    if args.pilot_command != "eval":
+        return 0
+    cfg = load_config(args.config)
+    out_path: Path | None = args.out
+    dataset_dir: Path = args.dataset
+    if out_path is not None:
+        if args.config is not None and _same_file(out_path, args.config):
+            raise ValueError("El informe no puede sobrescribir la configuración.")
+        if out_path.resolve().is_relative_to(dataset_dir.resolve()):
+            raise ValueError("El informe no puede escribirse dentro del conjunto de evaluación.")
+    dataset = load_pilot_dataset(dataset_dir)
+    report = run_pilot_evaluation(dataset, config=cfg.pilot)
+    output = evaluation_report_json(report)
+    if out_path is not None:
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        with out_path.open("w", encoding="utf-8", newline="") as handle:
+            handle.write(output)
+    if args.json:
+        _write_stdout(output)
+        return 0
+
+    metrics = report["metrics"]
+    table = Table(title="Evaluación de preguntas del piloto", expand=False)
+    table.add_column("Métrica")
+    table.add_column("Valor", justify="right")
+    for label, key in (
+        ("Exactitud de intención", "intent_accuracy"),
+        ("Exactitud de entidad", "entity_accuracy"),
+        ("Falsos positivos fuera de alcance", "out_of_scope_false_positive_rate"),
+        ("Aclaraciones correctas", "clarification_accuracy"),
+        ("Secuencias de diálogo", "dialogue_sequence_accuracy"),
+        ("Turnos de diálogo", "dialogue_turn_accuracy"),
+    ):
+        value = metrics.get(key)
+        table.add_row(label, "—" if value is None else f"{value:.1%}")
+    console.print(table)
+
+    failures = report["failures"]
+    if failures:
+        fail_table = Table(title=f"Frases fallidas ({len(failures)})", expand=False)
+        for column in ("Conjunto", "ID", "Frase", "Motivo"):
+            fail_table.add_column(column, overflow="fold")
+        for item in failures:
+            fail_table.add_row(item["split"], item["id"], item["text"], item["reason"])
+        console.print(fail_table)
+    else:
+        console.print("Sin fallos en los conjuntos evaluados.")
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     console = Console()
@@ -2453,8 +2843,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         "events": _cmd_events,
         "agent": lambda args, console, _err: _cmd_agent(args, console),
         "llm": lambda args, console, _err: _cmd_llm(args, console),
-        "ask": _cmd_pending_group,
-        "queries": _cmd_pending_group,
+        "queries": _cmd_queries,
+        "ask": _cmd_ask,
+        "ask-script": _cmd_ask_script,
+        "pilot": _cmd_pilot,
     }
     try:
         return handlers[args.command](args, console, err)

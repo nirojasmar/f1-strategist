@@ -11,7 +11,7 @@ import sqlite3
 from dataclasses import dataclass
 
 #: Versión que entiende este código.
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 11
 MIN_READONLY_SCHEMA_VERSION = 6
 
 
@@ -385,6 +385,47 @@ _V9_STATEMENTS: tuple[str, ...] = (
     """,
 )
 
+#: Consultas del piloto y trazabilidad del seguimiento del agente (Fase 7).
+#:
+#: ``pilot_queries`` guarda una fila por pregunta respondida. La clave
+#: ``(session_id, seq)`` hace idempotente la reingesta; ``agent_messages`` gana
+#: ``query_id`` y ``kind`` para enlazar el seguimiento con su consulta. La huella
+#: de la sesión solo cubre la parte determinista de las respuestas.
+_V10_STATEMENTS: tuple[str, ...] = (
+    "ALTER TABLE sessions ADD COLUMN pilot_fingerprint TEXT",
+    "ALTER TABLE agent_messages ADD COLUMN query_id TEXT",
+    "ALTER TABLE agent_messages ADD COLUMN kind TEXT",
+    """
+    CREATE TABLE pilot_queries (
+        session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        seq INTEGER NOT NULL CHECK (seq > 0),
+        t_sim_s REAL NOT NULL,
+        query_id TEXT NOT NULL,
+        text TEXT,
+        language TEXT NOT NULL,
+        intent TEXT NOT NULL,
+        confidence REAL CHECK (confidence IS NULL OR confidence BETWEEN 0 AND 1),
+        entities_json TEXT NOT NULL DEFAULT '[]',
+        clarification_json TEXT,
+        facts_json TEXT NOT NULL DEFAULT '[]',
+        missing_json TEXT NOT NULL DEFAULT '[]',
+        answer_text TEXT NOT NULL,
+        answer_kind TEXT NOT NULL,
+        message_key TEXT NOT NULL,
+        latency_s REAL,
+        followup_status TEXT NOT NULL,
+        followup_message TEXT,
+        PRIMARY KEY (session_id, seq)
+    )
+    """,
+    "CREATE INDEX idx_pilot_queries_intent ON pilot_queries(session_id, intent)",
+    "CREATE INDEX idx_agent_messages_query ON agent_messages(session_id, query_id)",
+)
+
+#: Payload canónico del intercambio para recomponer ``sessions.pilot_fingerprint``
+#: cuando una sesión ya ingerida recibe preguntas nuevas.
+_V11_STATEMENTS: tuple[str, ...] = ("ALTER TABLE pilot_queries ADD COLUMN exchange_json TEXT",)
+
 #: Migraciones ordenadas; el índice 0 lleva el esquema a la versión 1.
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(version=1, statements=_V1_STATEMENTS),
@@ -396,6 +437,8 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration(version=7, statements=_V7_STATEMENTS),
     Migration(version=8, statements=_V8_STATEMENTS),
     Migration(version=9, statements=_V9_STATEMENTS),
+    Migration(version=10, statements=_V10_STATEMENTS),
+    Migration(version=11, statements=_V11_STATEMENTS),
 )
 
 
@@ -470,6 +513,8 @@ def check_supported_version(connection: sqlite3.Connection) -> int:
         required_tables.update({"detected_events", "gate_decisions"})
     if current >= 9:
         required_tables.update({"llm_calls", "agent_messages"})
+    if current >= 10:
+        required_tables.add("pilot_queries")
     existing_tables = {
         str(row[0])
         for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")

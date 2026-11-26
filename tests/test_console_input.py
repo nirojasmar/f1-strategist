@@ -1,0 +1,592 @@
+"""Pruebas de la entrada de preguntas de la consola y del panel del piloto."""
+
+from __future__ import annotations
+
+import os
+import sys
+import threading
+from io import StringIO
+from types import SimpleNamespace
+from typing import Any, cast
+
+import pytest
+from rich.console import Console
+from rich.text import Text
+
+import f1_strategist.cli as cli_module
+from f1_strategist.config import AppConfig
+from f1_strategist.console import _PilotConsole, _read_key_batch, render
+from f1_strategist.console_messages import (
+    PILOT_ACK_TEXT,
+    PILOT_CLARIFICATION_LABEL,
+    PILOT_EMPTY,
+    PILOT_INPUT_BUSY,
+    PILOT_INPUT_DISABLED,
+    PILOT_INPUT_ERROR,
+    PILOT_INPUT_HELP_RUN,
+    PILOT_INPUT_PROMPT,
+    PILOT_PANEL_TITLE,
+    PILOT_PLAY_HELP,
+    PILOT_PLAY_HELP_DISABLED,
+)
+from f1_strategist.pilot.console_input import (
+    HISTORY_DOWN,
+    HISTORY_UP,
+    LineEditor,
+    TerminalKeyReader,
+)
+from f1_strategist.pilot.types import (
+    AnswerKind,
+    Clarification,
+    DriverCandidate,
+    Intent,
+    PilotAnswer,
+    PilotExchange,
+    PilotQuery,
+    PilotSnapshot,
+)
+from f1_strategist.session import CaptureSession
+
+
+class _RecordingPilot:
+    def __init__(self) -> None:
+        self.questions: list[str] = []
+
+    def submit(self, text: str) -> None:
+        self.questions.append(text)
+
+
+class _PlaybackStub:
+    def __init__(self) -> None:
+        self.paused = False
+        self.speed = 1.0
+        self.calls: list[str] = []
+
+    def pause(self) -> None:
+        self.paused = True
+        self.calls.append("pause")
+
+    def resume(self) -> None:
+        self.paused = False
+        self.calls.append("resume")
+
+    def set_speed(self, speed: float) -> None:
+        self.speed = speed
+        self.calls.append(f"speed:{speed}")
+
+
+def _render_text(config: AppConfig, session: Any, **kwargs: Any) -> str:
+    output = StringIO()
+    Console(file=output, width=180, no_color=True).print(
+        render(config, session, now=100.0, race_now=100.0, **kwargs)
+    )
+    return output.getvalue()
+
+
+def _exchange(question: str = "¿Cuánto combustible queda?", answer: str = "32 vueltas."):
+    query = PilotQuery(
+        query_id="q1",
+        text=question,
+        language="es",
+        received_at=10.0,
+    )
+    return PilotExchange(
+        query=query,
+        answer=PilotAnswer(
+            query_id="q1",
+            intent=Intent.FUEL_STATUS,
+            kind=AnswerKind.ANSWER,
+            text=answer,
+            message_key="fuel_status",
+        ),
+    )
+
+
+def test_line_editor_types_unicode_and_deletes_with_backspace() -> None:
+    editor = LineEditor()
+    for char in "¿Peña? ñandú":
+        editor.feed(char)
+    assert editor.text == "¿Peña? ñandú"
+
+    editor.feed("\x7f")
+    editor.feed("\b")
+    assert editor.text == "¿Peña? ñan"
+
+    assert editor.feed("\r") == "¿Peña? ñan"
+    assert editor.text == ""
+
+
+def test_line_editor_escape_clears_without_submitting() -> None:
+    editor = LineEditor()
+    editor.type_text("borrador")
+    assert editor.feed("\x1b") is None
+    assert editor.text == ""
+    assert editor.history == []
+
+
+def test_line_editor_history_navigation_restores_draft() -> None:
+    editor = LineEditor()
+    editor.type_text("primera")
+    assert editor.feed("\r") == "primera"
+    editor.type_text("segunda")
+    assert editor.feed("\r") == "segunda"
+
+    editor.type_text("borrador")
+    editor.feed(HISTORY_UP)
+    assert editor.text == "segunda"
+    editor.feed(HISTORY_UP)
+    assert editor.text == "primera"
+    editor.feed(HISTORY_DOWN)
+    assert editor.text == "segunda"
+    editor.feed(HISTORY_DOWN)
+    assert editor.text == "borrador"
+
+
+def test_line_editor_truncates_pasted_text_to_max_chars() -> None:
+    editor = LineEditor(max_chars=5)
+    editor.type_text("abcdefgh")
+    assert editor.text == "abcde"
+
+    editor.feed("\r")
+    assert editor.history == ["abcde"]
+
+
+def test_line_editor_ignores_empty_submit() -> None:
+    editor = LineEditor()
+    editor.type_text("   ")
+    assert editor.feed("\r") is None
+    assert editor.history == []
+
+
+def test_render_pilot_panel_shows_exchange_and_clarification() -> None:
+    config = AppConfig()
+    session = CaptureSession(config)
+    clarification = Clarification(
+        message_key="driver_ambiguous",
+        options=(
+            DriverCandidate(car_index=1, name="Peña"),
+            DriverCandidate(car_index=2, name="Nadal"),
+        ),
+        expires_at=30.0,
+    )
+    snapshot = PilotSnapshot(
+        recent=(_exchange(),),
+        pending_clarification=clarification,
+    )
+    session.pilot_snapshot = lambda: snapshot  # type: ignore[method-assign]
+
+    text = _render_text(config, session)
+
+    assert PILOT_PANEL_TITLE in text
+    assert "¿Cuánto combustible queda?" in text
+    assert "32 vueltas." in text
+    assert "Respuesta" in text
+    assert PILOT_CLARIFICATION_LABEL in text
+    assert "Peña" in text and "Nadal" in text
+
+
+def test_render_pilot_panel_shows_ack_and_input_line() -> None:
+    config = AppConfig()
+    session = CaptureSession(config)
+
+    text = _render_text(
+        config,
+        session,
+        pilot_pending="¿Y el neumático?",
+        pilot_draft="¿Y el neumático?",
+        pilot_input_warning="Entrada de preguntas desactivada.",
+        pilot_error=PILOT_INPUT_ERROR,
+    )
+
+    assert PILOT_ACK_TEXT in text
+    assert f"{PILOT_INPUT_PROMPT}¿Y el neumático?" in text
+    assert "Entrada de preguntas desactivada." in text
+    assert PILOT_INPUT_ERROR in text
+
+
+def test_render_pilot_panel_empty_state() -> None:
+    config = AppConfig()
+    session = CaptureSession(config)
+
+    text = _render_text(config, session)
+
+    assert PILOT_PANEL_TITLE in text
+    assert PILOT_EMPTY in text
+
+
+def test_render_play_help_keeps_text_mode_hint() -> None:
+    config = AppConfig()
+    session = CaptureSession(config)
+
+    text = _render_text(config, session, pilot_help=PILOT_PLAY_HELP)
+
+    assert "/: preguntar" in text
+
+
+def test_pilot_console_shows_ack_while_ask_is_in_flight() -> None:
+    release = threading.Event()
+    started = threading.Event()
+    calls: list[str] = []
+
+    class SlowSession:
+        def ask_pilot(self, text: str) -> PilotAnswer:
+            calls.append(text)
+            started.set()
+            release.wait(5)
+            return PilotAnswer(
+                query_id="q1",
+                intent=Intent.UNKNOWN,
+                kind=AnswerKind.ANSWER,
+                text="listo",
+                message_key="pilot_answer",
+            )
+
+    pilot = _PilotConsole(cast(Any, SlowSession()))
+    try:
+        pilot.submit("¿Combustible?")
+        assert pilot.pending_text == "¿Combustible?"
+        assert started.wait(2)
+
+        pilot.submit("otra pregunta")
+        assert calls == ["¿Combustible?"]
+        assert pilot.error_text == PILOT_INPUT_BUSY
+
+        release.set()
+        assert pilot._future is not None
+        pilot._future.result(timeout=5)
+        pilot.poll()
+        assert pilot.pending_text is None
+        assert pilot.error_text == PILOT_INPUT_BUSY
+
+        pilot.mark_rendered()
+        pilot.poll()
+        assert pilot.error_text is None
+    finally:
+        pilot.close()
+
+
+def test_pilot_console_reports_ask_failure() -> None:
+    class BrokenSession:
+        def ask_pilot(self, text: str) -> PilotAnswer:
+            raise RuntimeError("boom")
+
+    pilot = _PilotConsole(cast(Any, BrokenSession()))
+    try:
+        pilot.submit("¿Combustible?")
+        assert pilot._future is not None
+        assert pilot._future.exception(timeout=5) is not None
+        pilot.poll()
+        assert pilot.pending_text is None
+        assert pilot.error_text == PILOT_INPUT_ERROR
+        pilot.poll()
+        assert pilot.error_text == PILOT_INPUT_ERROR
+
+        pilot.mark_rendered()
+        pilot.poll()
+        assert pilot.error_text is None
+    finally:
+        pilot.close()
+
+
+def test_play_keys_keep_existing_controls() -> None:
+    session = _PlaybackStub()
+    editor = LineEditor()
+    pilot = _RecordingPilot()
+
+    def apply(key: str, editing: bool = False) -> tuple[bool, bool]:
+        return cli_module._apply_play_key(
+            key,
+            cast(Any, session),
+            editor,
+            cast(Any, pilot),
+            editing,
+        )
+
+    assert apply(" ") == (False, False)
+    assert session.paused is True
+    assert apply(" ") == (False, False)
+    assert session.paused is False
+
+    session.speed = 1.0
+    assert apply("+") == (False, False)
+    assert session.speed == 2.0
+    assert apply("-") == (False, False)
+    assert session.speed == 1.0
+
+    assert apply("q") == (False, True)
+
+
+def test_play_slash_opens_text_mode_and_enter_submits() -> None:
+    session = _PlaybackStub()
+    editor = LineEditor()
+    pilot = _RecordingPilot()
+
+    def apply(key: str, editing: bool = False) -> tuple[bool, bool]:
+        return cli_module._apply_play_key(
+            key,
+            cast(Any, session),
+            editor,
+            cast(Any, pilot),
+            editing,
+        )
+
+    editing, quit_ = apply("/")
+    assert (editing, quit_) == (True, False)
+
+    for char in "¿Peña?":
+        editing, quit_ = apply(char, editing)
+    assert editor.text == "¿Peña?"
+    assert session.calls == []
+
+    editing, quit_ = apply("\r", editing)
+    assert (editing, quit_) == (False, False)
+    assert pilot.questions == ["¿Peña?"]
+    assert editor.text == ""
+
+
+def test_play_escape_cancels_text_mode_and_q_is_typed() -> None:
+    session = _PlaybackStub()
+    editor = LineEditor()
+    pilot = _RecordingPilot()
+
+    def apply(key: str, editing: bool = False) -> tuple[bool, bool]:
+        return cli_module._apply_play_key(
+            key,
+            cast(Any, session),
+            editor,
+            cast(Any, pilot),
+            editing,
+        )
+
+    editing, quit_ = apply("/")
+    assert editing is True
+    editing, quit_ = apply("q", editing)
+    assert (editing, quit_) == (True, False)
+    assert editor.text == "q"
+
+    editing, quit_ = apply("\x1b", editing)
+    assert (editing, quit_) == (False, False)
+    assert editor.text == ""
+    assert pilot.questions == []
+
+
+@pytest.mark.parametrize("command", ["run", "play"])
+def test_cli_accepts_no_input(command: str) -> None:
+    argv = [command]
+    if command == "play":
+        argv.append("captura.f1cap")
+    argv.append("--no-input")
+
+    args = cli_module._build_parser().parse_args(argv)
+
+    assert args.no_input is True
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX reader only")
+def test_key_reader_disables_itself_when_stdin_has_no_terminal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Pseudofile:
+        def isatty(self) -> bool:
+            return False
+
+        def fileno(self) -> int:
+            raise OSError("redirected stdin is pseudofile, has no fileno()")
+
+    monkeypatch.setattr(sys, "stdin", Pseudofile())
+
+    reader = TerminalKeyReader(enabled=True)
+
+    assert reader.enabled is False
+    assert reader.read() is None
+    reader.close()
+
+
+class _CaptureSessionStub:
+    def __init__(self, _cfg: AppConfig) -> None:
+        self.capture_path = None
+        self.receiver_error = None
+
+    def start(self) -> None:
+        pass
+
+    def stop(self) -> None:
+        pass
+
+    def snapshot(self) -> SimpleNamespace:
+        return SimpleNamespace(received=0, receiver_error=None)
+
+
+class _PlaybackSessionStub:
+    def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+        self.error = None
+        self.finished = False
+
+    def play(self) -> None:
+        pass
+
+    def stop(self) -> None:
+        pass
+
+    def snapshot(self) -> SimpleNamespace:
+        return SimpleNamespace(received=0)
+
+
+@pytest.mark.parametrize("command", ["run", "play"])
+@pytest.mark.parametrize(("flag", "expected"), [([], None), (["--no-input"], False)])
+def test_cli_lets_console_auto_detect_input(
+    monkeypatch: pytest.MonkeyPatch,
+    command: str,
+    flag: list[str],
+    expected: bool | None,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_run_console(*_args: Any, **kwargs: Any) -> None:
+        captured.update(kwargs)
+
+    monkeypatch.setattr(cli_module, "_install_signal_handlers", lambda: None)
+    monkeypatch.setattr(cli_module, "load_config", lambda _path: AppConfig())
+    monkeypatch.setattr(cli_module, "_profiles_for_capture", lambda *_a, **_k: {})
+
+    console = Console(file=StringIO(), no_color=True)
+    argv = [command]
+    if command == "run":
+        monkeypatch.setattr(cli_module, "CaptureSession", _CaptureSessionStub)
+        monkeypatch.setattr(cli_module, "run_console", fake_run_console)
+    else:
+        argv.append("captura.f1cap")
+        monkeypatch.setattr(cli_module, "PlaybackSession", _PlaybackSessionStub)
+        monkeypatch.setattr(cli_module, "_run_playback_console", fake_run_console)
+    args = cli_module._build_parser().parse_args(argv + flag)
+
+    result = (
+        cli_module._cmd_run(args, console, console)
+        if command == "run"
+        else (cli_module._cmd_play(args, console, console))
+    )
+
+    assert result == 0
+    assert captured["input_enabled"] is expected
+
+
+class _QueuedKeys:
+    enabled = True
+
+    def __init__(self, keys: list[str]) -> None:
+        self._keys = list(keys)
+
+    def read(self) -> str | None:
+        return self._keys.pop(0) if self._keys else None
+
+    def close(self) -> None:
+        pass
+
+
+class _SilentLive:
+    def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+        pass
+
+    def __enter__(self) -> _SilentLive:
+        return self
+
+    def __exit__(self, *_args: Any) -> bool:
+        return False
+
+    def update(self, *_args: Any, **_kwargs: Any) -> None:
+        pass
+
+
+def test_play_keys_work_with_no_input(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class PlaybackStub(_PlaybackStub):
+        finished = False
+        error = None
+
+    session = PlaybackStub()
+    keys = _QueuedKeys(["/", " ", "+", "q"])
+    rendered: dict[str, Any] = {}
+
+    def fake_render(*_args: Any, **kwargs: Any) -> Text:
+        rendered.update(kwargs)
+        return Text("")
+
+    def fail_sleep(_seconds: float) -> None:
+        raise AssertionError("batched playback must quit without sleeping")
+
+    monkeypatch.setattr(cli_module, "TerminalKeyReader", lambda *_a, **_k: keys)
+    monkeypatch.setattr(cli_module, "Live", _SilentLive)
+    monkeypatch.setattr(cli_module, "_render_playback", fake_render)
+    monkeypatch.setattr(cli_module.time, "sleep", fail_sleep)
+
+    cli_module._run_playback_console(
+        AppConfig(),
+        cast(Any, session),
+        Console(file=StringIO(), no_color=True),
+        input_enabled=False,
+    )
+
+    assert session.paused is True
+    assert session.speed == 2.0
+    assert rendered["pilot_draft"] is None
+    assert rendered["pilot_input_warning"] == PILOT_INPUT_DISABLED
+    assert rendered["pilot_help"] == PILOT_PLAY_HELP_DISABLED
+
+
+def _render_cropped(config: AppConfig, session: Any, **kwargs: Any) -> str:
+    console = Console(file=StringIO(), width=120, height=24, no_color=True)
+    options = console.options.update(height=24)
+    lines = console.render_lines(
+        render(config, session, now=100.0, race_now=100.0, **kwargs),
+        options,
+        pad=False,
+    )
+    return "\n".join("".join(segment.text for segment in line) for line in lines)
+
+
+@pytest.mark.parametrize("mode", ["run", "play"])
+def test_question_panel_visible_in_24_rows(mode: str) -> None:
+    config = AppConfig()
+    session = CaptureSession(config)
+    snapshot = PilotSnapshot(recent=(_exchange(),))
+    session.pilot_snapshot = lambda: snapshot  # type: ignore[method-assign]
+    kwargs: dict[str, Any] = {"pilot_pending": "¿Y el neumático?"}
+    if mode == "run":
+        kwargs.update(
+            pilot_draft="x" * 200,
+            pilot_input_warning=PILOT_INPUT_DISABLED,
+        )
+    else:
+        kwargs["pilot_help"] = PILOT_PLAY_HELP
+
+    text = _render_cropped(config, session, **kwargs)
+
+    assert PILOT_PANEL_TITLE in text
+    assert PILOT_ACK_TEXT in text
+    assert "32 vueltas." in text
+    if mode == "run":
+        assert PILOT_INPUT_PROMPT in text
+        assert PILOT_INPUT_HELP_RUN in text
+        assert PILOT_INPUT_DISABLED in text
+    else:
+        assert PILOT_PLAY_HELP in text
+
+
+def test_batched_keys_consume_pasted_text_quickly() -> None:
+    keys = _QueuedKeys(list("a" * 200) + ["\r"])
+    editor = LineEditor(max_chars=200)
+    questions: list[str] = []
+    batches = 0
+    while True:
+        batch = _read_key_batch(keys)
+        if not batch:
+            break
+        batches += 1
+        for key in batch:
+            question = editor.feed(key)
+            if question is not None:
+                questions.append(question)
+
+    assert questions == ["a" * 200]
+    assert batches <= 4

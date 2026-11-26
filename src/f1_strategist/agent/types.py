@@ -29,6 +29,12 @@ class MessageSource(StrEnum):
     TEMPLATE = "template"
 
 
+class MessageKind(StrEnum):
+    """Naturaleza del mensaje cuando no es una alerta."""
+
+    FOLLOWUP = "followup"
+
+
 class CallOutcome(StrEnum):
     """Resultado de una llamada al modelo."""
 
@@ -119,6 +125,8 @@ class ContextPayload:
     recent_messages: tuple[str, ...] = ()
     glossary: Mapping[str, str] = field(default_factory=dict)
     constraints: Mapping[str, Any] = field(default_factory=dict)
+    tool_facts: tuple[Mapping[str, Any], ...] = ()
+    previous_answer: Mapping[str, Any] | None = None
     context_hash: str = ""
 
     def __post_init__(self) -> None:
@@ -130,6 +138,8 @@ class ContextPayload:
         object.__setattr__(self, "metrics", _frozen(self.metrics))
         object.__setattr__(self, "glossary", _frozen(self.glossary))
         object.__setattr__(self, "constraints", _frozen(self.constraints))
+        object.__setattr__(self, "tool_facts", tuple(_frozen(item) for item in self.tool_facts))
+        object.__setattr__(self, "previous_answer", _frozen(self.previous_answer))
         object.__setattr__(self, "uncertainties", tuple(self.uncertainties))
         object.__setattr__(self, "recent_messages", tuple(self.recent_messages))
         if not self.context_hash:
@@ -143,6 +153,10 @@ class ContextPayload:
         """SHA-256 del contenido del contexto, sin incluir la propia huella."""
         payload = {item.name: getattr(self, item.name) for item in fields(self)}
         payload.pop("context_hash")
+        # Vacíos no alteran la huella de los contextos grabados antes de la Fase 7.
+        for name in ("tool_facts", "previous_answer"):
+            if not payload[name]:
+                payload.pop(name)
         return compute_inputs_hash(payload)
 
     def to_dict(self) -> dict[str, Any]:
@@ -158,6 +172,8 @@ class ContextPayload:
             "recent_messages": list(self.recent_messages),
             "glossary": dict(self.glossary),
             "constraints": _plain(self.constraints),
+            "tool_facts": [_plain(item) for item in self.tool_facts],
+            "previous_answer": _plain(self.previous_answer),
             "context_hash": self.context_hash,
         }
 
@@ -180,6 +196,14 @@ class ContextPayload:
             recent_messages=_str_tuple(data.get("recent_messages", []), "recent_messages"),
             glossary=_str_mapping(data.get("glossary", {}), "glossary"),
             constraints=_json_mapping(data.get("constraints", {}), "constraints"),
+            tool_facts=tuple(
+                _json_mapping(item, "tool_facts") for item in _json_list(data.get("tool_facts", []))
+            ),
+            previous_answer=(
+                None
+                if data.get("previous_answer") is None
+                else _json_mapping(data["previous_answer"], "previous_answer")
+            ),
             context_hash=_opt_str(data, "context_hash") or "",
         )
 

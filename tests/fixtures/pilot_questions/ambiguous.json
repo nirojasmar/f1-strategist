@@ -1,0 +1,130 @@
+[
+  {
+    "id": "amb-01",
+    "text": "¿Cómo voy respecto a Halden?",
+    "expected_intent": "compare_driver",
+    "expected_candidate_indices": [12, 13],
+    "resolution_text": "Timo",
+    "expected_resolved_car_index": 12
+  },
+  {
+    "id": "amb-02",
+    "text": "¿A cuánto está Halden?",
+    "expected_intent": "gap_status",
+    "expected_candidate_indices": [12, 13],
+    "resolution_text": "el 5",
+    "expected_resolved_car_index": 13
+  },
+  {
+    "id": "amb-03",
+    "text": "¿Podemos hacer undercut a Halden?",
+    "expected_intent": "pit_undercut",
+    "expected_candidate_indices": [12, 13],
+    "resolution_text": "el primero",
+    "expected_resolved_car_index": 12
+  },
+  {
+    "id": "amb-04",
+    "text": "¿Cómo voy respecto a Dario?",
+    "expected_intent": "compare_driver",
+    "expected_candidate_indices": [1, 14],
+    "resolution_text": "Vela",
+    "expected_resolved_car_index": 1
+  },
+  {
+    "id": "amb-05",
+    "text": "¿A cuánto está Dario?",
+    "expected_intent": "gap_status",
+    "expected_candidate_indices": [1, 14],
+    "resolution_text": "el 2",
+    "expected_resolved_car_index": 14
+  },
+  {
+    "id": "amb-06",
+    "text": "¿Podemos hacer undercut a Dario?",
+    "expected_intent": "pit_undercut",
+    "expected_candidate_indices": [1, 14],
+    "resolution_text": "el segundo",
+    "expected_resolved_car_index": 14
+  },
+  {
+    "id": "amb-07",
+    "text": "¿Cómo voy frente a Ver?",
+    "expected_intent": "compare_driver",
+    "expected_candidate_indices": [2, 16],
+    "resolution_text": "Verano",
+    "expected_resolved_car_index": 2
+  },
+  {
+    "id": "amb-08",
+    "text": "¿A cuánto está Ver?",
+    "expected_intent": "gap_status",
+    "expected_candidate_indices": [2, 16],
+    "resolution_text": "el 25",
+    "expected_resolved_car_index": 16
+  },
+  {
+    "id": "amb-09",
+    "text": "¿Cómo voy respecto al de Ferrari?",
+    "expected_intent": "compare_driver",
+    "expected_candidate_indices": [4, 5],
+    "resolution_text": "Sterling",
+    "expected_resolved_car_index": 4
+  },
+  {
+    "id": "amb-10",
+    "text": "¿Podemos hacer undercut al de Ferrari?",
+    "expected_intent": "pit_undercut",
+    "expected_candidate_indices": [4, 5],
+    "resolution_text": "el 16",
+    "expected_resolved_car_index": 5
+  },
+  {
+    "id": "amb-11",
+    "text": "¿Cómo voy frente al de Mercedes?",
+    "expected_intent": "compare_driver",
+    "expected_candidate_indices": [6, 11],
+    "resolution_text": "el primero",
+    "expected_resolved_car_index": 6
+  },
+  {
+    "id": "amb-12",
+    "text": "¿A cuánto está el de Mercedes?",
+    "expected_intent": "gap_status",
+    "expected_candidate_indices": [6, 11],
+    "resolution_text": "Cataldi",
+    "expected_resolved_car_index": 11
+  },
+  {
+    "id": "amb-13",
+    "text": "¿Cómo voy respecto al de McLaren?",
+    "expected_intent": "compare_driver",
+    "expected_candidate_indices": [3, 7],
+    "resolution_text": "Marchetti",
+    "expected_resolved_car_index": 3
+  },
+  {
+    "id": "amb-14",
+    "text": "¿A cuánto está el de McLaren?",
+    "expected_intent": "gap_status",
+    "expected_candidate_indices": [3, 7],
+    "resolution_text": "el 81",
+    "expected_resolved_car_index": 7
+  },
+  {
+    "id": "amb-15",
+    "text": "¿Cómo voy frente al de Red Bull?",
+    "expected_intent": "compare_driver",
+    "expected_candidate_indices": [2, 9],
+    "resolution_text": "el segundo",
+    "expected_resolved_car_index": 9
+  },
+  {
+    "id": "amb-16",
+    "text": "¿A cuánto está el de Alpine?",
+    "expected_intent": "gap_status",
+    "expected_candidate_indices": [14, 15],
+    "resolution_text": "Girard",
+    "expected_resolved_car_index": 15
+  }
+]

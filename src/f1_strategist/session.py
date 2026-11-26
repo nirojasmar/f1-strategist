@@ -22,7 +22,8 @@ from .messages import DiagnosticMessage, message
 from .metrics.engine import MetricsEngine, MetricsSnapshot
 from .packets import PacketHeader, parse_header
 from .parser import PacketParseError, is_ignored_by_design, parse_packet
-from .pilot.types import PilotAnswer, PilotSnapshot, unavailable_answer
+from .pilot.engine import PilotEngine, PilotInputs
+from .pilot.types import PilotAnswer, PilotExchange, PilotQuery, PilotSnapshot, RoutedQuery
 from .race_state import RaceState, RaceStateSnapshot
 from .receiver import Stats, StatsSnapshot, UdpReceiver
 from .recorder import _RACE_SESSION_TYPES, SessionRecorder, serialize_config
@@ -34,6 +35,18 @@ from .weekend_provider import resolve_weekend_profile
 
 _LOGGER = logging.getLogger(__name__)
 _PROFILE_WRITER_BARRIER_TIMEOUT_S = 5.0
+
+
+class _CompletionRecordingPilot(PilotEngine):
+    """Conserva el intercambio al completarse, antes de que un reset lo borre."""
+
+    completed: PilotExchange | None = None
+
+    def _remember(
+        self, query: PilotQuery, answer: PilotAnswer, routed: RoutedQuery, now: float
+    ) -> None:
+        super()._remember(query, answer, routed, now)
+        self.completed = self._recent[-1]
 
 
 class CaptureSession:
@@ -52,7 +65,10 @@ class CaptureSession:
         self._metrics_engine = metrics_engine or MetricsEngine(config.metrics)
         self._strategy_engine = strategy_engine or StrategyEngine(config.strategy, config.metrics)
         self._event_engine = EventEngine(config)
-        self._agent = agent_communicator or build_communicator(config.agent, config.llm)
+        self._agent = agent_communicator or build_communicator(
+            config.agent, config.llm, pilot=config.pilot
+        )
+        self._pilot = self._build_pilot()
         self._queue: queue.Queue[CapturedPacket] = queue.Queue(maxsize=queue_size)
         self._receiver = UdpReceiver(config.telemetry, self._queue, self.stats)
         self._writer: CaptureWriter | None = None
@@ -184,6 +200,7 @@ class CaptureSession:
                     config_json=serialize_config(self.config),
                     metrics_config=self.config.metrics,
                     strategy_config=self.config.strategy,
+                    pilot_record_text=self.config.pilot.record_text,
                 )
             except BaseException:
                 store.close()
@@ -323,12 +340,59 @@ class CaptureSession:
         return self._agent.snapshot()
 
     def ask_pilot(self, text: str) -> PilotAnswer:
-        """Stub de Q1: el motor de preguntas llega en Q12."""
-        return unavailable_answer()
+        """Responde con la última telemetría sin esperar al LLM."""
+        # Se conserva el motor de este intercambio: un cambio de sesión puede
+        # reemplazarlo mientras la respuesta está en vuelo.
+        pilot = self._pilot
+        answer = pilot.ask(text, now=time.monotonic())
+        recorder = self._recorder
+        observed_at = self._last_observed_at
+        if recorder is not None and observed_at is not None:
+            exchange = (
+                pilot.completed
+                if isinstance(pilot, _CompletionRecordingPilot)
+                else next(
+                    (
+                        item
+                        for item in reversed(pilot.snapshot().recent)
+                        if item.answer.query_id == answer.query_id
+                    ),
+                    None,
+                )
+            )
+            if exchange is not None and exchange.answer.query_id == answer.query_id:
+                recorder.record_pilot((exchange,), observed_at)
+        return answer
 
     def pilot_snapshot(self) -> PilotSnapshot:
-        """Stub de Q1: todavía no hay preguntas registradas."""
-        return PilotSnapshot()
+        """Intercambios recientes y aclaración pendiente."""
+        return self._pilot.snapshot()
+
+    def _pilot_inputs(self) -> PilotInputs:
+        return PilotInputs(
+            state=self.race_snapshot(),
+            metrics=self.metrics_snapshot(),
+            strategy=self.strategy_snapshot(),
+            history=self._metrics_engine.history.snapshot(),
+            events=self.events_snapshot(),
+            profile=self._weekend_profile,
+        )
+
+    def _build_pilot(self) -> _CompletionRecordingPilot:
+        return _CompletionRecordingPilot(
+            self.config.pilot,
+            snapshots=self._pilot_inputs,
+            followup=getattr(self._agent, "submit_followup", None),
+            note_interaction=self._note_pilot_interaction,
+            metrics_config=self.config.metrics,
+            strategy_config=self.config.strategy,
+        )
+
+    def _note_pilot_interaction(self, now: float) -> None:
+        self._event_engine.note_pilot_interaction(
+            now,
+            session_uid=self.race_snapshot().session.uid,
+        )
 
     def _consume(self) -> None:
         while not (self._stop_consumer.is_set() and self._queue.empty()):
@@ -401,6 +465,7 @@ class CaptureSession:
                                     )
                             # La sesión anterior termina aquí: no debe publicar más allá.
                             self._agent.reset()
+                            self._pilot = self._build_pilot()
                             self._weekend_profile = None
                             self._metrics_engine.set_profile(None)
                             self._strategy_engine.set_profile(None)

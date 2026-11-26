@@ -163,6 +163,53 @@ def _wait_until(predicate: Any, timeout: float = 10.0) -> bool:
     return False
 
 
+class _InjectedPacketSource:
+    """Fuente de paquetes en memoria: sustituye al receptor UDP en las pruebas live."""
+
+    def __init__(
+        self,
+        packets: list[tuple[ParsedPacket, float]],
+        target: Any,
+    ) -> None:
+        self._packets = packets
+        self._target = target
+        self.bound_port = 0
+        self.error: str | None = None
+
+    def start(self) -> None:
+        for index, _ in enumerate(self._packets):
+            self._target.put(
+                CapturedPacket(
+                    recv_time_ns=index * 100_000,
+                    source_ip="127.0.0.1",
+                    source_port=4000,
+                    payload=make_packet(1, extra=struct.pack("<I", index)),
+                    recv_monotonic=index * 0.001,
+                )
+            )
+
+    def stop(self) -> None:
+        return None
+
+
+def _start_live_session(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    packets: list[tuple[ParsedPacket, float]],
+) -> tuple[CaptureSession, AppConfig]:
+    """Arranca la sesión live con una fuente inyectada y espera a que se procese todo."""
+    config = _live_config(tmp_path)
+    session = CaptureSession(config)
+    monkeypatch.setattr(session, "_receiver", _InjectedPacketSource(packets, session._queue))
+    session.start()
+    # El consumidor vacía la cola antes de salir: sincronización explícita sin reloj real.
+    session._stop_consumer.set()
+    assert session._consumer is not None
+    session._consumer.join()
+    assert session.snapshot().capture_packets == len(packets)
+    return session, config
+
+
 def test_ingest_matches_metrics_export(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -284,22 +331,37 @@ def _live_config(tmp_path: Path) -> AppConfig:
     )
 
 
+def test_live_pilot_question_is_persisted_without_blocking_capture(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    packets = _scenario()
+    _patch_parser(monkeypatch, packets)
+    session, config = _start_live_session(tmp_path, monkeypatch, packets)
+    try:
+        session.ask_pilot("¿Cuánto combustible queda?")
+    finally:
+        session.stop()
+
+    with SessionStore.open(config.recording.database) as store:
+        live = next(item for item in store.list_sessions() if item.source == "live")
+        assert live.id is not None
+        rows = list(store.iter_pilot_queries(live.id))
+    assert len(rows) == 1
+    assert rows[0].text == "¿Cuánto combustible queda?"
+
+
 def test_live_capture_matches_ingest_for_laps_and_events(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    source, _ = _capture(tmp_path, monkeypatch, interval_s=0.01)
-    config = _live_config(tmp_path)
-    session = CaptureSession(config)
-    session.start()
+    packets = _scenario()
+    _patch_parser(monkeypatch, packets)
+    source = tmp_path / "source.f1cap"
+    _write_capture(source, packets, interval_s=0.01)
+    session, config = _start_live_session(tmp_path, monkeypatch, packets)
     try:
-        sent = replay_capture(source, "127.0.0.1", session.bound_port, speed=1)
-        assert _wait_until(
-            lambda: (
-                session.snapshot().capture_packets >= sent
-                and session.race_snapshot().session.ended is True
-            )
-        )
+        assert session.race_snapshot().session.ended is True
     finally:
         session.stop()
 
@@ -771,6 +833,9 @@ class _MemoryStore:
         return None
 
     def add_agent_messages(self, session_id: int, messages: Any) -> None:
+        return None
+
+    def add_pilot_queries(self, session_id: int, queries: Any) -> None:
         return None
 
 

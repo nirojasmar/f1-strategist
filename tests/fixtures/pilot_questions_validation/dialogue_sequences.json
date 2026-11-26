@@ -1,0 +1,26 @@
+[
+  {
+    "id": "v-dlg-01",
+    "description": "Comparación por nombre y continuación por nombre",
+    "turns": [
+      {"text": "¿Cómo se compara mi ritmo con el de Dubois?", "t_s": 0.0, "expected_intent": "compare_driver", "expected_car_index": 5},
+      {"text": "¿Y Marchetti?", "t_s": 4.0, "expected_intent": "compare_driver", "expected_car_index": 3}
+    ]
+  },
+  {
+    "id": "v-dlg-02",
+    "description": "Intervalo al líder y continuación relativa",
+    "turns": [
+      {"text": "¿A qué distancia rueda el líder?", "t_s": 0.0, "expected_intent": "gap_status", "expected_car_index": 2},
+      {"text": "¿Y el de atrás?", "t_s": 4.0, "expected_intent": "gap_status", "expected_car_index": 5}
+    ]
+  },
+  {
+    "id": "v-dlg-03",
+    "description": "Aclaración resuelta por nombre de pila",
+    "turns": [
+      {"text": "¿A cuánto está Halden?", "t_s": 0.0, "expected_intent": "gap_status", "expect_clarification": true, "expected_candidate_indices": [12, 13]},
+      {"text": "Rolf", "t_s": 3.0, "expected_intent": "gap_status", "expected_car_index": 13}
+    ]
+  }
+]

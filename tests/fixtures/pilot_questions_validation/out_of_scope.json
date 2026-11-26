@@ -1,0 +1,14 @@
+[
+  {"id": "v-oos-01", "text": "¿Me traes un café?", "tags": ["offtopic"]},
+  {"id": "v-oos-02", "text": "¿Qué tiempo hizo Dubois en la clasificación de ayer?", "tags": ["other_session"]},
+  {"id": "v-oos-03", "text": "¿Cuánto cuesta la entrada del circuito?", "tags": ["offtopic"]},
+  {"id": "v-oos-04", "text": "¿Cuántos mundiales ganó Sardena?", "tags": ["trivia"]},
+  {"id": "v-oos-05", "text": "¿Qué neumáticos usa el coche de Sterling?", "tags": ["restricted_rival"]},
+  {"id": "v-oos-06", "text": "¿Cómo se llama el circuito?", "tags": ["trivia"]},
+  {"id": "v-oos-07", "text": "¿Qué hora es en Japón?", "tags": ["offtopic"]},
+  {"id": "v-oos-08", "text": "Pon la radio del equipo", "tags": ["offtopic"]},
+  {"id": "v-oos-09", "text": "¿Cuál es el récord de vuelta de Monza?", "tags": ["trivia"]},
+  {"id": "v-oos-10", "text": "¿Cuánto pesa un neumático de F1?", "tags": ["trivia"]},
+  {"id": "v-oos-11", "text": "¿Qué significa undercut en la F1?", "tags": ["trivia", "adversarial"]},
+  {"id": "v-oos-12", "text": "¿Dónde está la salida del pit lane?", "tags": ["offtopic"]}
+]

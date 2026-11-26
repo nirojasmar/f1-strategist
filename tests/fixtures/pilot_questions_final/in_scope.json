@@ -1,0 +1,49 @@
+[
+  {"id": "f-grs-01", "text": "¿En qué puesto vamos?", "expected_intent": "general_race_state", "expect_no_entity": true},
+  {"id": "f-grs-02", "text": "¿Cuántas vueltas quedan?", "expected_intent": "general_race_state", "expect_no_entity": true},
+  {"id": "f-grs-03", "text": "Dame el estado de la carrera", "expected_intent": "general_race_state", "expect_no_entity": true},
+  {"id": "f-grs-04", "text": "¿Qué posición ocupamos ahora?", "expected_intent": "general_race_state", "expect_no_entity": true},
+
+  {"id": "f-str-01", "text": "¿Cambiamos de estrategia?", "expected_intent": "ask_strategy", "expect_no_entity": true},
+  {"id": "f-str-02", "text": "¿Cuándo hacemos la parada?", "expected_intent": "ask_strategy", "expect_no_entity": true},
+  {"id": "f-str-03", "text": "¿Entramos a boxes esta vuelta?", "expected_intent": "ask_strategy", "expect_no_entity": true},
+  {"id": "f-str-04", "text": "¿Vamos a una o a dos paradas?", "expected_intent": "ask_strategy", "expect_no_entity": true},
+
+  {"id": "f-fue-01", "text": "¿Cuánto combustible nos queda?", "expected_intent": "fuel_status", "expect_no_entity": true},
+  {"id": "f-fue-02", "text": "¿Llegamos con esta gasolina?", "expected_intent": "fuel_status", "expect_no_entity": true},
+  {"id": "f-fue-03", "text": "¿Cuánto carburante llevamos?", "expected_intent": "fuel_status", "expect_no_entity": true},
+  {"id": "f-fue-04", "text": "¿Cuántas vueltas podemos hacer con el depósito?", "expected_intent": "fuel_status", "expect_no_entity": true},
+
+  {"id": "f-tyr-01", "text": "¿Cómo están los neumáticos?", "expected_intent": "tyre_life", "expect_no_entity": true},
+  {"id": "f-tyr-02", "text": "¿Cuánto les queda a las ruedas?", "expected_intent": "tyre_life", "expect_no_entity": true},
+  {"id": "f-tyr-03", "text": "¿Podemos aguantar con estas gomas?", "expected_intent": "tyre_life", "expect_no_entity": true},
+  {"id": "f-tyr-04", "text": "¿Cómo va el desgaste?", "expected_intent": "tyre_life", "expect_no_entity": true},
+
+  {"id": "f-pac-01", "text": "¿Por qué perdemos tiempo?", "expected_intent": "pace_diagnosis", "expect_no_entity": true},
+  {"id": "f-pac-02", "text": "¿Dónde estamos perdiendo?", "expected_intent": "pace_diagnosis", "expect_no_entity": true},
+  {"id": "f-pac-03", "text": "¿Qué nos hace ir lentos?", "expected_intent": "pace_diagnosis", "expect_no_entity": true},
+  {"id": "f-pac-04", "text": "¿Por qué no tenemos ritmo?", "expected_intent": "pace_diagnosis", "expect_no_entity": true},
+
+  {"id": "f-cmp-01", "text": "¿Cómo voy respecto a Verano?", "expected_intent": "compare_driver", "expected_car_index": 2},
+  {"id": "f-cmp-02", "text": "¿Soy más rápido que Sterling?", "expected_intent": "compare_driver", "expected_car_index": 4},
+  {"id": "f-cmp-03", "text": "¿Voy por delante de Kessler?", "expected_intent": "compare_driver", "expected_car_index": 7},
+  {"id": "f-cmp-04", "text": "¿Qué diferencia hay con Sardena?", "expected_intent": "compare_driver", "expected_car_index": 8},
+
+  {"id": "f-gap-01", "text": "¿A cuánto está el de delante?", "expected_intent": "gap_status", "expected_car_index": 4},
+  {"id": "f-gap-02", "text": "¿Cuánto me saca Verano?", "expected_intent": "gap_status", "expected_car_index": 2},
+  {"id": "f-gap-03", "text": "¿Qué distancia hay con Marchetti?", "expected_intent": "gap_status", "expected_car_index": 3},
+  {"id": "f-gap-04", "text": "¿Está cerca el de atrás?", "expected_intent": "gap_status", "expected_car_index": 5},
+
+  {"id": "f-dmg-01", "text": "¿Tenemos daños?", "expected_intent": "damage_status", "expect_no_entity": true},
+  {"id": "f-dmg-02", "text": "¿El alerón está roto?", "expected_intent": "damage_status", "expect_no_entity": true},
+  {"id": "f-dmg-03", "text": "¿Cómo está el coche?", "expected_intent": "damage_status", "expect_no_entity": true},
+  {"id": "f-dmg-04", "text": "¿Hay alguna avería?", "expected_intent": "damage_status", "expect_no_entity": true},
+
+  {"id": "f-wth-01", "text": "¿Va a llover?", "expected_intent": "weather_forecast", "expect_no_entity": true},
+  {"id": "f-wth-02", "text": "¿Cómo está el clima?", "expected_intent": "weather_forecast", "expect_no_entity": true},
+  {"id": "f-wth-03", "text": "¿Qué temperatura hace?", "expected_intent": "weather_forecast", "expect_no_entity": true},
+  {"id": "f-wth-04", "text": "¿Habrá lluvia en la carrera?", "expected_intent": "weather_forecast", "expect_no_entity": true},
+
+  {"id": "f-und-01", "text": "¿Podemos hacer undercut?", "expected_intent": "pit_undercut", "expect_no_entity": true},
+  {"id": "f-und-02", "text": "¿Funciona el undercut con Sardena?", "expected_intent": "pit_undercut", "expected_car_index": 8}
+]

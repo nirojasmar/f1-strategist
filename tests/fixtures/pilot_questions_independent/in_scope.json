@@ -1,0 +1,48 @@
+[
+  {"id": "i-grs-01", "text": "¿Qué puesto tenemos ahora mismo?", "expected_intent": "general_race_state", "expect_no_entity": true},
+  {"id": "i-grs-02", "text": "¿Cuántas vueltas faltan para acabar?", "expected_intent": "general_race_state", "expect_no_entity": true},
+  {"id": "i-grs-03", "text": "Estado de la carrera, por favor", "expected_intent": "general_race_state", "expect_no_entity": true},
+  {"id": "i-grs-04", "text": "¿En qué posición vamos?", "expected_intent": "general_race_state", "expect_no_entity": true},
+
+  {"id": "i-str-01", "text": "¿Hacemos dos paradas o una?", "expected_intent": "ask_strategy", "expect_no_entity": true},
+  {"id": "i-str-02", "text": "¿Cuándo entramos a boxes?", "expected_intent": "ask_strategy", "expect_no_entity": true},
+  {"id": "i-str-03", "text": "¿Cambiamos a medios en la próxima parada?", "expected_intent": "ask_strategy", "expect_no_entity": true},
+  {"id": "i-str-04", "text": "¿Merece la pena parar ahora?", "expected_intent": "ask_strategy", "expect_no_entity": true},
+
+  {"id": "i-fue-01", "text": "¿Cuánta gasolina nos queda?", "expected_intent": "fuel_status", "expect_no_entity": true},
+  {"id": "i-fue-02", "text": "¿Tenemos suficiente combustible para el final?", "expected_intent": "fuel_status", "expect_no_entity": true},
+  {"id": "i-fue-03", "text": "¿Cuánto carburante gastamos por vuelta?", "expected_intent": "fuel_status", "expect_no_entity": true},
+  {"id": "i-fue-04", "text": "¿Podemos ahorrar algo de combustible?", "expected_intent": "fuel_status", "expect_no_entity": true},
+
+  {"id": "i-tyr-01", "text": "¿Cuántas vueltas les quedan a los neumáticos?", "expected_intent": "tyre_life", "expect_no_entity": true},
+  {"id": "i-tyr-02", "text": "¿Las gomas van a durar hasta el final?", "expected_intent": "tyre_life", "expect_no_entity": true},
+  {"id": "i-tyr-03", "text": "¿Cuánto desgaste llevamos acumulado?", "expected_intent": "tyre_life", "expect_no_entity": true},
+  {"id": "i-tyr-04", "text": "¿Cuánto les queda de vida a las ruedas?", "expected_intent": "tyre_life", "expect_no_entity": true},
+
+  {"id": "i-pac-01", "text": "¿Dónde perdemos tiempo?", "expected_intent": "pace_diagnosis", "expect_no_entity": true},
+  {"id": "i-pac-02", "text": "¿Nos está frenando el tráfico?", "expected_intent": "pace_diagnosis", "expect_no_entity": true},
+  {"id": "i-pac-03", "text": "¿Por qué somos tan lentos en el sector 2?", "expected_intent": "pace_diagnosis", "expect_no_entity": true},
+  {"id": "i-pac-04", "text": "¿Estamos cediendo décimas?", "expected_intent": "pace_diagnosis", "expect_no_entity": true},
+
+  {"id": "i-cmp-01", "text": "¿Cómo voy frente a Marchetti?", "expected_intent": "compare_driver", "expected_car_index": 3},
+  {"id": "i-cmp-02", "text": "¿Voy mejor que Dubois?", "expected_intent": "compare_driver", "expected_car_index": 5},
+  {"id": "i-cmp-03", "text": "¿Quién tiene mejor ritmo, yo o Sardena?", "expected_intent": "compare_driver", "expected_car_index": 8},
+  {"id": "i-cmp-04", "text": "¿Qué diferencia hay con Reyne?", "expected_intent": "compare_driver", "expected_car_index": 6},
+
+  {"id": "i-gap-01", "text": "¿Qué ventaja tiene el de delante?", "expected_intent": "gap_status", "expected_car_index": 4},
+  {"id": "i-gap-02", "text": "¿A cuántos segundos está Verano?", "expected_intent": "gap_status", "expected_car_index": 2},
+  {"id": "i-gap-03", "text": "¿El de atrás nos recorta?", "expected_intent": "gap_status", "expected_car_index": 5},
+  {"id": "i-gap-04", "text": "¿Hay hueco con Vela?", "expected_intent": "gap_status", "expected_car_index": 1},
+
+  {"id": "i-dmg-01", "text": "¿El coche está intacto?", "expected_intent": "damage_status", "expect_no_entity": true},
+  {"id": "i-dmg-02", "text": "¿Tenemos algún daño en el suelo?", "expected_intent": "damage_status", "expect_no_entity": true},
+  {"id": "i-dmg-03", "text": "¿Ha sufrido daños el alerón?", "expected_intent": "damage_status", "expect_no_entity": true},
+  {"id": "i-dmg-04", "text": "¿Se ha roto algo del coche?", "expected_intent": "damage_status", "expect_no_entity": true},
+
+  {"id": "i-wth-01", "text": "¿Va a caer agua en la carrera?", "expected_intent": "weather_forecast", "expect_no_entity": true},
+  {"id": "i-wth-02", "text": "¿Hay probabilidad de lluvia?", "expected_intent": "weather_forecast", "expect_no_entity": true},
+  {"id": "i-wth-03", "text": "¿Cómo está el tiempo?", "expected_intent": "weather_forecast", "expect_no_entity": true},
+  {"id": "i-wth-04", "text": "¿Va a llover en las próximas vueltas?", "expected_intent": "weather_forecast", "expect_no_entity": true},
+
+  {"id": "i-und-01", "text": "¿Podemos adelantar a Sterling con el undercut?", "expected_intent": "pit_undercut", "expected_car_index": 4}
+]

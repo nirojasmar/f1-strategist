@@ -27,6 +27,8 @@ from .parser import (
     parse_packet,
     record_parser_rejection,
 )
+from .pilot.engine import PilotEngine, PilotInputs
+from .pilot.types import PilotAnswer, PilotSnapshot
 from .race_state import RaceState, RaceStateSnapshot
 from .strategy.engine import StrategyEngine
 from .strategy.types import StrategySnapshot
@@ -64,6 +66,18 @@ class OfflineEventPipeline:
             config.agent,
             config.llm,
             mode=config.agent.offline_mode,
+            pilot=config.pilot,
+        )
+        self._observed_at = 0.0
+        self._weekend_profile: WeekendProfile | None = None
+        self._session_uid: int | None = None
+        self._pilot = PilotEngine(
+            config.pilot,
+            snapshots=self._pilot_inputs,
+            followup=getattr(self._agent, "submit_followup", None),
+            note_interaction=self._note_pilot_interaction,
+            metrics_config=config.metrics,
+            strategy_config=config.strategy,
         )
         self._agent.start()
 
@@ -71,6 +85,11 @@ class OfflineEventPipeline:
         self._race_state.apply(packet, observed_at)
         state = self._race_state.snapshot()
         session = state.session
+        if session.uid != self._session_uid:
+            # La conversación es de una sesión: al cambiar de UID se descarta,
+            # igual que en vivo y en reproducción.
+            self._pilot.reset()
+            self._session_uid = session.uid
         profile = (
             self._profiles_by_uid.get(session.uid)
             if session.uid is not None
@@ -78,6 +97,8 @@ class OfflineEventPipeline:
             and session.session_type.lower() in _RACE_SESSION_TYPES
             else None
         )
+        self._observed_at = observed_at
+        self._weekend_profile = profile
         self._metrics_engine.set_profile(profile)
         self._metrics_engine.apply(packet, observed_at, state)
         self._strategy_engine.apply(
@@ -130,6 +151,30 @@ class OfflineEventPipeline:
     def agent_snapshot(self) -> AgentSnapshot:
         """Último estado publicado por el comunicador del agente."""
         return self._agent.snapshot()
+
+    def ask_pilot(self, text: str) -> PilotAnswer:
+        """Responde con la última telemetría procesada."""
+        return self._pilot.ask(text, now=self._observed_at)
+
+    def pilot_snapshot(self) -> PilotSnapshot:
+        """Intercambios recientes y aclaración pendiente."""
+        return self._pilot.snapshot()
+
+    def _pilot_inputs(self) -> PilotInputs:
+        return PilotInputs(
+            state=self.race_snapshot(),
+            metrics=self.metrics_snapshot(),
+            strategy=self.strategy_snapshot(),
+            history=self.history_snapshot(),
+            events=self.events_snapshot(),
+            profile=self._weekend_profile,
+        )
+
+    def _note_pilot_interaction(self, now: float) -> None:
+        self._event_engine.note_pilot_interaction(
+            now,
+            session_uid=self.race_snapshot().session.uid,
+        )
 
 
 @dataclass(frozen=True, slots=True)

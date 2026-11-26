@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Iterable
 from pathlib import Path
 
 import pytest
@@ -17,6 +18,7 @@ from f1_strategist.config import (
 from f1_strategist.metrics.engine import MetricsEngine, MetricsSnapshot
 from f1_strategist.packets import HEADER_STRUCT
 from f1_strategist.parser import ParsedPacket
+from f1_strategist.pilot.types import PilotAnswer, PilotExchange
 from f1_strategist.ports import SessionPort
 from f1_strategist.race_state import RaceStateSnapshot
 from f1_strategist.session import CaptureSession
@@ -230,3 +232,42 @@ def test_strategy_without_recording_reports_diagnostic() -> None:
     assert snapshot.consumer_errors == 1
     assert snapshot.consumer_error is not None
     assert snapshot.consumer_error.key == "strategy_recording_disabled"
+
+
+class _PilotRecorder:
+    def __init__(self) -> None:
+        self.calls: list[tuple[tuple[PilotExchange, ...], float]] = []
+
+    def record_pilot(self, exchanges: Iterable[PilotExchange], observed_at: float) -> None:
+        self.calls.append((tuple(exchanges), observed_at))
+
+
+def test_ask_pilot_records_the_completed_exchange_after_a_reset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = CaptureSession(
+        AppConfig(
+            telemetry=TelemetryConfig(listen_port=0),
+            capture=CaptureConfig(enabled=False),
+            recording=RecordingConfig(enabled=False),
+        )
+    )
+    pilot = session._pilot
+    original = pilot.ask
+
+    def ask(text: str, *, now: float, source: str = "console") -> PilotAnswer:
+        answer = original(text, now=now, source=source)
+        session._pilot = session._build_pilot()
+        return answer
+
+    monkeypatch.setattr(pilot, "ask", ask)
+    recorder = _PilotRecorder()
+    session._last_observed_at = 3.0
+    session._recorder = recorder  # type: ignore[assignment]
+
+    answer = session.ask_pilot("¿Cómo voy?")
+
+    assert len(recorder.calls) == 1
+    exchanges, observed_at = recorder.calls[0]
+    assert exchanges[0].answer.query_id == answer.query_id
+    assert observed_at == 3.0

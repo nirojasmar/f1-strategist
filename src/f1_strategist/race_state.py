@@ -141,6 +141,7 @@ class CarSnapshot:
     drs_allowed: bool | None = None
     fitted_tyre: FittedTyreSnapshot | None = None
     telemetry_restricted: bool | None = None
+    race_number: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -489,6 +490,7 @@ class RaceState:
                 car,
                 name=participant.name or None,
                 team=_known_enum(participant.team_id),
+                race_number=_positive_int(participant.race_number),
                 telemetry_restricted=telemetry_restricted,
                 fuel_kg=None if telemetry_restricted else car.fuel_kg,
                 fuel_capacity_kg=None if telemetry_restricted else car.fuel_capacity_kg,

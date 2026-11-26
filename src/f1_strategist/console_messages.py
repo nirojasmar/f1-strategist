@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from types import MappingProxyType
+
 from .agent.templates import render_template, strategy_action_label
 from .events.types import Fact
 from .messages import DiagnosticMessage
@@ -9,6 +12,7 @@ from .metrics.engine import MetricsSnapshot
 from .metrics.types import Metric, Quality
 from .packets import packet_name
 from .parser import ParseIssue
+from .pilot.types import Clarification, FactKind, Intent, PilotAnswer
 from .race_state import CarSnapshot, RaceEvent, RaceStateSnapshot
 from .receiver import PacketSequenceStats
 from .strategy.types import (
@@ -52,6 +56,241 @@ LLM_EVAL_OVERWRITES_DATASET = "El informe no puede escribirse dentro del conjunt
 LLM_EVAL_SKIPPED_CALLS = "Llamadas omitidas por contexto no recuperable: {calls}"
 AGENT_UNKNOWN_VALUE = "desconocido"
 AGENT_EXPORT_SCHEMA_VERSION = 1
+
+PILOT_PANEL_TITLE = "Preguntas"
+PILOT_QUESTION_LABEL = "Tú"
+PILOT_ANSWER_LABEL = "Ingeniero"
+PILOT_EMPTY = "Sin preguntas todavía."
+PILOT_ACK_TEXT = "Recibido: consultando…"
+PILOT_UNAVAILABLE_TEXT = "El ingeniero no está disponible."
+PILOT_CLARIFICATION_LABEL = "Aclaración pendiente"
+PILOT_INPUT_PROMPT = "Pregunta> "
+PILOT_INPUT_HELP_RUN = (
+    "Escribe tu pregunta · Enter: enviar · Esc: borrar · ↑↓: historial · Ctrl+C: salir"
+)
+PILOT_PLAY_HELP = "espacio: pausa · +/-: velocidad · /: preguntar · q: salir"
+PILOT_PLAY_HELP_DISABLED = "espacio: pausa · +/-: velocidad · q: salir"
+PILOT_INPUT_DISABLED = "Entrada de preguntas desactivada."
+PILOT_INPUT_NO_TERMINAL = "Sin terminal interactiva: entrada de preguntas desactivada."
+PILOT_INPUT_ERROR = "No se pudo enviar la pregunta."
+PILOT_INPUT_BUSY = "Hay una pregunta en curso; espera a la respuesta."
+
+PILOT_MISSING_TEMPLATE = "No tengo una respuesta preparada para eso."
+PILOT_UNKNOWN_TEXT = (
+    "No he entendido la pregunta. Puedes preguntarme por combustible, "
+    "neumáticos, rivales o estrategia."
+)
+PILOT_CLARIFICATION_TEXT = "¿A cuál te refieres: {options}?"
+PILOT_CLARIFICATION_NO_OPTIONS_TEXT = "¿A cuál te refieres?"
+PILOT_LEADER_TEXT = "Vas primero: no hay nadie delante."
+PILOT_LAST_TEXT = "Vas último: no hay nadie detrás."
+PILOT_NO_CAR_AHEAD_TEXT = "No hay nadie delante de ti."
+PILOT_NO_CAR_BEHIND_TEXT = "No hay nadie detrás de ti."
+PILOT_DRIVER_RETIRED_TEXT = "El piloto que pides está retirado y no tengo datos suyos."
+PILOT_DRIVER_UNKNOWN_TEXT = "No sé a qué piloto te refieres; no tengo datos de esa referencia."
+PILOT_STALE_TEXT = " Los datos están desactualizados."
+PILOT_MISSING_TEXT = " No tengo {missing}."
+PILOT_GENERIC_TEXT = "Datos: {facts}."
+PILOT_NO_DATA_TEXT = "No tengo datos ahora mismo."
+PILOT_UNSUPPORTED_OVERCUT_TEXT = (
+    "El overcut no está soportado; solo puedo evaluar undercuts ofensivos."
+)
+PILOT_UNSUPPORTED_DEFENSIVE_UNDERCUT_TEXT = (
+    "El undercut defensivo no está soportado; solo puedo evaluar undercuts ofensivos."
+)
+PILOT_UNSUPPORTED_RIVAL_GAP_TEXT = (
+    "Solo tengo los intervalos del coche propio; no puedo darte el intervalo de ese piloto."
+)
+
+_PILOT_INTENT_LEADS: Mapping[Intent, tuple[str, str]] = MappingProxyType(
+    {
+        Intent.GENERAL_RACE_STATE: ("Estado de carrera", "estado de carrera"),
+        Intent.FUEL_STATUS: ("Combustible", "combustible"),
+        Intent.TYRE_LIFE: ("Neumáticos", "neumáticos"),
+        Intent.COMPARE_DRIVER: ("Comparación", "comparación de pilotos"),
+        Intent.GAP_STATUS: ("Intervalos", "intervalos"),
+        Intent.DAMAGE_STATUS: ("Daños", "daños"),
+        Intent.WEATHER_FORECAST: ("Clima", "clima"),
+        Intent.ASK_STRATEGY: ("Estrategia", "estrategia"),
+        Intent.PACE_DIAGNOSIS: ("Ritmo", "ritmo"),
+        Intent.PIT_UNDERCUT: ("Undercut", "undercut"),
+    }
+)
+
+
+def _build_pilot_templates() -> dict[str, str]:
+    templates = {
+        "pilot.unknown": PILOT_UNKNOWN_TEXT,
+        "pilot.clarification": PILOT_CLARIFICATION_TEXT,
+        "pilot.clarification_no_options": PILOT_CLARIFICATION_NO_OPTIONS_TEXT,
+        "pilot.leader": PILOT_LEADER_TEXT,
+        "pilot.last": PILOT_LAST_TEXT,
+        "pilot.no_car_ahead": PILOT_NO_CAR_AHEAD_TEXT,
+        "pilot.no_car_behind": PILOT_NO_CAR_BEHIND_TEXT,
+        "pilot.driver_retired": PILOT_DRIVER_RETIRED_TEXT,
+        "pilot.driver_unknown": PILOT_DRIVER_UNKNOWN_TEXT,
+        "pilot.stale": PILOT_STALE_TEXT,
+        "pilot.missing": PILOT_MISSING_TEXT,
+        "pilot.generic": PILOT_GENERIC_TEXT,
+        "pilot.no_data": PILOT_NO_DATA_TEXT,
+        "pilot.unsupported.overcut": PILOT_UNSUPPORTED_OVERCUT_TEXT,
+        "pilot.unsupported.defensive_undercut": PILOT_UNSUPPORTED_DEFENSIVE_UNDERCUT_TEXT,
+        "pilot.unsupported.rival_gap": PILOT_UNSUPPORTED_RIVAL_GAP_TEXT,
+        "pilot.missing_template": PILOT_MISSING_TEMPLATE,
+    }
+    for intent, (lead, topic) in _PILOT_INTENT_LEADS.items():
+        prefix = f"pilot.answer.{intent.value}"
+        templates[prefix] = f"{lead}: {{facts}}."
+        templates[f"{prefix}.partial"] = f"{lead}: {{facts}}. No tengo {{missing}}."
+        templates[f"{prefix}.no_data"] = f"No tengo datos de {topic} ahora mismo."
+    return templates
+
+
+PILOT_ANSWER_TEMPLATES = MappingProxyType(_build_pilot_templates())
+
+PILOT_FACT_LABELS = MappingProxyType(
+    {
+        "action": "acción",
+        "age_laps": "edad",
+        "air_temperature_c": "temperatura del aire",
+        "best_k": "mejor k",
+        "best_gain_s": "mejor ganancia",
+        "best_lap_s": "mejor vuelta",
+        "car_index": "coche",
+        "clean_laps_used": "vueltas limpias usadas",
+        "compare.interval_direction": "sentido del intervalo",
+        "compare.interval_s": "intervalo",
+        "compare.pace_delta_s": "diferencia de ritmo",
+        "compare.rival.compound": "compuesto del rival",
+        "compare.rival.name": "rival",
+        "compare.rival.pit_stops": "paradas del rival",
+        "compare.rival.position": "posición del rival",
+        "compare.rival.retired": "rival retirado",
+        "compare.rival.tyre_age_laps": "edad de neumáticos del rival",
+        "compound": "compuesto",
+        "component": "componente",
+        "confidence": "confianza",
+        "consumption_per_lap": "consumo por vuelta",
+        "current_lap": "vuelta actual",
+        "damage_aero_max_pct": "daño aerodinámico",
+        "damage_engine_max_pct": "daño del motor",
+        "damage_fault_count": "averías",
+        "damage_faults": "averías",
+        "damage_floor_pct": "daño del suelo",
+        "damage_gearbox_pct": "daño de la caja de cambios",
+        "damage_pct": "daño",
+        "fuel_consumption_per_lap": "consumo por vuelta",
+        "fuel_in_tank_kg": "combustible restante",
+        "fuel_kg": "combustible restante",
+        "fuel_laps_of_fuel": "vueltas de combustible",
+        "fuel_margin_kg": "margen de combustible",
+        "fuel_margin_laps": "margen de combustible",
+        "gain_s": "ganancia",
+        "gap.ahead_s": "intervalo con el de delante",
+        "gap.ahead_trend_s_per_s": "tendencia del intervalo delantero",
+        "gap.behind_s": "intervalo con el de atrás",
+        "gap.behind_trend_s_per_s": "tendencia del intervalo trasero",
+        "gap.leader_s": "intervalo con el líder",
+        "gap_ahead_s": "intervalo con el de delante",
+        "gap_behind_s": "intervalo con el de atrás",
+        "gap_s": "intervalo",
+        "horizon_min": "horizonte",
+        "lap": "vuelta",
+        "laps_left": "vida estimada",
+        "laps_remaining": "vueltas restantes",
+        "last_lap_s": "última vuelta",
+        "margin_kg": "margen",
+        "margin_laps": "margen",
+        "name": "piloto",
+        "pace.clean_laps": "vueltas limpias",
+        "pace.current_s": "ritmo actual",
+        "pace.evidence.damage_delta_pct": "cambio de daño",
+        "pace.evidence.damage_laps": "vueltas con daño",
+        "pace.evidence.sector": "sector lento",
+        "pace.evidence.sector_loss_s": "pérdida en el sector",
+        "pace.evidence.traffic_laps": "vueltas con tráfico",
+        "pace.evidence.tyre_age_delta_laps": "aumento de la edad del neumático",
+        "pace.evidence.tyre_wear_delta_pct": "aumento del desgaste",
+        "pace.evidence.weather_change_laps": "vueltas con cambio de clima",
+        "pace.loss_s": "pérdida de ritmo",
+        "pace.reference_kind": "tipo de referencia",
+        "pace.reference_s": "vuelta de referencia",
+        "pace.stable": "ritmo estable",
+        "pace_delta_s_per_lap": "diferencia de ritmo",
+        "pace_trend_s_per_lap": "tendencia de ritmo",
+        "pace_trend_label": "tendencia de ritmo",
+        "pit_lap": "vuelta de parada",
+        "pit_loss_s": "pérdida en boxes",
+        "position": "posición",
+        "probability_pct": "probabilidad",
+        "rain_probability_next_10_min_pct": "probabilidad de lluvia en 10 min",
+        "rain_probability_next_30_min_pct": "probabilidad de lluvia en 30 min",
+        "rejoin_position": "posición de reincorporación",
+        "rival_car_index": "coche rival",
+        "safety_car_status": "estado del coche de seguridad",
+        "session_type": "tipo de sesión",
+        "strategy_action": "acción",
+        "strategy_compound": "compuesto",
+        "strategy_confidence": "confianza",
+        "strategy_gain_high_s": "ganancia máxima",
+        "strategy_gain_low_s": "ganancia mínima",
+        "strategy_gain_s": "ganancia",
+        "strategy_pit_lap": "vuelta de parada",
+        "strategy_rejoin_position": "posición de reincorporación",
+        "strategy_remaining_time_s": "tiempo restante",
+        "strategy_safety_car": "coche de seguridad activo",
+        "strategy_set_index": "juego",
+        "strategy_simulated": "simulación",
+        "strategy_traffic_risk": "riesgo de tráfico",
+        "total_laps": "vueltas totales",
+        "track": "circuito",
+        "track_temperature_c": "temperatura de pista",
+        "track_temperature_trend_c_per_lap": "tendencia de la temperatura de pista",
+        "tyre_age_laps": "edad de neumáticos",
+        "tyre_compound": "compuesto",
+        "tyre_life_laps": "vida del neumático",
+        "tyre_life_source": "fuente de la vida del neumático",
+        "tyre_wear_mean_pct": "desgaste",
+        "undercut_gain_s": "ganancia del undercut",
+        "viable": "viable",
+        "wear_mean_pct": "desgaste",
+        "weather": "clima",
+    }
+)
+
+PILOT_KIND_WORDS = MappingProxyType(
+    {
+        FactKind.MEASURED: "medido",
+        FactKind.ESTIMATED: "estimado",
+        FactKind.RECOMMENDED: "recomendado",
+    }
+)
+
+
+def pilot_fact_label(name: str) -> str:
+    """Etiqueta localizada de un hecho; nunca devuelve un nombre crudo conocido."""
+    label = PILOT_FACT_LABELS.get(name)
+    if label is not None:
+        return label
+    if name.startswith("pace.cause."):
+        return "causa"
+    if name.startswith("forecast_plus_"):
+        return "previsión"
+    return name
+
+
+_PILOT_KIND_LABELS = {
+    "ack": "Acuse",
+    "answer": "Respuesta",
+    "clarification": "Aclaración",
+    "unknown": "Desconocido",
+    "unavailable": "No disponible",
+    "followup": "Seguimiento",
+}
+_PILOT_MESSAGE_TEXTS = {
+    "pilot_ack": PILOT_ACK_TEXT,
+    "pilot_unavailable": PILOT_UNAVAILABLE_TEXT,
+}
 
 #: Marcadores del panel: distinguen «no disponible» de «no aplica a la acción».
 _STRATEGY_UNKNOWN = "Desconocido"
@@ -487,6 +726,23 @@ def render_agent_source(source: str) -> str:
 
 def render_agent_priority(priority: str) -> str:
     return _AGENT_PRIORITY_LABELS.get(priority, priority)
+
+
+def render_pilot_kind(kind: str) -> str:
+    return _PILOT_KIND_LABELS.get(kind, AGENT_UNKNOWN_VALUE)
+
+
+def render_pilot_answer(answer: PilotAnswer) -> str:
+    if answer.text:
+        return answer.text
+    return _PILOT_MESSAGE_TEXTS.get(answer.message_key, answer.message_key)
+
+
+def render_pilot_clarification(clarification: Clarification) -> str:
+    options = ", ".join(option.name for option in clarification.options)
+    if not options:
+        return PILOT_CLARIFICATION_LABEL
+    return f"{PILOT_CLARIFICATION_LABEL}: {options}"
 
 
 def _render_strategy_keys(keys: tuple[str, ...]) -> str:

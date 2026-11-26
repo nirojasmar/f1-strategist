@@ -67,6 +67,7 @@ from f1_strategist.store import (
     StoredEvent,
     StoredGateDecision,
     StoredLLMCall,
+    StoredPilotQuery,
     StoredStrategyEvaluation,
     TyreInventorySnapshot,
 )
@@ -105,6 +106,7 @@ class _FakeStore:
         self.gate_decisions: list[tuple[int, StoredGateDecision]] = []
         self.llm_calls: list[tuple[int, StoredLLMCall]] = []
         self.agent_messages: list[tuple[int, StoredAgentMessage]] = []
+        self.pilot_queries: list[tuple[int, StoredPilotQuery]] = []
         self._next_id = 1
 
     @contextmanager
@@ -189,6 +191,9 @@ class _FakeStore:
 
     def add_agent_messages(self, session_id: int, messages: Iterable[StoredAgentMessage]) -> None:
         self.agent_messages.extend((session_id, item) for item in messages)
+
+    def add_pilot_queries(self, session_id: int, queries: Iterable[StoredPilotQuery]) -> None:
+        self.pilot_queries.extend((session_id, item) for item in queries)
 
 
 class _BlockingStore(_FakeStore):

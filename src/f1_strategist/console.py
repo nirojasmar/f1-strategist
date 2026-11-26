@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from concurrent.futures import Future, ThreadPoolExecutor
 from urllib.parse import urlsplit
 
 from rich.console import Console, Group, RenderableType
@@ -21,6 +22,18 @@ from .console_messages import (
     AGENT_STATUS_LABEL,
     EVENTS_PANEL_TITLE,
     METRICS_PANEL_TITLE,
+    PILOT_ACK_TEXT,
+    PILOT_ANSWER_LABEL,
+    PILOT_CLARIFICATION_LABEL,
+    PILOT_EMPTY,
+    PILOT_INPUT_BUSY,
+    PILOT_INPUT_DISABLED,
+    PILOT_INPUT_ERROR,
+    PILOT_INPUT_HELP_RUN,
+    PILOT_INPUT_NO_TERMINAL,
+    PILOT_INPUT_PROMPT,
+    PILOT_PANEL_TITLE,
+    PILOT_QUESTION_LABEL,
     STRATEGY_PANEL_TITLE,
     render_agent_priority,
     render_agent_source,
@@ -28,6 +41,9 @@ from .console_messages import (
     render_diagnostic,
     render_event_message,
     render_metrics_rows,
+    render_pilot_answer,
+    render_pilot_clarification,
+    render_pilot_kind,
     render_race_event,
     render_strategy_recording_warning,
     render_strategy_rows,
@@ -36,6 +52,8 @@ from .diagnostics import ConnectionState, connection_state, diagnose
 from .events.types import EventsSnapshot
 from .metrics.engine import MetricsSnapshot
 from .packets import packet_name
+from .pilot.console_input import KeySource, LineEditor, TerminalKeyReader
+from .pilot.types import PilotAnswer, PilotSnapshot
 from .ports import SessionPort
 from .race_state import RaceStateSnapshot
 from .strategy.types import StrategyEvaluation, StrategySnapshot
@@ -245,6 +263,120 @@ def _render_agent_summary(snapshot: AgentSnapshot, cfg: AppConfig) -> Panel:
     return Panel(table, title=AGENT_PANEL_TITLE, expand=False)
 
 
+class _PilotConsole:
+    """Lanza la consulta fuera del hilo de refresco para poder mostrar el acuse."""
+
+    def __init__(self, session: SessionPort) -> None:
+        self._session = session
+        self._executor: ThreadPoolExecutor | None = None
+        self._future: Future[PilotAnswer] | None = None
+        self._pending: str | None = None
+        self._error: str | None = None
+        self._error_fresh = False
+
+    @property
+    def pending_text(self) -> str | None:
+        return self._pending
+
+    @property
+    def error_text(self) -> str | None:
+        return self._error
+
+    def submit(self, text: str) -> None:
+        if not text:
+            return
+        if self._pending is not None:
+            self._error = PILOT_INPUT_BUSY
+            self._error_fresh = True
+            return
+        self._pending = text
+        self._error = None
+        self._error_fresh = False
+        if self._executor is None:
+            self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="pilot")
+        self._future = self._executor.submit(self._session.ask_pilot, text)
+
+    def poll(self) -> None:
+        future = self._future
+        if future is None:
+            if not self._error_fresh:
+                self._error = None
+            return
+        if not future.done():
+            return
+        self._future = None
+        self._pending = None
+        try:
+            future.result()
+        except Exception:  # la consola no debe caerse por un módulo opcional
+            self._error = PILOT_INPUT_ERROR
+            self._error_fresh = True
+        else:
+            # Cualquier aviso recién creado debe sobrevivir al menos a un render,
+            # aunque la pregunta anterior termine justo después del rechazo.
+            if not self._error_fresh:
+                self._error = None
+
+    def mark_rendered(self) -> None:
+        """Confirma que el aviso ya se mostró y puede caducar en el siguiente poll."""
+        self._error_fresh = False
+
+    def close(self) -> None:
+        if self._executor is not None:
+            self._executor.shutdown(wait=False, cancel_futures=True)
+
+
+def _render_pilot_summary(
+    snapshot: PilotSnapshot,
+    cfg: AppConfig,
+    *,
+    pending: str | None = None,
+    error: str | None = None,
+    draft: str | None = None,
+    warning: str | None = None,
+    help_text: str | None = None,
+) -> Panel:
+    table = Table.grid(padding=(0, 2))
+    table.add_column(style="bold", no_wrap=True)
+    table.add_column(no_wrap=True, overflow="ellipsis")
+    limit = max(1, min(5, cfg.pilot.history_size))
+    exchanges = snapshot.recent[-limit:]
+    for exchange in exchanges:
+        table.add_row(PILOT_QUESTION_LABEL, Text(exchange.query.text))
+        answer = exchange.answer
+        table.add_row(
+            PILOT_ANSWER_LABEL,
+            Text(f"{render_pilot_kind(answer.kind.value)} · {render_pilot_answer(answer)}"),
+        )
+    if pending is not None:
+        table.add_row(PILOT_QUESTION_LABEL, Text(pending))
+        table.add_row("", Text(PILOT_ACK_TEXT, style="yellow"))
+    clarification = snapshot.pending_clarification
+    if clarification is not None:
+        table.add_row(PILOT_CLARIFICATION_LABEL, Text(render_pilot_clarification(clarification)))
+    if error is not None:
+        table.add_row("", Text(error, style="red"))
+    if draft is not None:
+        table.add_row("", Text(f"{PILOT_INPUT_PROMPT}{draft}", style="bold"))
+    if warning is not None:
+        table.add_row("", Text(warning, style="yellow"))
+    if help_text is not None:
+        table.add_row("", Text(help_text, style="dim"))
+    elif draft is not None:
+        table.add_row("", Text(PILOT_INPUT_HELP_RUN, style="dim"))
+    if (
+        not exchanges
+        and pending is None
+        and clarification is None
+        and error is None
+        and draft is None
+        and warning is None
+        and help_text is None
+    ):
+        table.add_row("", PILOT_EMPTY)
+    return Panel(table, title=PILOT_PANEL_TITLE, expand=False)
+
+
 def format_bytes(nbytes: int) -> str:
     size = float(nbytes)
     for unit in ("B", "KB", "MB", "GB"):
@@ -260,6 +392,11 @@ def render(
     now: float | None = None,
     *,
     race_now: float | None = None,
+    pilot_pending: str | None = None,
+    pilot_draft: str | None = None,
+    pilot_input_warning: str | None = None,
+    pilot_error: str | None = None,
+    pilot_help: str | None = None,
 ) -> Group:
     """Renderiza el estado.
 
@@ -312,6 +449,15 @@ def render(
 
     race = session.race_snapshot()
     parts: list[RenderableType] = [
+        _render_pilot_summary(
+            session.pilot_snapshot(),
+            cfg,
+            pending=pilot_pending,
+            error=pilot_error,
+            draft=pilot_draft,
+            warning=pilot_input_warning,
+            help_text=pilot_help,
+        ),
         Panel(info, title="F1 Strategist · telemetría UDP", expand=False),
         _render_race_summary(race, race_now),
         _render_metrics_summary(session.metrics_snapshot(), race, race_now),
@@ -340,17 +486,70 @@ def render(
         parts.append(table)
     for diagnostic in diagnose(tele, snap, now):
         parts.append(f"[yellow]{escape(render_diagnostic(diagnostic))}[/]")
-    parts.append("[dim]Ctrl+C para salir[/]")
+    if pilot_help is None and pilot_draft is None:
+        parts.append("[dim]Ctrl+C para salir[/]")
     return Group(*parts)
 
 
-def run_console(cfg: AppConfig, session: SessionPort, console: Console | None = None) -> None:
+_KEY_BATCH_LIMIT = 64
+
+
+def _read_key_batch(keys: KeySource, limit: int = _KEY_BATCH_LIMIT) -> list[str]:
+    """Drena teclas disponibles sin esperar, para que un pegado no acumule latencia."""
+    batch: list[str] = []
+    while len(batch) < limit:
+        key = keys.read()
+        if key is None:
+            break
+        batch.append(key)
+    return batch
+
+
+def run_console(
+    cfg: AppConfig,
+    session: SessionPort,
+    console: Console | None = None,
+    *,
+    input_enabled: bool | None = None,
+) -> None:
     """Muestra el estado hasta Ctrl+C o hasta que falle el socket."""
     console = console or Console()
-    with Live(render(cfg, session), console=console, refresh_per_second=4) as live:
-        try:
-            while session.receiver_error is None:
-                time.sleep(0.25)
-                live.update(render(cfg, session))
-        except KeyboardInterrupt:
-            pass
+    keys = TerminalKeyReader(enabled=input_enabled)
+    editor = LineEditor(max_chars=cfg.pilot.max_question_chars)
+    pilot = _PilotConsole(session)
+    if input_enabled is False:
+        warning: str | None = PILOT_INPUT_DISABLED
+    elif not keys.enabled:
+        warning = PILOT_INPUT_NO_TERMINAL
+    else:
+        warning = None
+
+    def build() -> Group:
+        pilot.poll()
+        view = render(
+            cfg,
+            session,
+            pilot_pending=pilot.pending_text,
+            pilot_draft=editor.text if keys.enabled else None,
+            pilot_input_warning=warning,
+            pilot_error=pilot.error_text,
+        )
+        pilot.mark_rendered()
+        return view
+
+    try:
+        with Live(build(), console=console, refresh_per_second=4) as live:
+            try:
+                while session.receiver_error is None:
+                    if keys.enabled:
+                        for key in _read_key_batch(keys):
+                            question = editor.feed(key)
+                            if question is not None:
+                                pilot.submit(question)
+                    time.sleep(0.05)
+                    live.update(build(), refresh=True)
+            except KeyboardInterrupt:
+                pass
+    finally:
+        pilot.close()
+        keys.close()
