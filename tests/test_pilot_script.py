@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 import f1_strategist.pilot.script as script_module
-from f1_strategist.capture import CapturedPacket, CaptureWriter
+from f1_strategist.capture import CapturedPacket, CaptureReader, CaptureWriter
 from f1_strategist.cli import main
 from f1_strategist.config import AppConfig, LLMConfig, PilotConfig
 from f1_strategist.fingerprint import PilotFingerprintAccumulator
@@ -32,6 +32,7 @@ from f1_strategist.pilot.types import (
     ToolInputs,
     ToolResult,
 )
+from f1_strategist.playback import PlaybackSession
 from f1_strategist.store import SessionStore, StoredPilotQuery
 
 from .conftest import make_packet
@@ -181,6 +182,7 @@ def _synthetic_capture(
         return parsed[index]
 
     monkeypatch.setattr("f1_strategist.offline.parse_packet", fake_parse)
+    monkeypatch.setattr("f1_strategist.playback.parse_packet", fake_parse)
     return path
 
 
@@ -221,6 +223,69 @@ def test_run_pilot_script_is_deterministic_across_repeated_runs(
     assert all(not item.answer.followup_pending for item in first.exchanges)
     assert first.fingerprint == second.fingerprint
     assert first.to_json() == second.to_json()
+
+
+def test_pilot_fingerprint_is_invariant_to_playback_speed_and_capture_reingestion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    capture = _synthetic_capture(tmp_path, monkeypatch)
+
+    class _FastClock:
+        def __init__(self) -> None:
+            self.now = 0.0
+
+        def __call__(self) -> float:
+            return self.now
+
+        def wait(self, timeout: float | None) -> bool:
+            self.now += timeout if timeout is not None else 0.0
+            return True
+
+    fingerprints: list[str] = []
+    playback_answers: list[tuple[str, str, object]] = []
+    for speed in (0.0, 1.0, 4.0):
+        clock = _FastClock()
+        session = PlaybackSession(
+            capture,
+            speed=speed,
+            clock=clock,
+            wait_timeout=clock.wait,
+        )
+        try:
+            session.play()
+            assert session.wait(timeout=30.0)
+            assert session.error is None
+            answer = session.ask_pilot("¿Cómo voy?")
+            accumulator = PilotFingerprintAccumulator()
+            accumulator.add(session.pilot_snapshot().recent)
+            fingerprints.append(accumulator.fingerprint)
+            assert answer.tool_result is not None
+            playback_answers.append((answer.text, answer.intent.value, answer.tool_result))
+        finally:
+            session.stop()
+
+    captured_packets = list(CaptureReader(capture))
+    capture_end_s = (
+        captured_packets[-1].recv_time_ns - captured_packets[0].recv_time_ns
+    ) / 1_000_000_000
+    script = tmp_path / "reingesta.jsonl"
+    script.write_text(
+        json.dumps({"at_session_time_s": capture_end_s, "text": "¿Cómo voy?"}, ensure_ascii=False)
+        + "\n",
+        encoding="utf-8",
+    )
+    first = run_pilot_script(capture, script)
+    second = run_pilot_script(capture, script)
+
+    assert len(set(fingerprints)) == 1
+    assert first.fingerprint == second.fingerprint
+    assert len(first.exchanges) == 1
+    scripted_answer = first.exchanges[0].answer
+    assert scripted_answer.tool_result is not None
+    assert (scripted_answer.text, scripted_answer.intent.value, scripted_answer.tool_result) in (
+        playback_answers
+    )
 
 
 def test_run_pilot_script_reports_untriggered_steps_beyond_capture_end(

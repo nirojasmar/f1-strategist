@@ -9,10 +9,19 @@ import pytest
 from f1_strategist.config import (
     AppConfig,
     CaptureConfig,
+    GateConfig,
+    GateCooldownConfig,
     PilotConfig,
     TelemetryConfig,
 )
-from f1_strategist.events.types import EventsSnapshot
+from f1_strategist.events.gate import EventGate
+from f1_strategist.events.types import (
+    EventPhase,
+    EventPriority,
+    EventSignal,
+    EventsSnapshot,
+    GateOutcome,
+)
 from f1_strategist.metrics.engine import MetricsSnapshot
 from f1_strategist.metrics.history import LapHistorySnapshot
 from f1_strategist.metrics.types import Quality
@@ -292,6 +301,72 @@ def test_question_during_alert_storm_with_muted_gate_is_answered() -> None:
 
     assert answer.kind is AnswerKind.ANSWER
     assert answer.tool_result is not None
+
+
+@pytest.mark.parametrize("muted", [False, True])
+def test_questions_remain_immediate_during_gate_cooldown_and_alert_storm(muted: bool) -> None:
+    gate = EventGate(
+        GateConfig(
+            global_min_gap_s=0.0,
+            cooldown_s=GateCooldownConfig(strategic=60.0, informational=60.0),
+            equivalence_window_s=0.0,
+            quiet_first_laps=0,
+            informational_space_s=0.0,
+            pilot_quiet_s=30.0,
+        )
+    )
+
+    def signal(index: int) -> EventSignal:
+        return EventSignal(
+            rule="strategy_test",
+            event_id=f"strategy:{index}",
+            phase=EventPhase.OPENED,
+            priority=EventPriority.STRATEGIC,
+            category="strategy",
+            message_key="event.strategy_test",
+        )
+
+    assert gate.process((signal(0),), now=10.0, lap=2)[0].outcome is GateOutcome.EMIT
+    if muted:
+        gate.set_muted(True)
+    storm = gate.process(tuple(signal(index) for index in range(1, 12)), now=11.0, lap=2)
+    assert len(storm) == 11
+    assert all(
+        decision.outcome is (GateOutcome.SUPPRESS if muted else GateOutcome.DEFER)
+        for decision in storm
+    )
+
+    events: list[str] = []
+
+    def compose(
+        routed: RoutedQuery, result: ToolResult | None, *, language: str, cfg
+    ) -> PilotAnswer:
+        events.append("answer")
+        return _answer(routed, result, language=language, cfg=cfg)
+
+    engine = PilotEngine(
+        PilotConfig(),
+        snapshots=lambda: _inputs(
+            state=_state(freshness=(PacketFreshness("lap_data", 11.0, 60.0),)),
+            events=gate.snapshot(),
+        ),
+        route=lambda text, **kwargs: _routed(
+            PilotQuery(query_id="q", text=text, language="es", received_at=0.0),
+            Intent.FUEL_STATUS,
+        ),
+        directory=lambda state: object(),
+        tools={Intent.FUEL_STATUS: lambda routed, inputs: _result()},
+        compose=compose,
+        publish=lambda answer: events.append("ack"),
+        note_interaction=gate.note_pilot_interaction,
+    )
+
+    for index in range(8):
+        events.clear()
+        answer = engine.ask(f"¿Cuánto combustible queda? {index}", now=11.5)
+        assert answer.kind is AnswerKind.ANSWER
+        assert answer.tool_result == _result()
+        assert events == ["ack", "answer"]
 
 
 def test_gate_failure_does_not_prevent_answer(caplog: pytest.LogCaptureFixture) -> None:
