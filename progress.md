@@ -1,6 +1,6 @@
 # Progreso del proyecto --- F1 Strategist
 
-**Última actualización:** 2026-11-20
+**Última actualización:** 2026-11-27
 **Propósito de este archivo:** llevar trazabilidad del avance importante y dejar el contexto
 necesario para que cualquier persona o agente que llegue al proyecto entienda dónde estamos, qué
 está decidido, qué está verificado y qué falta.
@@ -45,7 +45,7 @@ Documentos de diseño:
 | Lenguaje y entorno | Python 3.12+, `uv`, `ruff`, `pyright`, `pytest` | Acordado (2026-10-31) |
 | Modelos y configuración | `pydantic` v2 y TOML | Acordado |
 | LLM | Cliente HTTP a API compatible con OpenAI, adaptador intercambiable | Acordado; modelo concreto pendiente |
-| Almacenamiento | Captura binaria cruda (`.f1cap`) + SQLite para derivados | Implementado; esquema actual v9 documentado en `docs/almacenamiento_sqlite.md` |
+| Almacenamiento | Captura binaria cruda (`.f1cap`) + SQLite para derivados | Implementado; esquema actual v11 documentado en `docs/almacenamiento_sqlite.md` |
 | Agente LLM | Cliente HTTP compatible con OpenAI, contexto compacto y validador determinista | Implementado en Fase 6; los cálculos siguen fuera del modelo |
 | Grabación e ingesta | Grabador en vivo con hilo y cola acotada; `ingest` offline idempotente | Implementado (G5); la cola del vivo no bloquea y la ingesta espera al escritor para no perder lotes |
 | Replay y huella | Replay interno (`play`) y reemisión UDP (`replay`); huella canónica compartida por `verify` e `ingest` | Implementado (G2, G4, G5); la velocidad no cambia el tiempo simulado y la captura truncada se marca incompleta |
@@ -70,12 +70,16 @@ Documentos de diseño:
 | 4. Motor de estrategia | Implementada; validación local Windows | Ola 0 cerrada; S5--S8 cubren evaluación, decisión, motor integrado y registro SQLite; S9 añade panel y comandos; S12 corrige los hallazgos de Sakhir (vida del neumático, carril parcial y estados del HUD); S13 incorpora prior por circuito y rango de reincorporación; S10 añade pruebas analíticas, de captura real y de rendimiento; S11 documenta el modelo. Quedan las incidencias S10-R1 (rendimiento) y S10-H1 (huella entre velocidades) y repetir CI en Linux. |
 | 5. Event Detector y Event Gate | Implementada; validación local Windows | E1--E12 implementadas: 15 reglas, ciclo de vida con persistencia e histéresis, compuerta ordenada con motivos, avisos `AgentAlert`, registro SQLite v8 (`detected_events`, `gate_decisions`, `gate_fingerprint`) y comandos `events show/summary/simulate`. Documentación en `docs/eventos_y_gate.md`. Queda repetir CI en Linux y la validación con capturas reales (E12-R1). |
 | 6. Integración del LLM | Implementada; validación local completa | L1--L13 implementadas: tipos y configuración, cliente OpenAI-compatible, contexto, prompts, validador, plantillas, comunicador, SQLite v9, consola, diagnóstico `llm check/bench`, evaluación, pruebas sintéticas y documentación. Candidato medido: Gemma 4 E2B IT Q4_K_S; quedan repetir CI en Linux y ampliar validación real. |
-| 7--10 | No iniciadas | |
+| 7. Preguntas del piloto | Implementada; validación local Windows | Q1--Q16 implementadas: router, herramientas y respuestas deterministas, diálogo, consola, preguntas guiadas, evaluación y trazabilidad SQLite v11. Umbrales de salida medidos documentados; falta repetir CI en Linux y validar manualmente la entrada con acentos (UP-5). |
+| 8--10 | No iniciadas | |
 
 ## 5. Qué está verificado y qué no
 
 **Verificado:**
 
+-   Fase 7 (2026-11-27): Ruff lint/formato y Pyright sin errores; pytest: 1720 aprobadas, 6 omitidas y
+    10 deseleccionadas. Cinco omisiones corresponden a capturas no disponibles y una a un lector POSIX
+    en Windows. La validación Linux y la prueba manual de acentos (UP-5) siguen pendientes.
 -   Fase 5 (2026-11-17): detector y compuerta deterministas sin LLM. Escenarios sintéticos de extremo a extremo
     pasan (silencio en telemetría normal, un solo aviso con condición sostenida, actualización material,
     histéresis, crítico que interrumpe el cooldown, silencio por `muted`/`below_interruption_level` y
@@ -287,6 +291,18 @@ Documentos de diseño:
 -   Queda volver a ejecutar CI de GitHub Actions después de la Ola 5.
 
 ## 6. Bitácora
+
+### 2026-11-27
+
+**Q16 --- Documentación de preguntas del piloto.**
+
+-   Añadida `docs/preguntas_del_piloto.md` con arquitectura, intenciones, composición de respuestas, parámetros,
+    guía para añadir intenciones e idiomas y ejemplos de preguntas guiadas.
+-   Actualizadas las secciones 3.8, 3.9 y 4.2 del outline, el criterio medido de Fase 7 en el roadmap y la
+    documentación SQLite a v11. El plan mencionaba v10, pero el HEAD ya contiene también la migración v11
+    (`exchange_json`), que se documentó para mantener el estado alineado con el código.
+-   Ruff lint/formato, Pyright y pytest pasan en Windows: 1720 aprobadas, 6 omitidas y 10 deseleccionadas.
+    CI Linux y UP-5 siguen pendientes.
 
 ### 2026-11-20
 
@@ -1063,19 +1079,16 @@ uv run f1-strategist events simulate captures/<archivo>.f1cap --from-lap 10 --to
 -   Si el juego envía por broadcast, la app debe escuchar en `0.0.0.0`; en loopback no recibe nada.
 -   Otra aplicación de telemetría usando el puerto 20777 provoca un error claro al abrir el socket.
 
-## 10. Siguiente paso: Fase 6 y validación pendiente
+## 10. Siguiente paso: validación de Fase 7
 
-La Fase 5 está implementada y documentada; su criterio de salida se verificó localmente en Windows. La Fase 2
-mantiene abierta la semántica del indicador de combustible del MFD y la Fase 4 las incidencias S10-R1 y S10-H1.
-El siguiente trabajo es:
+La Fase 7 está implementada y documentada; los cuatro comandos locales pasan en Windows. El siguiente trabajo es:
 
-1.  **Fase 6:** cerrar la Ola 2 y revisar el extremo a extremo. La integración ya dispone de cliente,
-    contexto, prompts, validador, plantillas, comunicador, registro y evaluación; falta confirmar UL-4 y
-    UL-5 sobre tono y estilo de radio.
-2.  **CI y capturas reales:** repetir GitHub Actions tras la Ola 2 y validar el detector con las capturas de
-    Sakhir, Baku y Monza que no terminaron localmente (E12-R1). Siguen abiertas S10-R1 y S10-H1.
-3.  **Calibración diferida:** ajustar los parámetros que hoy no tienen valor universal y ampliar la validación
-    a capturas con lluvia, safety car y otras condiciones.
+1.  **CI Linux y entrada de texto:** repetir Ruff, formato, Pyright y pytest en Linux y completar la prueba manual
+    de acentos en Windows y Linux (UP-5).
+2.  **Validación con el usuario:** recopilar las 30 preguntas reales (UP-1), revisar tono y vocabulario (UP-2),
+    probar preguntas en una sesión (UP-3) y confirmar la semántica del silenciado (UP-4).
+3.  **Fases siguientes:** avanzar a la Fase 8 después de cerrar la validación de Fase 7. La semántica del MFD,
+    S10-R1/S10-H1 y la calibración con condiciones variadas siguen pendientes de sus fases correspondientes.
 
 ## 11. Pendientes y decisiones abiertas
 

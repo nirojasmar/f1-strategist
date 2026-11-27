@@ -415,28 +415,25 @@ ausencia de evento finaliza el flujo sin llamar al LLM.
 
 ### 3.8 Pilot Input e Intent Router
 
-Entrada inicial: texto desde la consola, a través de la interfaz del
-núcleo (sección 2.2). La voz y la GUI pueden añadirse después sin
-cambiar el router. El router debe diseñarse para reconocer preguntas en
-más de un idioma (inglés y español como mínimo, ver 3.13).
+La entrada inicial es texto de consola por la interfaz del núcleo (sección 2.2).
+El `PilotEngine` publica primero un acuse; después enruta la pregunta, resuelve
+entidades y aclaraciones, ejecuta una herramienta determinista y compone una
+respuesta con plantillas. El cooldown y el silencio del agente afectan a avisos
+espontáneos, no a las preguntas. El seguimiento del LLM es opcional y nunca
+sustituye ni retrasa la respuesta determinista.
 
-El router identifica intenciones como: - `COMPARE_DRIVER` -
-`ASK_STRATEGY` - `FUEL_STATUS` - `TYRE_LIFE` - `PACE_DIAGNOSIS` -
-`PIT_UNDERCUT` - `GENERAL_RACE_STATE`
+El router normaliza mayúsculas, tildes y signos, puntúa frases y palabras clave
+del catálogo TOML, aplica patrones negativos y acepta la mejor intención que
+supere `pilot.min_intent_confidence`. Un empate o una pregunta fuera de alcance
+queda como `UNKNOWN`. El directorio de pilotos resuelve nombres, posiciones y
+referencias relativas; ante ambigüedad se pide una aclaración. Las continuaciones
+de diálogo pueden reutilizar la intención reciente dentro de su vigencia.
 
-Después llama a funciones internas específicas. Ejemplos:
-
-``` text
-get_race_state()
-compare_driver(driver_id)
-estimate_fuel_margin()
-estimate_tyre_life()
-get_recent_pace_trend()
-simulate_strategy(options)
-```
-
-La consulta explícita del piloto tiene prioridad sobre el cooldown de
-mensajes espontáneos.
+Las intenciones disponibles son `GENERAL_RACE_STATE`, `ASK_STRATEGY`,
+`FUEL_STATUS`, `TYRE_LIFE`, `PACE_DIAGNOSIS`, `COMPARE_DRIVER`,
+`PIT_UNDERCUT`, `GAP_STATUS`, `DAMAGE_STATUS` y `WEATHER_FORECAST`. Los
+catálogos de entrada son por idioma; actualmente el catálogo implementado es
+español. La voz y la GUI pueden añadirse después sin cambiar el router.
 
 ### 3.9 Context Builder
 
@@ -454,6 +451,13 @@ del idioma. Los límites están gobernados por `recent_messages` y
 
 En una sesión sin alerta comunicable no se construye una petición ni se llama al
 modelo. Una alerta cerrada o sustituida se descarta antes de publicar su respuesta.
+
+Las preguntas del piloto no usan este contexto como fuente de cifras. Cada
+herramienta recibe snapshots inmutables de carrera, métricas, estrategia e
+histórico, y devuelve `ToolFact` con valor, unidad, calidad y tipo (`measured`,
+`estimated` o `recommended`), además de datos ausentes u obsoletos. El compositor
+determinista usa esos hechos y las plantillas localizadas; el LLM solo puede
+añadir un seguimiento explicativo permitido por la configuración.
 
 ### 3.10 Local LLM y Response Validator
 
@@ -638,15 +642,17 @@ Reglas:
 
 ### 4.2 Flujo de pregunta del piloto
 
-1.  Recibir la pregunta.
-2.  Identificar intención y entidades (por ejemplo, piloto rival).
-3.  Consultar estado o ejecutar la función necesaria.
-4.  Construir contexto con resultados verificables.
-5.  Generar respuesta.
-6.  Validar cifras y formato.
-7.  Entregar respuesta y registrar la interacción.
+1.  Recibir la pregunta y publicar el acuse inmediato.
+2.  Identificar intención y entidades; pedir aclaración si una referencia es ambigua.
+3.  Ejecutar la herramienta correspondiente sobre los snapshots actuales.
+4.  Componer y publicar la respuesta determinista desde `ToolFact` y plantillas.
+5.  Registrar pregunta, intención, entidades, hechos, respuesta y estado del seguimiento.
+6.  Si la intención lo permite y el LLM está activo, solicitar un seguimiento opcional
+    sin esperar por él para responder.
 
-Este flujo no debe ser bloqueado por el cooldown de alertas espontáneas.
+Este camino funciona con el LLM desactivado y no lo bloquean el cooldown ni el
+silenciado del agente. Los datos ausentes, restringidos o obsoletos se declaran;
+las cifras no se toman del texto del LLM.
 
 ## 5. Contratos de datos sugeridos
 
