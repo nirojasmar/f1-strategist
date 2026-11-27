@@ -77,9 +77,9 @@ Documentos de diseño:
 
 **Verificado:**
 
--   Fase 7 (2026-11-27): Ruff lint/formato y Pyright sin errores; pytest: 1720 aprobadas, 6 omitidas y
-    10 deseleccionadas. Cinco omisiones corresponden a capturas no disponibles y una a un lector POSIX
-    en Windows. La validación Linux y la prueba manual de acentos (UP-5) siguen pendientes.
+-   Fase 7 (2026-11-27): Ruff lint/formato y Pyright sin errores; pytest: 1728 aprobadas, 1 omitida
+    (`POSIX reader only` en Windows) y 11 deseleccionadas (`benchmark` y `real_capture`). La validación
+    Linux y la prueba manual de acentos (UP-5) siguen pendientes.
 -   Fase 5 (2026-11-17): detector y compuerta deterministas sin LLM. Escenarios sintéticos de extremo a extremo
     pasan (silencio en telemetría normal, un solo aviso con condición sostenida, actualización material,
     histéresis, crítico que interrumpe el cooldown, silencio por `muted`/`below_interruption_level` y
@@ -301,7 +301,7 @@ Documentos de diseño:
 -   Actualizadas las secciones 3.8, 3.9 y 4.2 del outline, el criterio medido de Fase 7 en el roadmap y la
     documentación SQLite a v11. El plan mencionaba v10, pero el HEAD ya contiene también la migración v11
     (`exchange_json`), que se documentó para mantener el estado alineado con el código.
--   Ruff lint/formato, Pyright y pytest pasan en Windows: 1720 aprobadas, 6 omitidas y 10 deseleccionadas.
+-   Ruff lint/formato, Pyright y pytest pasan en Windows: 1728 aprobadas, 1 omitida y 11 deseleccionadas.
     CI Linux y UP-5 siguen pendientes.
 
 ### 2026-11-20

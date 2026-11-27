@@ -28,6 +28,7 @@ from f1_strategist.pilot.types import (
     FactKind,
     Intent,
     PilotAnswer,
+    PilotExchange,
     ToolFact,
     ToolInputs,
     ToolResult,
@@ -243,7 +244,7 @@ def test_pilot_fingerprint_is_invariant_to_playback_speed_and_capture_reingestio
             return True
 
     fingerprints: list[str] = []
-    playback_answers: list[tuple[str, str, object]] = []
+    playback_exchanges: list[PilotExchange] = []
     for speed in (0.0, 1.0, 4.0):
         clock = _FastClock()
         session = PlaybackSession(
@@ -257,11 +258,13 @@ def test_pilot_fingerprint_is_invariant_to_playback_speed_and_capture_reingestio
             assert session.wait(timeout=30.0)
             assert session.error is None
             answer = session.ask_pilot("¿Cómo voy?")
+            recent = session.pilot_snapshot().recent
             accumulator = PilotFingerprintAccumulator()
-            accumulator.add(session.pilot_snapshot().recent)
+            accumulator.add(recent)
             fingerprints.append(accumulator.fingerprint)
             assert answer.tool_result is not None
-            playback_answers.append((answer.text, answer.intent.value, answer.tool_result))
+            assert len(recent) == 1
+            playback_exchanges.append(recent[0])
         finally:
             session.stop()
 
@@ -281,11 +284,26 @@ def test_pilot_fingerprint_is_invariant_to_playback_speed_and_capture_reingestio
     assert len(set(fingerprints)) == 1
     assert first.fingerprint == second.fingerprint
     assert len(first.exchanges) == 1
-    scripted_answer = first.exchanges[0].answer
-    assert scripted_answer.tool_result is not None
-    assert (scripted_answer.text, scripted_answer.intent.value, scripted_answer.tool_result) in (
-        playback_answers
+    scripted_exchange = first.exchanges[0]
+    assert scripted_exchange.routed is not None
+    assert scripted_exchange.answer.tool_result is not None
+    # `play` usa source="console" y `ask-script` usa source="script" por diseño;
+    # alineando solo `source`, la huella completa de PilotFingerprintAccumulator coincide.
+    assert playback_exchanges[0].query.source == "console"
+    assert scripted_exchange.routed.query.source == "script"
+    scripted_accumulator = PilotFingerprintAccumulator()
+    scripted_accumulator.add(
+        [
+            PilotExchange(
+                query=replace(
+                    scripted_exchange.routed.query,
+                    source=playback_exchanges[0].query.source,
+                ),
+                answer=scripted_exchange.answer,
+            )
+        ]
     )
+    assert scripted_accumulator.fingerprint == fingerprints[0]
 
 
 def test_run_pilot_script_reports_untriggered_steps_beyond_capture_end(
