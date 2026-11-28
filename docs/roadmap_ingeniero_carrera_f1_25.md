@@ -532,8 +532,15 @@ continúan marcadas como validación opcional.
 
 ### Criterio de salida
 
-Las preguntas se responden con datos actuales, y el agente distingue
-mediciones, estimaciones y recomendaciones.
+El camino determinista responde con el agente silenciado, durante el cooldown y
+con el LLM desactivado. El acuse aparece antes de `ack_max_ms` (50 ms por defecto);
+la respuesta determinista tarda menos de 20 ms de media y p99 menor de 50 ms.
+Cada cifra procede de un `ToolFact`, los datos ausentes/restringidos/obsoletos se
+declaran y se distinguen mediciones, estimaciones y recomendaciones. La evaluación
+alcanza al menos 95 % de exactitud dentro de alcance, como máximo 5 % de falsos
+positivos fuera de alcance y al menos 95 % de aclaraciones correctas. Las preguntas
+guiadas son reproducibles, las consultas quedan trazadas y resumibles, y la entrada
+con acentos funciona en Windows y Linux.
 
 ------------------------------------------------------------------------
 

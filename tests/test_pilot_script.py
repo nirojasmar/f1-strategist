@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 import f1_strategist.pilot.script as script_module
-from f1_strategist.capture import CapturedPacket, CaptureWriter
+from f1_strategist.capture import CapturedPacket, CaptureReader, CaptureWriter
 from f1_strategist.cli import main
 from f1_strategist.config import AppConfig, LLMConfig, PilotConfig
 from f1_strategist.fingerprint import PilotFingerprintAccumulator
@@ -28,10 +28,12 @@ from f1_strategist.pilot.types import (
     FactKind,
     Intent,
     PilotAnswer,
+    PilotExchange,
     ToolFact,
     ToolInputs,
     ToolResult,
 )
+from f1_strategist.playback import PlaybackSession
 from f1_strategist.store import SessionStore, StoredPilotQuery
 
 from .conftest import make_packet
@@ -181,7 +183,20 @@ def _synthetic_capture(
         return parsed[index]
 
     monkeypatch.setattr("f1_strategist.offline.parse_packet", fake_parse)
+    monkeypatch.setattr("f1_strategist.playback.parse_packet", fake_parse)
     return path
+
+
+class _FastClock:
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+    def wait(self, timeout: float | None) -> bool:
+        self.now += timeout if timeout is not None else 0.0
+        return True
 
 
 def test_run_pilot_script_is_deterministic_across_repeated_runs(
@@ -221,6 +236,119 @@ def test_run_pilot_script_is_deterministic_across_repeated_runs(
     assert all(not item.answer.followup_pending for item in first.exchanges)
     assert first.fingerprint == second.fingerprint
     assert first.to_json() == second.to_json()
+
+
+def test_pilot_fingerprint_is_invariant_to_playback_speed_and_capture_reingestion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    capture = _synthetic_capture(tmp_path, monkeypatch)
+
+    fingerprints: list[str] = []
+    playback_exchanges: list[PilotExchange] = []
+    for speed in (0.0, 1.0, 4.0):
+        clock = _FastClock()
+        session = PlaybackSession(
+            capture,
+            speed=speed,
+            clock=clock,
+            wait_timeout=clock.wait,
+        )
+        try:
+            session.play()
+            assert session.wait(timeout=30.0)
+            assert session.error is None
+            answer = session.ask_pilot("¿Cómo voy?")
+            recent = session.pilot_snapshot().recent
+            accumulator = PilotFingerprintAccumulator()
+            accumulator.add(recent)
+            fingerprints.append(accumulator.fingerprint)
+            assert answer.tool_result is not None
+            assert len(recent) == 1
+            playback_exchanges.append(recent[0])
+        finally:
+            session.stop()
+
+    captured_packets = list(CaptureReader(capture))
+    capture_end_s = (
+        captured_packets[-1].recv_time_ns - captured_packets[0].recv_time_ns
+    ) / 1_000_000_000
+    script = tmp_path / "reingesta.jsonl"
+    script.write_text(
+        json.dumps({"at_session_time_s": capture_end_s, "text": "¿Cómo voy?"}, ensure_ascii=False)
+        + "\n",
+        encoding="utf-8",
+    )
+    first = run_pilot_script(capture, script)
+    second = run_pilot_script(capture, script)
+
+    assert len(set(fingerprints)) == 1
+    assert first.fingerprint == second.fingerprint
+    assert len(first.exchanges) == 1
+    scripted_exchange = first.exchanges[0]
+    assert scripted_exchange.routed is not None
+    assert scripted_exchange.answer.tool_result is not None
+    # `play` usa source="console" y `ask-script` usa source="script" por diseño;
+    # alineando solo `source`, la huella completa de PilotFingerprintAccumulator coincide.
+    assert playback_exchanges[0].query.source == "console"
+    assert scripted_exchange.routed.query.source == "script"
+    scripted_accumulator = PilotFingerprintAccumulator()
+    scripted_accumulator.add(
+        [
+            PilotExchange(
+                query=replace(
+                    scripted_exchange.routed.query,
+                    source=playback_exchanges[0].query.source,
+                ),
+                answer=scripted_exchange.answer,
+            )
+        ]
+    )
+    assert scripted_accumulator.fingerprint == fingerprints[0]
+
+
+def test_pilot_fingerprint_is_invariant_to_playback_speed_at_packet_checkpoints(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    capture = _synthetic_capture(tmp_path, monkeypatch)
+    packets = list(CaptureReader(capture))
+    total = len(packets)
+    checkpoints = sorted({total // 4, total // 2, (3 * total) // 4})
+    questions = ("¿Cómo voy?", "¿Cuánto combustible queda?")
+
+    for checkpoint in checkpoints:
+        # Recortar el mismo prefijo de paquetes hace determinista el checkpoint
+        # sin añadir una API de pausa a PlaybackSession.
+        checkpoint_capture = tmp_path / f"race_checkpoint_{checkpoint}.f1cap"
+        with CaptureWriter(checkpoint_capture, include_created_utc=False) as writer:
+            for packet in packets[:checkpoint]:
+                writer.write(packet)
+
+        fingerprints: list[str] = []
+        for speed in (0.0, 1.0, 4.0):
+            clock = _FastClock()
+            session = PlaybackSession(
+                checkpoint_capture,
+                speed=speed,
+                clock=clock,
+                wait_timeout=clock.wait,
+            )
+            try:
+                session.play()
+                assert session.wait(timeout=30.0)
+                assert session.error is None
+                for question in questions:
+                    session.ask_pilot(question)
+                recent = session.pilot_snapshot().recent
+                assert len(recent) == len(questions)
+                accumulator = PilotFingerprintAccumulator()
+                accumulator.add(recent)
+                fingerprints.append(accumulator.fingerprint)
+            finally:
+                session.stop()
+
+        assert len(set(fingerprints)) == 1, checkpoint
 
 
 def test_run_pilot_script_reports_untriggered_steps_beyond_capture_end(

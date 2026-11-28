@@ -15,16 +15,18 @@ registros de forma permanente; conviene conservar copias de `sessions.db` junto 
 capturas.
 
 El esquema vive en [`src/f1_strategist/store/schema.py`](../src/f1_strategist/store/schema.py)
-y la versión actual es `SCHEMA_VERSION = 9`. La versión se guarda en `PRAGMA user_version`.
+y la versión actual es `SCHEMA_VERSION = 11`. La versión se guarda en `PRAGMA user_version`.
 Al abrir la base en modo escritura se aplican las migraciones pendientes. Los comandos
-de consulta la abren en solo lectura y admiten v6 a v9 sin migrarlas; una base v6 no
+de consulta la abren en solo lectura y admiten v6 a v11 sin migrarlas; una base v6 no
 contiene proyecciones por vuelta y sus evaluaciones no se pueden incluir en `strategy review`.
 Una base v7 no tiene detecciones ni decisiones de la compuerta; `events show` exige una base
 v8 y rechaza la anterior con un mensaje claro. Las tablas del agente requieren v9 y los
-comandos de exportación y evaluación las exigen. Al abrir una base compatible en modo escritura
-se aplican las migraciones hasta v9. La
-apertura de solo lectura rechaza bases anteriores a v6 o creadas por una versión más nueva de
-la herramienta.
+comandos de exportación y evaluación las exigen. La v10 añade trazabilidad de preguntas del
+piloto (`pilot_queries`, `sessions.pilot_fingerprint` y los enlaces `query_id`/`kind` en
+`agent_messages`); la v11 añade el intercambio canónico `exchange_json` a `pilot_queries`.
+Los comandos `queries` requieren v10. Al abrir una base compatible en modo escritura se
+aplican las migraciones hasta v11. La apertura de solo lectura rechaza bases anteriores a
+v6 o creadas por una versión más nueva de la herramienta.
 
 ## Tablas
 
@@ -53,6 +55,7 @@ reconstruida desde una captura (`ingest`).
 | `profile_json`, `profile_hash` | Perfil canónico usado al iniciar una carrera y su SHA-256. |
 | `strategy_fingerprint` | SHA-256 de un objeto con la versión de esquema de estrategia y su configuración canónica. |
 | `gate_fingerprint` | Huella canónica e independiente del orden de detecciones y decisiones de la compuerta (esquema v8). |
+| `pilot_fingerprint` | Huella canónica de las preguntas y respuestas deterministas del piloto (esquema v10). |
 
 ### `weekends`
 
@@ -139,7 +142,22 @@ La clave `(session_id, seq)` identifica el mensaje. Conserva tiempo simulado, id
 de alerta y evento, prioridad, idioma, texto, fuente (`llm` o `template`), hechos utilizados,
 vuelta, identificador de llamada y si fue una interrupción. La huella del agente se guarda
 además en `sessions.agent_fingerprint`, independiente del orden de los mensajes. Las bases
-v8 y anteriores no tienen esta tabla.
+v8 y anteriores no tienen esta tabla. Desde v10, `query_id` y `kind` enlazan un seguimiento
+con la consulta del piloto que lo originó.
+
+### `pilot_queries`
+
+Una fila por pregunta registrada, con clave `(session_id, seq)`. Guarda tiempo simulado,
+identificador, idioma, intención, confianza, entidades, aclaración, hechos, ausencias,
+respuesta determinista (texto, tipo y clave de mensaje), latencia y estado/texto del
+seguimiento. `text` es `NULL` cuando `pilot.record_text = false`; en ese caso
+`exchange_json` también es `NULL`. La columna `exchange_json` de v11 conserva el
+intercambio canónico que se usa al recomponer `sessions.pilot_fingerprint`. Si alguna
+fila carece de ese payload, la huella no se puede recomponer con exactitud. Al añadir
+preguntas a una sesión ingerida, si cualquier fila —incluidas las añadidas en esa
+llamada— carece de payload, el grabador borra `sessions.pilot_fingerprint`.
+La tabla permite consultar y resumir preguntas con `queries show` y `queries summary`, o
+exportarlas con `queries export`. Las bases v9 y anteriores no tienen esta tabla.
 
 ### `app_errors`
 
