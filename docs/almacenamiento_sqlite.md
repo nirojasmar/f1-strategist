@@ -150,8 +150,12 @@ con la consulta del piloto que lo originó.
 Una fila por pregunta registrada, con clave `(session_id, seq)`. Guarda tiempo simulado,
 identificador, idioma, intención, confianza, entidades, aclaración, hechos, ausencias,
 respuesta determinista (texto, tipo y clave de mensaje), latencia y estado/texto del
-seguimiento. `text` es `NULL` cuando `pilot.record_text = false`. La columna `exchange_json`
-de v11 conserva el intercambio canónico que se usa al recomponer `sessions.pilot_fingerprint`.
+seguimiento. `text` es `NULL` cuando `pilot.record_text = false`; en ese caso
+`exchange_json` también es `NULL`. La columna `exchange_json` de v11 conserva el
+intercambio canónico que se usa al recomponer `sessions.pilot_fingerprint`. Si alguna
+fila carece de ese payload, la huella no se puede recomponer con exactitud. Al añadir
+preguntas a una sesión ingerida, si cualquier fila —incluidas las añadidas en esa
+llamada— carece de payload, el grabador borra `sessions.pilot_fingerprint`.
 La tabla permite consultar y resumir preguntas con `queries show` y `queries summary`, o
 exportarlas con `queries export`. Las bases v9 y anteriores no tienen esta tabla.
 

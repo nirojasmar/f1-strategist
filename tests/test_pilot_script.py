@@ -187,6 +187,18 @@ def _synthetic_capture(
     return path
 
 
+class _FastClock:
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+    def wait(self, timeout: float | None) -> bool:
+        self.now += timeout if timeout is not None else 0.0
+        return True
+
+
 def test_run_pilot_script_is_deterministic_across_repeated_runs(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -231,17 +243,6 @@ def test_pilot_fingerprint_is_invariant_to_playback_speed_and_capture_reingestio
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     capture = _synthetic_capture(tmp_path, monkeypatch)
-
-    class _FastClock:
-        def __init__(self) -> None:
-            self.now = 0.0
-
-        def __call__(self) -> float:
-            return self.now
-
-        def wait(self, timeout: float | None) -> bool:
-            self.now += timeout if timeout is not None else 0.0
-            return True
 
     fingerprints: list[str] = []
     playback_exchanges: list[PilotExchange] = []
@@ -304,6 +305,50 @@ def test_pilot_fingerprint_is_invariant_to_playback_speed_and_capture_reingestio
         ]
     )
     assert scripted_accumulator.fingerprint == fingerprints[0]
+
+
+def test_pilot_fingerprint_is_invariant_to_playback_speed_at_packet_checkpoints(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    capture = _synthetic_capture(tmp_path, monkeypatch)
+    packets = list(CaptureReader(capture))
+    total = len(packets)
+    checkpoints = sorted({total // 4, total // 2, (3 * total) // 4})
+    questions = ("¿Cómo voy?", "¿Cuánto combustible queda?")
+
+    for checkpoint in checkpoints:
+        # Recortar el mismo prefijo de paquetes hace determinista el checkpoint
+        # sin añadir una API de pausa a PlaybackSession.
+        checkpoint_capture = tmp_path / f"race_checkpoint_{checkpoint}.f1cap"
+        with CaptureWriter(checkpoint_capture, include_created_utc=False) as writer:
+            for packet in packets[:checkpoint]:
+                writer.write(packet)
+
+        fingerprints: list[str] = []
+        for speed in (0.0, 1.0, 4.0):
+            clock = _FastClock()
+            session = PlaybackSession(
+                checkpoint_capture,
+                speed=speed,
+                clock=clock,
+                wait_timeout=clock.wait,
+            )
+            try:
+                session.play()
+                assert session.wait(timeout=30.0)
+                assert session.error is None
+                for question in questions:
+                    session.ask_pilot(question)
+                recent = session.pilot_snapshot().recent
+                assert len(recent) == len(questions)
+                accumulator = PilotFingerprintAccumulator()
+                accumulator.add(recent)
+                fingerprints.append(accumulator.fingerprint)
+            finally:
+                session.stop()
+
+        assert len(set(fingerprints)) == 1, checkpoint
 
 
 def test_run_pilot_script_reports_untriggered_steps_beyond_capture_end(

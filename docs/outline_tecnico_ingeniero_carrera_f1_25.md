@@ -36,10 +36,12 @@ flowchart TD
     E --> G["Event Gate / Priority Manager"]
     PI["Pilot Input"] --> IR["Intent Router"]
     G -->|"spontaneous event"| CB["Context Builder"]
-    IR --> CB
+    IR --> DT["Deterministic Tools + Composer"]
+    DT --> OUT["Text / Voice Output"]
+    DT -.->|"optional follow-up"| CB
     CB --> LLM["Local LLM"]
     LLM --> RV["Response Validator"]
-    RV --> OUT["Text / Voice Output"]
+    RV --> OUT
 ```
 
 La recepción, normalización y registro deben continuar aunque el LLM
@@ -423,11 +425,12 @@ espontáneos, no a las preguntas. El seguimiento del LLM es opcional y nunca
 sustituye ni retrasa la respuesta determinista.
 
 El router normaliza mayúsculas, tildes y signos, puntúa frases y palabras clave
-del catálogo TOML, aplica patrones negativos y acepta la mejor intención que
-supere `pilot.min_intent_confidence`. Un empate o una pregunta fuera de alcance
-queda como `UNKNOWN`. El directorio de pilotos resuelve nombres, posiciones y
-referencias relativas; ante ambigüedad se pide una aclaración. Las continuaciones
-de diálogo pueden reutilizar la intención reciente dentro de su vigencia.
+del catálogo TOML, aplica patrones negativos y acepta la mejor intención cuya
+puntuación alcance o supere `pilot.min_intent_confidence`. Un empate o una
+pregunta fuera de alcance queda como `UNKNOWN`. El directorio de pilotos resuelve
+nombres, posiciones y referencias relativas; ante ambigüedad se pide una
+aclaración. Las continuaciones de diálogo pueden reutilizar la intención reciente
+dentro de su vigencia.
 
 Las intenciones disponibles son `GENERAL_RACE_STATE`, `ASK_STRATEGY`,
 `FUEL_STATUS`, `TYRE_LIFE`, `PACE_DIAGNOSIS`, `COMPARE_DRIVER`,
